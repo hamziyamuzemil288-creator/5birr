@@ -43,12 +43,31 @@ import '../features/shared/ride_history_screen.dart';
 
 /// A [ChangeNotifier] that fires whenever [authProvider] state changes,
 /// allowing [GoRouter] to re-evaluate its redirect callback.
+///
+/// Also handles a one-time retry for missing profiles right after signup:
+/// the database trigger may not have completed by the time
+/// [GoRouter] first evaluates the redirect, so we wait briefly and
+/// refresh the profile once.
 class _AuthRefreshNotifier extends ChangeNotifier {
-  _AuthRefreshNotifier(Ref ref) {
-    _sub = ref.listen<AuthState>(authProvider, (_, __) => notifyListeners());
+  _AuthRefreshNotifier(this._ref) {
+    _sub = _ref.listen<AuthState>(authProvider, (_, __) => notifyListeners());
   }
 
+  final Ref _ref;
   late final ProviderSubscription<AuthState> _sub;
+  bool _profileRetryScheduled = false;
+
+  /// Call when redirect sees an authenticated user with no profile.
+  /// Schedules a single retry after 1 second to give the database
+  /// trigger time to complete.
+  void scheduleProfileRetry() {
+    if (_profileRetryScheduled) return;
+    _profileRetryScheduled = true;
+    Future.delayed(const Duration(seconds: 1), () {
+      _profileRetryScheduled = false;
+      _ref.read(authProvider.notifier).refreshProfile();
+    });
+  }
 
   @override
   void dispose() {
@@ -58,59 +77,69 @@ class _AuthRefreshNotifier extends ChangeNotifier {
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {
-  // Watch auth state — this creates a dependency so the provider is
-  // re-evaluated when auth changes.
-  final authState = ref.watch(authProvider);
-
   // Create a ChangeNotifier that fires on every auth state change.
   // GoRouter listens to this via refreshListenable and re-evaluates
   // the redirect callback each time it fires.
+  //
+  // IMPORTANT: We do NOT ref.watch(authProvider) here. Watching it would
+  // destroy and recreate the GoRouter on every auth state change, losing
+  // all navigation state. Instead, the redirect callback reads the
+  // current auth state via ref.read() each time it is invoked.
   final refreshNotifier = _AuthRefreshNotifier(ref);
   ref.onDispose(refreshNotifier.dispose);
-
-  // ── DIAGNOSTIC failsafe: force past splash after 15 s ──
-  final bootStopwatch = Stopwatch()..start();
 
   return GoRouter(
     initialLocation: '/',
     refreshListenable: refreshNotifier,
     redirect: (context, state) {
+      // Read the CURRENT auth state each time the redirect is evaluated.
+      // This is safe because refreshListenable fires on every auth change,
+      // and ref.read() returns the latest state synchronously.
+      final authState = ref.read(authProvider);
       final isLoading = authState.isLoading;
       final isAuthenticated = authState.isAuthenticated;
       final loc = state.matchedLocation;
       final isAuthRoute = loc == '/login' ||
           loc == '/role-select' ||
           loc == '/admin-login';
+      final isSignupRoute = loc.startsWith('/signup/');
+      final isApprovalRoute = _isApprovalRoute(loc);
 
-      // DIAGNOSTIC failsafe: if still loading after 15 s, force to login
-      // so users are never stuck on the splash screen. Remove this block
-      // once the root cause is identified and fixed.
-      if (isLoading && bootStopwatch.elapsed.inSeconds >= 15) {
-        return '/login';
-      }
-
+      // Still loading — don't redirect yet.
       if (isLoading) return null;
 
+      // Not authenticated — redirect to login (unless already on an auth route).
       if (!isAuthenticated) {
-        if (isAuthRoute || loc.startsWith('/signup/')) return null;
+        if (isAuthRoute || isSignupRoute) return null;
         return '/login';
       }
 
-      if ((isAuthRoute || loc.startsWith('/signup/')) && loc != '/') {
-        return _getDashboardPath(authState);
+      // Authenticated but profile or roles haven't loaded yet — stay put
+      // and schedule a retry (the DB trigger may still be in-flight).
+      if (authState.profile == null || authState.roles.isEmpty) {
+        refreshNotifier.scheduleProfileRetry();
+        return null;
       }
 
-      if (authState.profile == null && isAuthenticated) {
-        return '/role-select';
-      }
-
-      if (authState.isPendingApproval && !_isApprovalRoute(loc)) {
+      // ── Pending / rejected status (checked BEFORE dashboard redirect) ──
+      if (authState.isPendingApproval && !isApprovalRoute) {
         return '/pending-approval';
       }
-      if (authState.isRejected && !_isApprovalRoute(loc)) {
+      if (authState.isRejected && !isApprovalRoute) {
         return '/rejected';
       }
 
+      // ── On an auth route (login, signup, role-select) — redirect away ──
+      if (isAuthRoute || isSignupRoute) {
+        return _getDashboardPath(authState);
+      }
+
+      // ── On the splash screen — redirect to the correct dashboard ──
+      if (loc == '/') {
+        return _getDashboardPath(authState);
+      }
+
+      // Already on a dashboard or approval route — no redirect needed.
       return null;
     },
     routes: [

@@ -32,6 +32,7 @@ class AuthState {
     AppUserRole? primaryRole,
     bool? isLoading,
     String? error,
+    bool clearError = false,
   }) {
     return AuthState(
       user: user ?? this.user,
@@ -39,7 +40,7 @@ class AuthState {
       roles: roles ?? this.roles,
       primaryRole: primaryRole ?? this.primaryRole,
       isLoading: isLoading ?? this.isLoading,
-      error: error,
+      error: clearError ? null : (error ?? this.error),
     );
   }
 
@@ -60,6 +61,10 @@ class AuthState {
 class AuthNotifier extends StateNotifier<AuthState> {
   final SupabaseService _svc;
   StreamSubscription<dynamic>? _authSub;
+
+  /// Monotonically increasing counter so that an older _loadUserProfile
+  /// call cannot overwrite state produced by a newer one.
+  int _profileLoadSeq = 0;
 
   AuthNotifier(this._svc) : super(const AuthState(isLoading: true)) {
     _init();
@@ -90,6 +95,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> _loadUserProfile(User user) async {
+    // Bump the sequence so an older in-flight call cannot overwrite our result.
+    final seq = ++_profileLoadSeq;
+
     try {
       // Load profile — timeout so a hanging query can never leave the UI stuck
       final profileData = await _svc.client
@@ -103,6 +111,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'profiles query timed out after 10 seconds',
         ),
       );
+
+      // A newer load has started — discard this stale result.
+      if (seq != _profileLoadSeq) return;
 
       UserProfile? profile;
       if (profileData != null) {
@@ -120,6 +131,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'user_roles query timed out after 10 seconds',
         ),
       );
+
+      // Another stale check after the second query.
+      if (seq != _profileLoadSeq) return;
 
       final roles = (rolesData as List)
           .map((r) => _parseRole(r['role'] as String))
@@ -139,6 +153,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         error: null,
       );
     } catch (e) {
+      // Only apply error state if no newer load has taken over.
+      if (seq != _profileLoadSeq) return;
       state = state.copyWith(
         user: user,
         isLoading: false,
@@ -170,7 +186,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String nationalId,
     required AppUserRole role,
   }) async {
-    state = state.copyWith(isLoading: true, error: null);
+    state = state.copyWith(isLoading: true, clearError: true);
     try {
       final response = await _svc.client.auth.signUp(
         phone: phone,
@@ -214,7 +230,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String ownerNationalId,
     required String providerType,
   }) async {
-    state = state.copyWith(isLoading: true, error: null);
+    state = state.copyWith(isLoading: true, clearError: true);
     try {
       final response = await _svc.client.auth.signUp(
         phone: phone,
@@ -260,7 +276,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String phone,
     required String password,
   }) async {
-    state = state.copyWith(isLoading: true, error: null);
+    state = state.copyWith(isLoading: true, clearError: true);
     try {
       final response = await _svc.client.auth.signInWithPassword(
         phone: phone,
