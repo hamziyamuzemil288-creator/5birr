@@ -29,6 +29,7 @@ import '../features/wallet/wallet_screen.dart';
 import '../features/wallet/recharge_screen.dart';
 import '../features/admin/admin_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
+import '../features/admin/admin_user_management_screen.dart';
 import '../features/admin/admin_payment_methods_screen.dart';
 import '../features/admin/admin_payment_verification_screen.dart';
 import '../features/admin/admin_cash_recharge_screen.dart';
@@ -212,6 +213,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin', builder: (_, __) => const AdminDashboard()),
       GoRoute(path: '/admin/approvals', builder: (_, __) => const AdminProviderManagementScreen()),
       GoRoute(path: '/admin/providers', builder: (_, __) => const AdminProviderManagementScreen()),
+      GoRoute(path: '/admin/users', builder: (_, __) => const AdminUserManagementScreen()),
       GoRoute(path: '/admin/payment-methods', builder: (_, __) => const AdminPaymentMethodsScreen()),
       GoRoute(path: '/admin/payments', builder: (_, __) => const AdminPaymentVerificationScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),

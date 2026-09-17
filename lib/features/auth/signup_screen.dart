@@ -149,11 +149,13 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   Future<void> _handleSignup() async {
     if (!_formKey.currentState!.validate()) return;
 
+    // National ID image is required for ALL users (not just providers)
+    if (_nationalIdImage == null) {
+      setState(() => _uploadError = 'National ID image is required');
+      return;
+    }
+
     if (_isProvider) {
-      if (_nationalIdImage == null) {
-        setState(() => _uploadError = 'National ID image is required');
-        return;
-      }
       if (_licenseImage == null) {
         setState(() => _uploadError = _roleName == 'Vehicle Provider'
             ? 'Driving license image is required'
@@ -216,6 +218,23 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               nationalId: _nationalIdController.text.trim(),
               role: AppUserRole.user,
             );
+
+        // Upload National ID document for regular users
+        final userId = _supabase.auth.currentUser?.id;
+        if (userId != null && _nationalIdImage != null) {
+          setState(() => _uploadingDocs = true);
+          final nationalIdPath =
+              '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+          await _uploadDocument(
+              _nationalIdImage!, 'user-documents', nationalIdPath);
+
+          await _supabase.from('user_documents').insert({
+            'user_id': userId,
+            'document_type': 'NATIONAL_ID',
+            'storage_path': nationalIdPath,
+          });
+        }
       }
 
       if (mounted) {
@@ -329,10 +348,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (_isProvider) ...[
-                          _buildDocumentSection(),
-                          const SizedBox(height: 24),
-                        ],
+                        _buildDocumentSection(),
+                        const SizedBox(height: 24),
                         _buildFormFields(),
                         const SizedBox(height: 12),
                         if (_uploadError != null)
@@ -474,6 +491,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ],
         ),
         const SizedBox(height: 16),
+        // National ID is required for ALL users
         DocumentUploadCard(
           title: 'National ID',
           subtitle: 'Clear photo of front side',
@@ -481,18 +499,21 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           onPick: () => _showImagePicker(true),
           onRemove: () => setState(() => _nationalIdImage = null),
         ),
-        const SizedBox(height: 12),
-        DocumentUploadCard(
-          title: _roleName == 'Vehicle Provider'
-              ? 'Driving License'
-              : 'Trading License',
-          subtitle: _roleName == 'Vehicle Provider'
-              ? 'Updated driving license'
-              : 'Valid trading license',
-          file: _licenseImage,
-          onPick: () => _showImagePicker(false),
-          onRemove: () => setState(() => _licenseImage = null),
-        ),
+        // License is only required for providers
+        if (_isProvider) ...[
+          const SizedBox(height: 12),
+          DocumentUploadCard(
+            title: _roleName == 'Vehicle Provider'
+                ? 'Driving License'
+                : 'Trading License',
+            subtitle: _roleName == 'Vehicle Provider'
+                ? 'Updated driving license'
+                : 'Valid trading license',
+            file: _licenseImage,
+            onPick: () => _showImagePicker(false),
+            onRemove: () => setState(() => _licenseImage = null),
+          ),
+        ],
       ],
     );
   }

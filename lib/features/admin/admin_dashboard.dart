@@ -14,6 +14,7 @@ class AdminDashboard extends ConsumerStatefulWidget {
 
 class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _pendingProviders = 0;
+  int _pendingUsers = 0;
   int _pendingRecharges = 0;
   int _totalProviders = 0;
   int _totalUsers = 0;
@@ -31,6 +32,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       final client = Supabase.instance.client;
       final pending = await client
           .from('provider_profiles')
+          .select('id')
+          .eq('status', 'PENDING_APPROVAL')
+          .count(CountOption.exact);
+      final pendingUsers = await client
+          .from('profiles')
           .select('id')
           .eq('status', 'PENDING_APPROVAL')
           .count(CountOption.exact);
@@ -54,6 +60,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       if (mounted) {
         setState(() {
           _pendingProviders = pending.count ?? 0;
+          _pendingUsers = pendingUsers.count ?? 0;
           _pendingRecharges = recharges.count ?? 0;
           _totalProviders = total.count ?? 0;
           _totalUsers = users.count ?? 0;
@@ -124,6 +131,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       children: [
                         _statCard(Icons.pending_actions, 'Pending Providers',
                             '$_pendingProviders', AppTheme.warning),
+                        _statCard(Icons.person_add, 'Pending Users',
+                            '$_pendingUsers', AppTheme.teal),
                         _statCard(Icons.payment, 'Pending Recharges',
                             '$_pendingRecharges', AppTheme.teal),
                         _statCard(Icons.storefront, 'Providers',
@@ -133,11 +142,18 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                     ),
                     const SizedBox(height: 24),
                     // Provider Management
+                    const Text('Approvals',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 12),
+                    _action(Icons.person_add, 'Pending User Approvals',
+                        () => context.go('/admin/users')),
+                    _action(Icons.approval, 'Pending Provider Approvals',
+                        () => context.go('/admin/approvals')),
+                    const SizedBox(height: 20),
+                    // Provider Management
                     const Text('Provider Management',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 12),
-                    _action(Icons.approval, 'Pending Approvals',
-                        () => context.go('/admin/approvals')),
                     _action(Icons.storefront_outlined, 'All Providers',
                         () => context.go('/admin/providers')),
                     _action(Icons.directions_car_outlined, 'Vehicle Providers',
@@ -160,10 +176,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                     const Text('System',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 12),
-                    _action(Icons.people_outline, 'Users',
-                        () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Coming soon')),
-                        )),
+                    _action(Icons.people_outline, 'All Users',
+                        () => context.go('/admin/users')),
                     _action(Icons.category_outlined, 'Categories',
                         () => ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Coming soon')),
