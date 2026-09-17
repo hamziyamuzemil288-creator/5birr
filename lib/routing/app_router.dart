@@ -123,11 +123,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       }
 
       // ── Pending / rejected status (checked BEFORE dashboard redirect) ──
-      if (authState.isPendingApproval && !isApprovalRoute) {
-        return '/pending-approval';
-      }
-      if (authState.isRejected && !isApprovalRoute) {
-        return '/rejected';
+      // Admins bypass the approval gate — they authenticate directly via
+      // Supabase Auth + has_role('ADMIN') and never need admin approval.
+      if (!authState.isAdmin) {
+        if (authState.isPendingApproval && !isApprovalRoute) {
+          return '/pending-approval';
+        }
+        if (authState.isRejected && !isApprovalRoute) {
+          return '/rejected';
+        }
       }
 
       // ── On an auth route (login, signup, role-select) — redirect away ──
