@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
-import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../auth/admin_gate.dart';
@@ -17,7 +16,7 @@ class LoginScreen extends ConsumerStatefulWidget {
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _phoneController = TextEditingController();
+  final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -25,7 +24,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   void dispose() {
-    _phoneController.dispose();
+    _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -38,7 +37,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
     try {
       await ref.read(authProvider.notifier).signIn(
-            phone: _phoneController.text.trim(),
+            email: _emailController.text.trim(),
             password: _passwordController.text,
           );
       if (mounted) {
@@ -55,24 +54,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   String _friendlyError(String raw) {
-    // Show the actual error from Supabase instead of a generic message.
-    // This makes it possible to diagnose issues on-device.
     if (raw.contains('Invalid login credentials')) {
-      return 'Invalid phone number or password.\nNote: Use full phone number like +251918968444';
+      return 'Invalid email or password.';
     }
     if (raw.contains('Email not confirmed')) {
-      return 'Please verify your account first.';
+      return 'Please verify your email first. Check your inbox for a confirmation link.';
     }
     if (raw.contains('network') || raw.contains('SocketException')) {
       return 'Network error. Please check your connection.';
     }
-    if (raw.contains('Invalid phone number')) {
-      return 'Invalid phone number format. Use format: 0918968444';
-    }
     if (raw.contains('rate limit')) {
       return 'Too many attempts. Please wait a moment and try again.';
     }
-    // Show the real error — generic messages hide bugs
     return 'Login failed: $raw';
   }
 
@@ -157,16 +150,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             style: AppTheme.caption),
                         const SizedBox(height: 24),
                         BirrTextField(
-                          label: 'Phone Number',
-                          hint: '09XX XXX XXX',
-                          controller: _phoneController,
-                          keyboardType: TextInputType.phone,
+                          label: 'Email',
+                          hint: 'you@example.com',
+                          controller: _emailController,
+                          keyboardType: TextInputType.emailAddress,
                           textInputAction: TextInputAction.next,
                           validator: (v) {
                             if (v == null || v.trim().isEmpty) {
-                              return 'Phone number is required';
+                              return 'Email is required';
                             }
-                            return PhoneFormatter.validateEthiopianPhone(v);  
+                            if (!v.contains('@') || !v.contains('.')) {
+                              return 'Enter a valid email address';
+                            }
+                            return null;
                           },
                         ),
                         const SizedBox(height: 16),

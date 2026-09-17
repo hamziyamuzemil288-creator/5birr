@@ -39,18 +39,18 @@ class SupabaseService {
   User? get currentUser => client.auth.currentUser;
   Stream<AuthState> get authStateChanges => client.auth.onAuthStateChange;
 
-  Future<AuthResponse> signUpWithPhone({
-    required String phone,
+  Future<AuthResponse> signUpWithEmail({
+    required String email,
     required String password,
   }) {
-    return client.auth.signUp(phone: phone, password: password);
+    return client.auth.signUp(email: email, password: password);
   }
 
-  Future<AuthResponse> signInWithPhone({
-    required String phone,
+  Future<AuthResponse> signInWithEmail({
+    required String email,
     required String password,
   }) {
-    return client.auth.signInWithPassword(phone: phone, password: password);
+    return client.auth.signInWithPassword(email: email, password: password);
   }
 
   Future<void> signOut() => client.auth.signOut();

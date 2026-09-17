@@ -25,6 +25,7 @@ class SignupScreen extends ConsumerStatefulWidget {
 class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _nationalIdController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -46,6 +47,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _emailController.dispose();
     _phoneController.dispose();
     _nationalIdController.dispose();
     _passwordController.dispose();
@@ -173,6 +175,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     try {
       if (_isProvider) {
         await ref.read(authProvider.notifier).signUpAsProvider(
+              email: _emailController.text.trim(),
               phone: _phoneController.text.trim(),
               password: _passwordController.text,
               businessName: _nameController.text.trim(),
@@ -212,6 +215,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         }
       } else {
         await ref.read(authProvider.notifier).signUp(
+              email: _emailController.text.trim(),
               phone: _phoneController.text.trim(),
               password: _passwordController.text,
               fullName: _nameController.text.trim(),
@@ -252,12 +256,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   }
 
   String _friendlyError(String raw) {
-    // Show the actual error from Supabase instead of a generic message.
-    // This makes it possible to diagnose issues on-device.
     if (raw.contains('already registered') ||
         raw.contains('already exists') ||
         raw.contains('duplicate')) {
-      return 'An account with this phone number already exists.';
+      return 'An account with this email already exists.';
     }
     if (raw.contains('Password should be at least')) {
       return 'Password must be at least 6 characters.';
@@ -265,13 +267,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     if (raw.contains('network') || raw.contains('SocketException')) {
       return 'Network error. Please check your connection.';
     }
-    if (raw.contains('Invalid phone number')) {
-      return 'Invalid phone number format. Use format: 0918968444';
-    }
     if (raw.contains('rate limit')) {
       return 'Too many attempts. Please wait a moment and try again.';
     }
-    // Show the real error — generic messages hide bugs
     return 'Registration failed: $raw';
   }
 
@@ -537,6 +535,23 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           validator: (v) {
             if (v == null || v.trim().isEmpty) return 'Name is required';
             if (v.trim().length < 2) return 'Name is too short';
+            return null;
+          },
+        ),
+        const SizedBox(height: 16),
+        BirrTextField(
+          label: 'Email',
+          hint: 'you@example.com',
+          controller: _emailController,
+          keyboardType: TextInputType.emailAddress,
+          textInputAction: TextInputAction.next,
+          validator: (v) {
+            if (v == null || v.trim().isEmpty) {
+              return 'Email is required';
+            }
+            if (!v.contains('@') || !v.contains('.')) {
+              return 'Enter a valid email address';
+            }
             return null;
           },
         ),

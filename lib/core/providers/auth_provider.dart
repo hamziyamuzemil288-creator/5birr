@@ -177,10 +177,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign up with phone + password, then create profile and assign role.
+  /// Sign up with email + password, then create profile and assign role.
+  /// Phone number is stored in the profile but NOT used for auth.
   /// The profile insert triggers auto-creation of the approval request
   /// via the trg_profiles_auto_approval_request database trigger.
   Future<void> signUp({
+    required String email,
     required String phone,
     required String password,
     required String fullName,
@@ -189,16 +191,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
-      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
+      // Format phone to E.164 for profile storage (not auth)
       final e164 = PhoneFormatter.formatToE164(phone);
-      if (e164 == null) {
-        throw Exception(
-          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
-        );
-      }
 
       final response = await _svc.client.auth.signUp(
-        phone: e164,
+        email: email,
         password: password,
         data: {
           'full_name': fullName,
@@ -215,7 +212,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _svc.client.from('profiles').upsert({
         'id': response.user!.id,
         'full_name': fullName,
-        'phone': e164,
+        'phone': e164 ?? phone,
         'national_id': nationalId,
         'status': 'PENDING_APPROVAL',
       });
@@ -227,12 +224,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign up as a provider (vehicle or service).
+  /// Sign up as a provider (vehicle or service) with email + password.
+  /// Phone number is stored in the profile but NOT used for auth.
   /// The provider_profiles insert triggers auto-creation of the approval
   /// request and role assignment via the trg_provider_profiles_auto_setup
   /// database trigger — no client-side approval_requests or user_roles
   /// inserts are needed (and they would be blocked by RLS anyway).
   Future<void> signUpAsProvider({
+    required String email,
     required String phone,
     required String password,
     required String businessName,
@@ -241,16 +240,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
-      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
+      // Format phone to E.164 for profile storage (not auth)
       final e164 = PhoneFormatter.formatToE164(phone);
-      if (e164 == null) {
-        throw Exception(
-          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
-        );
-      }
 
       final response = await _svc.client.auth.signUp(
-        phone: e164,
+        email: email,
         password: password,
       );
 
@@ -262,7 +256,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _svc.client.from('profiles').upsert({
         'id': response.user!.id,
         'full_name': businessName,
-        'phone': e164,
+        'phone': e164 ?? phone,
         'national_id': ownerNationalId,
         'status': 'PENDING_APPROVAL',
       });
@@ -288,26 +282,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign in with phone + password.
+  /// Sign in with email + password.
   /// Profile loading is handled exclusively by the _authSub listener
   /// when AuthChangeEvent.signedIn fires — no need to call
   /// _loadUserProfile here (it would cause a redundant double-call).
   Future<void> signIn({
-    required String phone,
+    required String email,
     required String password,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
-      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
-      final e164 = PhoneFormatter.formatToE164(phone);
-      if (e164 == null) {
-        throw Exception(
-          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
-        );
-      }
-
       await _svc.client.auth.signInWithPassword(
-        phone: e164,
+        email: email,
         password: password,
       );
       // _authSub listener will pick up AuthChangeEvent.signedIn

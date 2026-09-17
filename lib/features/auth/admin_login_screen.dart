@@ -15,7 +15,7 @@ class AdminLoginScreen extends ConsumerStatefulWidget {
 
 class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _phoneController = TextEditingController();
+  final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscure = true;
   bool _isLoading = false;
@@ -23,7 +23,7 @@ class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
 
   @override
   void dispose() {
-    _phoneController.dispose();
+    _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -36,7 +36,7 @@ class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
     });
     try {
       await ref.read(authProvider.notifier).signIn(
-            phone: _phoneController.text.trim(),
+            email: _emailController.text.trim(),
             password: _passwordController.text,
           );
     } catch (e) {
@@ -91,12 +91,16 @@ class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
                 child: Column(
                   children: [
                     BirrTextField(
-                      label: 'Phone / Email',
-                      controller: _phoneController,
+                      label: 'Email',
+                      hint: 'admin@example.com',
+                      controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
-                      validator: (v) =>
-                          v == null || v.trim().isEmpty ? 'Required' : null,
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty) return 'Email is required';
+                        if (!v.contains('@') || !v.contains('.')) return 'Enter a valid email';
+                        return null;
+                      },
                     ),
                     const SizedBox(height: 16),
                     BirrTextField(
