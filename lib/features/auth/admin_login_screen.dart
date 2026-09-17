@@ -43,7 +43,7 @@ class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _error = 'Invalid admin credentials';
+          _error = 'Login failed: $e';
         });
       }
     }

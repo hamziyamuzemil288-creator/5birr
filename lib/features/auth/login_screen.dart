@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../auth/admin_gate.dart';
@@ -54,8 +55,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   String _friendlyError(String raw) {
+    // Show the actual error from Supabase instead of a generic message.
+    // This makes it possible to diagnose issues on-device.
     if (raw.contains('Invalid login credentials')) {
-      return 'Invalid phone number or password.';
+      return 'Invalid phone number or password.\nNote: Use full phone number like +251918968444';
     }
     if (raw.contains('Email not confirmed')) {
       return 'Please verify your account first.';
@@ -63,7 +66,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (raw.contains('network') || raw.contains('SocketException')) {
       return 'Network error. Please check your connection.';
     }
-    return 'Login failed. Please try again.';
+    if (raw.contains('Invalid phone number')) {
+      return 'Invalid phone number format. Use format: 0918968444';
+    }
+    if (raw.contains('rate limit')) {
+      return 'Too many attempts. Please wait a moment and try again.';
+    }
+    // Show the real error — generic messages hide bugs
+    return 'Login failed: $raw';
   }
 
   @override
@@ -148,7 +158,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         const SizedBox(height: 24),
                         BirrTextField(
                           label: 'Phone Number',
-                          hint: '+251 9XX XXX XXX',
+                          hint: '09XX XXX XXX',
                           controller: _phoneController,
                           keyboardType: TextInputType.phone,
                           textInputAction: TextInputAction.next,
@@ -156,7 +166,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             if (v == null || v.trim().isEmpty) {
                               return 'Phone number is required';
                             }
-                            return null;
+                            return PhoneFormatter.validateEthiopianPhone(v);  
                           },
                         ),
                         const SizedBox(height: 16),

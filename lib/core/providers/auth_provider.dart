@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import '../services/supabase_service.dart';
+import '../utils/phone_formatter.dart';
 
 /// Application roles matching the Supabase `app_role` enum.
 enum AppUserRole { user, vehicleProvider, serviceProvider, admin }
@@ -188,8 +189,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
+      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
+      final e164 = PhoneFormatter.formatToE164(phone);
+      if (e164 == null) {
+        throw Exception(
+          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
+        );
+      }
+
       final response = await _svc.client.auth.signUp(
-        phone: phone,
+        phone: e164,
         password: password,
         data: {
           'full_name': fullName,
@@ -206,7 +215,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _svc.client.from('profiles').upsert({
         'id': response.user!.id,
         'full_name': fullName,
-        'phone': phone,
+        'phone': e164,
         'national_id': nationalId,
         'status': 'PENDING_APPROVAL',
       });
@@ -232,8 +241,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
+      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
+      final e164 = PhoneFormatter.formatToE164(phone);
+      if (e164 == null) {
+        throw Exception(
+          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
+        );
+      }
+
       final response = await _svc.client.auth.signUp(
-        phone: phone,
+        phone: e164,
         password: password,
       );
 
@@ -245,7 +262,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       await _svc.client.from('profiles').upsert({
         'id': response.user!.id,
         'full_name': businessName,
-        'phone': phone,
+        'phone': e164,
         'national_id': ownerNationalId,
         'status': 'PENDING_APPROVAL',
       });
@@ -281,8 +298,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
+      // Format phone to E.164 — Supabase Auth requires +251XXXXXXXXX
+      final e164 = PhoneFormatter.formatToE164(phone);
+      if (e164 == null) {
+        throw Exception(
+          'Invalid phone number. Enter a valid Ethiopian number like 0918968444.',
+        );
+      }
+
       await _svc.client.auth.signInWithPassword(
-        phone: phone,
+        phone: e164,
         password: password,
       );
       // _authSub listener will pick up AuthChangeEvent.signedIn
