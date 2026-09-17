@@ -272,19 +272,21 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   /// Sign in with phone + password.
+  /// Profile loading is handled exclusively by the _authSub listener
+  /// when AuthChangeEvent.signedIn fires — no need to call
+  /// _loadUserProfile here (it would cause a redundant double-call).
   Future<void> signIn({
     required String phone,
     required String password,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
-      final response = await _svc.client.auth.signInWithPassword(
+      await _svc.client.auth.signInWithPassword(
         phone: phone,
         password: password,
       );
-      if (response.user != null) {
-        await _loadUserProfile(response.user!);
-      }
+      // _authSub listener will pick up AuthChangeEvent.signedIn
+      // and call _loadUserProfile automatically.
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
       rethrow;
