@@ -30,79 +30,58 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   }
 
   Future<void> _load() async {
-    try {
-      final client = Supabase.instance.client;
-      final pending = await client
-          .from('provider_profiles')
-          .select('id')
-          .eq('status', 'PENDING_APPROVAL')
-          .count(CountOption.exact);
-      final pendingUsers = await client
-          .from('profiles')
-          .select('id')
-          .eq('status', 'PENDING_APPROVAL')
-          .count(CountOption.exact);
-      final recharges = await client
-          .from('wallet_recharge_requests')
-          .select('id')
-          .eq('status', 'PENDING')
-          .count(CountOption.exact);
-      final total = await client
-          .from('provider_profiles')
-          .select('id')
-          .count(CountOption.exact);
-      final users = await client
-          .from('profiles')
-          .select('id')
-          .count(CountOption.exact);
-      final prods = await client
-          .from('products')
-          .select('id')
-          .count(CountOption.exact);
-      final orders = await client
-          .from('orders')
-          .select('id')
-          .eq('payment_status', 'PAID')
-          .count(CountOption.exact);
+    setState(() => _loading = true);
+    final client = Supabase.instance.client;
 
-      // Total income = sum of admin_fee from paid orders + sum from subscriptions
-      double income = 0;
+    // Each metric is loaded independently: one failing query must never
+    // abort the whole load (previously a single bad query zeroed every
+    // counter and silently hid pending approvals from the admin).
+    Future<int> count(Future<dynamic> Function() query) async {
       try {
-        final txFees = await client
-            .from('orders')
-            .select('admin_fee')
-            .eq('payment_status', 'PAID')
-            .limit(1000);
-        for (final tx in txFees as List) {
-          income += (tx['admin_fee'] as num?)?.toDouble() ?? 0;
-        }
-      } catch (_) {}
-      try {
-        final subFees = await client
-            .from('subscriptions')
-            .select('amount')
-            .eq('status', 'PAID')
-            .limit(1000);
-        for (final sub in subFees as List) {
-          income += (sub['amount'] as num?)?.toDouble() ?? 0;
-        }
-      } catch (_) {}
-
-      if (mounted) {
-        setState(() {
-          _pendingProviders = pending.count ?? 0;
-          _pendingUsers = pendingUsers.count ?? 0;
-          _pendingRecharges = recharges.count ?? 0;
-          _totalProviders = total.count ?? 0;
-          _totalUsers = users.count ?? 0;
-          _totalProducts = prods.count ?? 0;
-          _totalOrders = orders.count ?? 0;
-          _totalIncome = income;
-          _loading = false;
-        });
+        final res = await query();
+        return (res as dynamic).count as int? ?? 0;
+      } catch (_) {
+        return 0;
       }
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
+    }
+
+    final results = await Future.wait<int>([
+      count(() => client.from('provider_profiles').select('id').eq('status', 'PENDING_APPROVAL').count(CountOption.exact)),
+      count(() => client.from('profiles').select('id').eq('status', 'PENDING_APPROVAL').count(CountOption.exact)),
+      count(() => client.from('wallet_recharge_requests').select('id').eq('status', 'PENDING').count(CountOption.exact)),
+      count(() => client.from('provider_profiles').select('id').count(CountOption.exact)),
+      count(() => client.from('profiles').select('id').count(CountOption.exact)),
+      count(() => client.from('products').select('id').count(CountOption.exact)),
+      count(() => client.from('orders').select('id').inFilter('status', ['APPROVED', 'STARTED', 'COMPLETED']).count(CountOption.exact)),
+    ]);
+
+    // Platform income = fees actually charged: per-transaction fees plus
+    // subscription fees from the wallet ledger (orders table has no fee
+    // column, and subscriptions hold schedule rows, not charges).
+    double income = 0;
+    try {
+      final feeRows = await client
+          .from('wallet_transactions')
+          .select('platform_fee')
+          .inFilter('transaction_type', ['TRANSACTION_FEE', 'SUBSCRIPTION_FEE'])
+          .limit(1000);
+      for (final t in feeRows as List) {
+        income += (t['platform_fee'] as num?)?.toDouble() ?? 0;
+      }
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _pendingProviders = results[0];
+        _pendingUsers = results[1];
+        _pendingRecharges = results[2];
+        _totalProviders = results[3];
+        _totalUsers = results[4];
+        _totalProducts = results[5];
+        _totalOrders = results[6];
+        _totalIncome = income;
+        _loading = false;
+      });
     }
   }
 

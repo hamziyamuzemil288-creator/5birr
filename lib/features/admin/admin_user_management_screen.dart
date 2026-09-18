@@ -13,6 +13,7 @@ class _State extends State<AdminUserManagementScreen> {
   List<Map<String, dynamic>> _users = [];
   bool _loading = true;
   String _filter = 'PENDING_APPROVAL';
+  String? _error;
 
   @override
   void initState() {
@@ -21,7 +22,10 @@ class _State extends State<AdminUserManagementScreen> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final data = await Supabase.instance.client
           .from('profiles')
@@ -35,7 +39,12 @@ class _State extends State<AdminUserManagementScreen> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Failed to load registrations: $e';
+        });
+      }
     }
   }
 
@@ -153,11 +162,38 @@ class _State extends State<AdminUserManagementScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: AppTheme.primaryGreen))
-                : _users.isEmpty
-                    ? const Center(
-                        child: Text('No users found',
-                            style: TextStyle(color: AppTheme.textMuted)))
-                    : RefreshIndicator(
+                : _error != null
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                color: AppTheme.error, size: 40),
+                            const SizedBox(height: 12),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 24),
+                              child: Text(
+                                _error!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                    fontSize: 13, color: AppTheme.error),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            ElevatedButton.icon(
+                              onPressed: _load,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Retry'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : _users.isEmpty
+                        ? const Center(
+                            child: Text('No users found',
+                                style: TextStyle(color: AppTheme.textMuted)))
+                        : RefreshIndicator(
                         onRefresh: _load,
                         child: ListView.builder(
                           padding: const EdgeInsets.all(16),
