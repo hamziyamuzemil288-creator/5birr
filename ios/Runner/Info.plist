@@ -26,6 +26,13 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Live GPS: required by iOS before any location prompt can appear.
+	     WhenInUse is what the app requests; the Always key prevents an
+	     App Store submission rejection if the OS escalates the prompt. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Birr5 uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Birr5 uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

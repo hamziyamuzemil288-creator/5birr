@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 
 import '../../core/widgets/cart_icon_button.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/models/product.dart';
+import '../../core/services/location_service.dart';
 
 class UserSearchScreen extends StatefulWidget {
   const UserSearchScreen({super.key});
@@ -19,6 +20,26 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
   bool _loading = false;
   bool _searched = false;
   Timer? _debounce;
+
+  // Live GPS: distance-from-user comes from the real device position.
+  geo.Position? _myPos;
+
+  @override
+  void initState() {
+    super.initState();
+    _primeLocation();
+  }
+
+  /// One-time live GPS prime (permission prompt fires on first use).
+  Future<void> _primeLocation() async {
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!mounted) return;
+    if (r.success) {
+      setState(() => _myPos = r.position);
+      // Re-run the last query so distance_km fills in from real GPS.
+      if (_ctrl.text.trim().isNotEmpty) _search(_ctrl.text.trim());
+    }
+  }
 
   void _onQueryChanged(String value) {
     _debounce?.cancel();
@@ -39,13 +60,20 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       _searched = true;
     });
     try {
-      // Use server-side search_products RPC for full-text search with
-      // proper indexes instead of slow client-side ILIKE.
+      // Server-side full-text + geo search. Passing the live GPS position
+      // makes the server compute real distance_km per result and lets the
+      // user sort by distance; without permission it still works (no distance).
+      final pos = _myPos;
       final data = await Supabase.instance.client
           .rpc('search_products', params: {
             'p_query': q.trim(),
             'p_limit': 30,
             'p_offset': 0,
+            if (pos != null) ...{
+              'p_lat': pos.latitude,
+              'p_lng': pos.longitude,
+              'p_sort_by': 'distance',
+            },
           });
       if (mounted) {
         setState(() {
@@ -56,6 +84,18 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
     } catch (e) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// Live-GPS distance badge, e.g. " · 2.4 km" (null until GPS granted
+  /// and the listing has a known location).
+  String _distanceSuffix(Map<String, dynamic> p) {
+    if (_myPos == null) return '';
+    final d = p['distance_km'];
+    if (d == null) return '';
+    final km = (d as num).toDouble();
+    return km < 1
+        ? ' · ${(km * 1000).round()} m'
+        : ' · ${km.toStringAsFixed(1)} km';
   }
 
   @override
@@ -127,7 +167,8 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(fontSize: 14)),
                               subtitle: Text(
-                                  '${p['provider_name'] ?? ''} · ${p['price']} ${p['currency'] ?? 'ETB'}',
+                                  '${p['provider_name'] ?? ''} · ${p['price']} ${p['currency'] ?? 'ETB'}'
+                                  '${_distanceSuffix(p)}',
                                   style: const TextStyle(
                                       fontSize: 12,
                                       color: AppTheme.primaryGreen,

@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:postgrest/postgrest.dart' show CountOption;
-import 'package:geolocator/geolocator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
@@ -79,16 +78,26 @@ class _VehicleProviderDashboardState
     try {
       final isCurrentlyOnline = _driverStatus?['is_online'] ?? false;
       if (!isCurrentlyOnline) {
-        // Going online - need location
-        final pos = await LocationService.instance.getCurrentPosition();
-        if (pos == null) {
+        // Going online - need a real GPS fix (and the runtime permission).
+        final r = await LocationService.instance.getCurrentPositionDetailed();
+        if (!r.success) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Location permission required to go online')));
+            final openSettings = r.status == LocationStatus.deniedForever ||
+                r.status == LocationStatus.serviceDisabled;
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(_onlineBlockedMessage(r.status)),
+              action: openSettings
+                  ? SnackBarAction(
+                      label: 'Open settings',
+                      onPressed: () =>
+                          LocationService.instance.openLocationSettings())
+                  : null,
+            ));
           }
           setState(() => _togglingOnline = false);
           return;
         }
+        final pos = r.position!;
         await LocationService.instance.setDriverOnline(
             _providerProfile!['id'], true,
             lat: pos.latitude, lng: pos.longitude);
@@ -118,7 +127,21 @@ class _VehicleProviderDashboardState
         .listen((pos) {
       LocationService.instance.updateDriverLocation(
           providerId, pos.latitude, pos.longitude);
-    });
+    },
+        onError: (_) {}); // keep last fix if GPS hiccups mid-shift
+  }
+
+  String _onlineBlockedMessage(LocationStatus status) {
+    switch (status) {
+      case LocationStatus.serviceDisabled:
+        return 'Turn on GPS to go online';
+      case LocationStatus.deniedForever:
+        return 'Location permission blocked — enable it in app settings';
+      case LocationStatus.denied:
+        return 'Location permission is required to go online';
+      default:
+        return 'Could not get your location — try again';
+    }
   }
 
   @override

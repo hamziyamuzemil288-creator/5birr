@@ -1,4 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network access (Supabase, map tiles). Flutter tooling adds INTERNET
+         only to the debug/profile manifests, so release builds need it here. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Live GPS: fine location for pickup/routing; coarse is the fallback
+         the OS grants when fine is unavailable. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
         android:label="birr5"
         android:name="${applicationName}"

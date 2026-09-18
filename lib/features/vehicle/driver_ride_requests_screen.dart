@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
@@ -18,6 +18,10 @@ class _State extends State<DriverRideRequestsScreen> {
   List<Map<String, dynamic>> _requests = [];
   bool _loading = true;
   String? _providerId;
+
+  // Live GPS: lets the driver see how far each open request is.
+  geo.Position? _myPos;
+  bool _directionsLaunching = false;
 
   @override
   void initState() {
@@ -47,6 +51,13 @@ class _State extends State<DriverRideRequestsScreen> {
     });
 
     setState(() => _loading = false);
+
+    // Prime live GPS (asks permission on first use; failures stay silent —
+    // distance hints just don't render).
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (mounted && r.success) {
+      setState(() => _myPos = r.position);
+    }
   }
 
   @override
@@ -92,6 +103,37 @@ class _State extends State<DriverRideRequestsScreen> {
             : 'Failed to claim ride: $e';
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    }
+  }
+
+  /// Distance from my live GPS to this request's pickup (null without GPS).
+  String? _distanceText(Map<String, dynamic> ride) {
+    final pos = _myPos;
+    final pickup = GeoPoint.parse(ride['pickup_location']);
+    if (pos == null || pickup == null) return null;
+    final km = LocationService.instance.calculateDistance(
+        pos.latitude, pos.longitude, pickup.lat, pickup.lng);
+    return km < 1 ? '${(km * 1000).round()} m away' : '${km.toStringAsFixed(1)} km away';
+  }
+
+  Future<void> _openDirections(Map<String, dynamic> ride) async {
+    final pickup = GeoPoint.parse(ride['pickup_location']);
+    if (pickup == null) return;
+    setState(() => _directionsLaunching = true);
+    final pos = _myPos;
+    final ok = await LocationService.instance.openDirectionsTo(
+      destLat: pickup.lat,
+      destLng: pickup.lng,
+      label: ride['pickup_text'] ?? 'Pickup',
+      originLat: pos?.latitude,
+      originLng: pos?.longitude,
+    );
+    if (mounted) {
+      setState(() => _directionsLaunching = false);
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No maps app available on this device')));
       }
     }
   }
@@ -171,20 +213,58 @@ class _State extends State<DriverRideRequestsScreen> {
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 12),
-                              SizedBox(
-                                width: double.infinity,
-                                child: ElevatedButton(
-                                  onPressed: () => _claim(r),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppTheme.teal,
-                                    padding:
-                                        const EdgeInsets.symmetric(vertical: 12),
+                              if (_distanceText(r) != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.near_me_outlined,
+                                          size: 13, color: AppTheme.teal),
+                                      const SizedBox(width: 6),
+                                      Text(_distanceText(r)!,
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              color: AppTheme.teal,
+                                              fontWeight: FontWeight.w600)),
+                                    ],
                                   ),
-                                  child: const Text('CLAIM RIDE',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w700)),
                                 ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: SizedBox(
+                                      height: 42,
+                                      child: ElevatedButton(
+                                        onPressed: () => _claim(r),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: AppTheme.teal,
+                                          padding: const EdgeInsets
+                                              .symmetric(vertical: 10),
+                                        ),
+                                        child: const Text('CLAIM RIDE',
+                                            style: TextStyle(
+                                                fontWeight:
+                                                    FontWeight.w700)),
+                                      ),
+                                    ),
+                                  ),
+                                  // Navigate to the pickup with the device
+                                  // maps app (from my live GPS).
+                                  IconButton(
+                                    tooltip: 'Directions to pickup',
+                                    onPressed: () => _openDirections(r),
+                                    icon: _directionsLaunching
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppTheme.teal))
+                                        : const Icon(Icons.directions,
+                                            color: AppTheme.primaryGreen),
+                                  ),
+                                ],
                               ),
                             ],
                           ),

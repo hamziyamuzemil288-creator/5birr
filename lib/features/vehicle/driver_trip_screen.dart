@@ -1,9 +1,15 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 import 'package:go_router/go_router.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:latlong2/latlong.dart';
+
 import '../../core/theme/app_theme.dart';
+import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/widgets/primary_button.dart';
 
 class DriverTripScreen extends StatefulWidget {
   const DriverTripScreen({super.key});
@@ -14,12 +20,26 @@ class DriverTripScreen extends StatefulWidget {
 class _State extends State<DriverTripScreen> {
   Map<String, dynamic>? _ride;
   StreamSubscription? _sub;
+  StreamSubscription<geo.Position>? _posSub;
   bool _loading = true;
+
+  // Live GPS state
+  String? _providerId;
+  geo.Position? _driverPos;
+  LocationStatus? _locStatus;
+  bool _directionsLaunching = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _posSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -29,6 +49,7 @@ class _State extends State<DriverTripScreen> {
         _sub = RideService.instance.watchRide(ride['id']).listen((updated) {
           if (mounted && updated.isNotEmpty) {
             setState(() => _ride = updated);
+            _syncProviderId(updated);
           }
         });
       }
@@ -38,15 +59,82 @@ class _State extends State<DriverTripScreen> {
           _loading = false;
         });
       }
+      _syncProviderId(ride);
+      await _startLiveLocation();
     } catch (e) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
+  Future<void> _syncProviderId(Map<String, dynamic>? ride) async {
+    if (_providerId != null || ride == null) return;
+    final claimed = ride['claimed_by_provider_id'] as String?;
+    if (claimed != null && mounted) setState(() => _providerId = claimed);
+  }
+
+  /// Real device GPS: get a first fix (asking permission when needed), push
+  /// it to driver_status so the rider can see it, then keep streaming while
+  /// this screen is open. Failures are handled inline — never silent.
+  Future<void> _startLiveLocation() async {
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!mounted) return;
+    setState(() {
+      _locStatus = r.status;
+      if (r.success) _driverPos = r.position;
+    });
+    if (!r.success) return;
+    await _pushDriverLocation();
+
+    _posSub = LocationService.instance
+        .getPositionStream(distanceFilter: 50, interval: const Duration(seconds: 15))
+        .listen(
+      (pos) {
+        if (!mounted) return;
+        setState(() => _driverPos = pos);
+        _pushDriverLocation();
+      },
+      onError: (_) {}, // stream errors (e.g. service off mid-trip) keep last fix
+    );
+  }
+
+  Future<void> _pushDriverLocation() async {
+    final pos = _driverPos;
+    final providerId = _providerId;
+    if (pos == null || providerId == null) return;
+    try {
+      await LocationService.instance
+          .updateDriverLocation(providerId, pos.latitude, pos.longitude);
+    } catch (_) {
+      // Non-fatal: the rider still sees the last pushed fix.
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await LocationService.instance.openLocationSettings();
+    if (_locStatus == LocationStatus.deniedForever) return;
+    await _startLiveLocation();
+  }
+
+  Future<void> _openDirections() async {
+    final ride = _ride;
+    final pickup = GeoPoint.parse(ride?['pickup_location']);
+    if (pickup == null) return;
+    final pos = _driverPos;
+    setState(() => _directionsLaunching = true);
+    final ok = await LocationService.instance.openDirectionsTo(
+      destLat: pickup.lat,
+      destLng: pickup.lng,
+      label: ride?['pickup_text'] ?? 'Pickup',
+      originLat: pos?.latitude,
+      originLng: pos?.longitude,
+    );
+    if (mounted) {
+      setState(() => _directionsLaunching = false);
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('No maps app available on this device')));
+      }
+    }
   }
 
   Future<void> _transition(String newStatus) async {
@@ -100,6 +188,108 @@ class _State extends State<DriverTripScreen> {
     final profile = _ride!['profiles'] as Map<String, dynamic>?;
     final passengerName = profile?['full_name'] ?? 'Passenger';
 
+    final pickupPoint = GeoPoint.parse(_ride!['pickup_location']);
+    final destPoint = GeoPoint.parse(_ride!['destination_location']);
+
+    // Distance from my live GPS fix to the pickup (shown once GPS is live).
+    String? distanceText;
+    if (pickupPoint != null && _driverPos != null) {
+      final km = LocationService.instance.calculateDistance(
+        _driverPos!.latitude,
+        _driverPos!.longitude,
+        pickupPoint.lat,
+        pickupPoint.lng,
+      );
+      distanceText = km < 1
+          ? '${(km * 1000).round()} m to pickup'
+          : '${km.toStringAsFixed(1)} km to pickup';
+    }
+
+    final driverMarker = _driverPos != null
+        ? LatLng(_driverPos!.latitude, _driverPos!.longitude)
+        : null;
+    final pickupMarker =
+        pickupPoint != null ? LatLng(pickupPoint.lat, pickupPoint.lng) : null;
+    final destMarker =
+        destPoint != null ? LatLng(destPoint.lat, destPoint.lng) : null;
+    final points = [driverMarker, pickupMarker, destMarker]
+        .whereType<LatLng>()
+        .toList();
+
+    Widget map;
+    if (points.isEmpty) {
+      map = Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: AppTheme.creamDark,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.map_outlined, size: 44, color: AppTheme.textMuted),
+              SizedBox(height: 8),
+              Text('Waiting for location…',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+            ],
+          ),
+        ),
+      );
+    } else {
+      map = ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: FlutterMap(
+          options: MapOptions(
+            initialCenter: points.first,
+            initialZoom: points.length == 1 ? 15 : 13.5,
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.amistbirr.myapp',
+            ),
+            MarkerLayer(
+              markers: [
+                if (driverMarker != null)
+                  Marker(
+                    point: driverMarker,
+                    width: 44,
+                    height: 44,
+                    alignment: Alignment.topCenter,
+                    child: const Icon(Icons.local_taxi,
+                        color: AppTheme.teal, size: 44),
+                  ),
+                if (pickupMarker != null)
+                  Marker(
+                    point: pickupMarker,
+                    width: 40,
+                    height: 40,
+                    alignment: Alignment.topCenter,
+                    child: const Icon(Icons.trip_origin,
+                        color: AppTheme.success, size: 36),
+                  ),
+                if (destMarker != null)
+                  Marker(
+                    point: destMarker,
+                    width: 40,
+                    height: 40,
+                    alignment: Alignment.topCenter,
+                    child: const Icon(Icons.location_on,
+                        color: AppTheme.error, size: 40),
+                  ),
+              ],
+            ),
+            const RichAttributionWidget(
+              attributions: [
+                TextSourceAttribution('© OpenStreetMap contributors'),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -119,6 +309,46 @@ class _State extends State<DriverTripScreen> {
                     color: AppTheme.teal)),
           ),
           const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            height: 220,
+            child: map,
+          ),
+          const SizedBox(height: 8),
+          // GPS state line + recovery
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _gpsStateText(),
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textMuted),
+                ),
+              ),
+              if (_driverPos == null)
+                TextButton.icon(
+                  onPressed: (_locStatus == LocationStatus.deniedForever ||
+                          _locStatus == LocationStatus.serviceDisabled)
+                      ? _openSettings
+                      : _startLiveLocation,
+                  icon: const Icon(Icons.gps_fixed, size: 16),
+                  label: Text(_locStatus == LocationStatus.deniedForever ||
+                          _locStatus == LocationStatus.serviceDisabled
+                      ? 'Enable location'
+                      : 'Retry GPS'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (distanceText != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(distanceText,
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.primaryGreen)),
+            ),
           // Passenger info
           Container(
             width: double.infinity,
@@ -142,6 +372,19 @@ class _State extends State<DriverTripScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          // Directions to pickup — real routing from my live GPS position.
+          if (pickupPoint != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: PrimaryButton(
+                  label: 'GET DIRECTIONS TO PICKUP',
+                  isLoading: _directionsLaunching,
+                  onPressed: _openDirections,
+                ),
+              ),
+            ),
           // Pickup
           _locationTile(Icons.circle, AppTheme.success, 'Pickup', pickup),
           const SizedBox(height: 8),
@@ -160,6 +403,25 @@ class _State extends State<DriverTripScreen> {
         ],
       ),
     );
+  }
+
+  String _gpsStateText() {
+    switch (_locStatus) {
+      case LocationStatus.serviceDisabled:
+        return 'Location services are off — turn on GPS to share your location';
+      case LocationStatus.denied:
+        return 'Location permission needed to share your live position';
+      case LocationStatus.deniedForever:
+        return 'Location blocked — enable it in app settings to navigate';
+      case LocationStatus.error:
+        return 'Could not get GPS fix — tap Retry GPS';
+      case LocationStatus.ready:
+        return _driverPos != null
+            ? 'Sharing live location with the rider'
+            : 'Getting GPS fix…';
+      default:
+        return '';
+    }
   }
 
   Widget _locationTile(

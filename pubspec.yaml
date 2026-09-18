@@ -1,7 +1,7 @@
 name: birr5
 description: 5BIRR — location-based multi-sector marketplace and service platform.
 publish_to: 'none'
-version: 1.0.0+15
+version: 1.0.0+16
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -21,6 +21,7 @@ dependencies:
   image_picker: ^1.0.7
   share_plus: ^13.2.0
   path_provider: ^2.1.0
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

@@ -30,6 +30,7 @@ class _State extends State<UserRideRequestScreen> {
   bool _loading = true;
   bool _submitting = false;
   String? _error;
+  LocationStatus? _locStatus;
 
   @override
   void initState() {
@@ -39,10 +40,12 @@ class _State extends State<UserRideRequestScreen> {
 
   Future<void> _load() async {
     try {
-      // Get current location for pickup
-      final pos = await LocationService.instance.getCurrentPosition();
-      if (pos != null) {
-        _pickupPos = pos;
+      // Get current location for pickup (asks permission on first use;
+      // failures surface inline via the pickup section, not silently).
+      final r = await LocationService.instance.getCurrentPositionDetailed();
+      if (mounted) setState(() => _locStatus = r.status);
+      if (r.success) {
+        _pickupPos = r.position;
         _pickupCtrl.text = 'Current Location';
       }
       // Load vehicle categories
@@ -197,16 +200,37 @@ class _State extends State<UserRideRequestScreen> {
                   const SizedBox(height: 4),
                   TextButton.icon(
                     onPressed: () async {
-                      final pos =
-                          await LocationService.instance.getCurrentPosition();
-                      if (pos != null && mounted) {
-                        setState(() => _pickupPos = pos);
+                      final r =
+                          await LocationService.instance
+                              .getCurrentPositionDetailed();
+                      if (!mounted) return;
+                      setState(() => _locStatus = r.status);
+                      if (r.success) {
+                        setState(() => _pickupPos = r.position);
                         _pickupCtrl.text = 'Current Location';
+                      } else if (r.status == LocationStatus.deniedForever ||
+                          r.status == LocationStatus.serviceDisabled) {
+                        // Recovery path: jump straight to the OS settings.
+                        await LocationService.instance.openLocationSettings();
+                      } else {
+                        setState(() => _error =
+                            'Could not get your location — check GPS and try again');
                       }
                     },
                     icon: const Icon(Icons.my_location, size: 16),
                     label: const Text('Use current location'),
                   ),
+                  if (_pickupPos == null &&
+                      (_locStatus == LocationStatus.deniedForever ||
+                          _locStatus == LocationStatus.serviceDisabled))
+                    const Padding(
+                      padding: EdgeInsets.only(left: 4, bottom: 4),
+                      child: Text(
+                        'Location is off — enable it in settings so drivers can find you',
+                        style:
+                            TextStyle(fontSize: 12, color: AppTheme.warning),
+                      ),
+                    ),
                   const SizedBox(height: 16),
                   const Text('Destination',
                       style: TextStyle(
@@ -330,7 +354,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                 // Android identifies tile requests by the app's package name.
                 // TODO: replace with the real applicationId once the
                 // android/app/build.gradle scaffold exists in this repo.
-                userAgentPackageName: 'com.example.birr5',
+                userAgentPackageName: 'com.amistbirr.myapp',
               ),
               if (_picked != null)
                 MarkerLayer(

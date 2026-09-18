@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart' as geo;
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/review_service.dart';
+import '../../core/services/location_service.dart';
 
 /// Statuses from which CANCELLED is a legal transition
 /// (see transition_order_status whitelist in 0003_functions.sql).
@@ -66,12 +68,18 @@ class _UserOrderDetailScreenState
   bool _acting = false;
   String? _error;
 
+  // Escrow-gated live location (buyer share / provider directions).
+  geo.Position? _myPos;
+  bool _locSharing = false;
+  bool _directionsLaunching = false;
+
   bool get _isProvider => widget.viewerRole == 'provider';
 
   @override
   void initState() {
     super.initState();
     _load();
+    if (_isProvider) _primeProviderGps();
   }
 
   Future<void> _load() async {
@@ -151,6 +159,138 @@ class _UserOrderDetailScreenState
   bool get _canCancel {
     final status = _order?['status'] as String?;
     return status != null && _cancellableStatuses.contains(status);
+  }
+
+  /// Escrow reveal window: payment verified (APPROVED) or delivery in
+  /// progress (STARTED) — the same statuses the DB gate (0032) enforces.
+  bool get _deliveryRevealed {
+    final status = _order?['status'] as String?;
+    return status == 'APPROVED' || status == 'STARTED';
+  }
+
+  /// Buyer side: grab a fresh live GPS fix and share it for this order.
+  Future<void> _shareMyLocation() async {
+    setState(() => _locSharing = true);
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!r.success) {
+      if (mounted) {
+        setState(() => _locSharing = false);
+        final openSettings = r.status == LocationStatus.deniedForever ||
+            r.status == LocationStatus.serviceDisabled;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(openSettings
+              ? 'Enable location services to share your delivery point'
+              : 'Location permission is needed to share your delivery point'),
+          action: openSettings
+              ? SnackBarAction(
+                  label: 'Open settings',
+                  onPressed: () =>
+                      LocationService.instance.openLocationSettings())
+              : null,
+        ));
+      }
+      return;
+    }
+    try {
+      await Supabase.instance.client.rpc('set_order_delivery_location', params: {
+        'p_order_id': widget.orderId,
+        'p_lat': r.position!.latitude,
+        'p_lng': r.position!.longitude,
+      });
+      if (mounted) {
+        setState(() {
+          _myPos = r.position;
+          _locSharing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Live location shared with the provider')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _locSharing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not share location: $e')));
+      }
+    }
+  }
+
+  /// Provider side: fetch the buyer-shared GPS point (only exists after the
+  /// buyer shared it post-approval) and launch directions to it.
+  Future<void> _openBuyerDirections() async {
+    setState(() => _directionsLaunching = true);
+    try {
+      final data = await Supabase.instance.client
+          .rpc('get_order_delivery_location', params: {'p_order_id': widget.orderId});
+      final rows = (data as List?) ?? const [];
+      if (!mounted) return;
+      if (rows.isEmpty || rows.first['lat'] == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Buyer has not shared their live location yet — ask them to tap "Share live location" on the order')));
+        return;
+      }
+      final lat = (rows.first['lat'] as num).toDouble();
+      final lng = (rows.first['lng'] as num).toDouble();
+      final pos = _myPos;
+      await LocationService.instance.openDirectionsTo(
+        destLat: lat,
+        destLng: lng,
+        label: 'Delivery location',
+        originLat: pos?.latitude,
+        originLng: pos?.longitude,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Location not available: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _directionsLaunching = false);
+    }
+  }
+
+  /// Provider side: directions to their own business location pickup.
+  Future<void> _openBusinessDirections() async {
+    final providerId = _order?['provider_id'] as String?;
+    if (providerId == null) return;
+    setState(() => _directionsLaunching = true);
+    try {
+      final data = await Supabase.instance.client.rpc(
+          'get_provider_public_location',
+          params: {'p_provider_id': providerId});
+      final rows = (data as List?) ?? const [];
+      if (!mounted) return;
+      if (rows.isEmpty || rows.first['lat'] == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'No business location set — add it in the business profile')));
+        return;
+      }
+      final lat = (rows.first['lat'] as num).toDouble();
+      final lng = (rows.first['lng'] as num).toDouble();
+      final label = (rows.first['address_text'] as String?) ?? 'Business location';
+      final pos = _myPos;
+      await LocationService.instance.openDirectionsTo(
+        destLat: lat,
+        destLng: lng,
+        label: label,
+        originLat: pos?.latitude,
+        originLng: pos?.longitude,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Location not available: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _directionsLaunching = false);
+    }
+  }
+
+  /// Provider side: prime own live GPS so routes start from the real position.
+  Future<void> _primeProviderGps() async {
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (mounted && r.success) setState(() => _myPos = r.position);
   }
 
   /// Provider status actions allowed by the transition whitelist.
@@ -283,6 +423,10 @@ class _UserOrderDetailScreenState
                       children: [
                         _headerCard(),
                         const SizedBox(height: 16),
+                        if (_deliveryRevealed) ...[
+                          _locationCard(),
+                          const SizedBox(height: 16),
+                        ],
                         _itemsCard(),
                         const SizedBox(height: 16),
                         if (_proofUrl != null) _proofCard(),
@@ -357,6 +501,92 @@ class _UserOrderDetailScreenState
                     ),
                   ),
                 ),
+    );
+  }
+
+  /// Escrow-gated live location card. Visible only once payment is verified
+  /// (APPROVED) or delivery started — matching the DB-side gate exactly.
+  Widget _locationCard() {
+    final status = (_order?['status'] as String?) ?? '';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.teal.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.teal.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.share_location_outlined,
+                  size: 18, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('Live Location',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+              ),
+              Text(status == 'STARTED' ? 'Delivery in progress' : 'Payment verified',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppTheme.textMuted)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _isProvider
+                ? 'Navigate to the buyer\'s shared live GPS position, or to your business pickup point.'
+                : 'Share your live GPS position so the provider can navigate to you. Your location is never visible before payment is confirmed.',
+            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          if (_isProvider) ...[
+            SizedBox(
+              width: double.infinity,
+              child: PrimaryButton(
+                label: 'DIRECTIONS TO BUYER LOCATION',
+                icon: Icons.navigation_outlined,
+                isLoading: _directionsLaunching,
+                onPressed: _openBuyerDirections,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: PrimaryButton(
+                label: 'DIRECTIONS TO MY BUSINESS',
+                icon: Icons.store_outlined,
+                isOutlined: true,
+                onPressed: _openBusinessDirections,
+              ),
+            ),
+          ] else ...[
+            SizedBox(
+              width: double.infinity,
+              child: PrimaryButton(
+                label: 'SHARE LIVE LOCATION',
+                icon: Icons.my_location,
+                isLoading: _locSharing,
+                onPressed: _shareMyLocation,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: PrimaryButton(
+                label: 'DIRECTIONS TO PROVIDER',
+                icon: Icons.store_outlined,
+                isOutlined: true,
+                onPressed: _openBusinessDirections,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 

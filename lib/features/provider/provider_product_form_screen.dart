@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:storage_client/storage_client.dart' show FileOptions;
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/services/location_service.dart';
 
 class ProviderProductFormScreen extends StatefulWidget {
   final String? productId;
@@ -31,6 +31,11 @@ class _State extends State<ProviderProductFormScreen> {
   bool _saving = false;
   final _picker = ImagePicker();
 
+  // Listing GPS: defaults from the business profile; can be re-captured.
+  double? _lat;
+  double? _lng;
+  bool _capturingGps = false;
+
   bool get _isEdit => widget.productId != null;
 
   @override
@@ -54,6 +59,14 @@ class _State extends State<ProviderProductFormScreen> {
         return;
       }
       _providerId = prov['id'];
+      // Prime the listing location from the business profile GPS.
+      final fullProv = await client
+          .from('provider_profiles')
+          .select('location_lat, location_lng')
+          .eq('user_id', userId)
+          .maybeSingle();
+      _lat = (fullProv?['location_lat'] as num?)?.toDouble();
+      _lng = (fullProv?['location_lng'] as num?)?.toDouble();
       final cats = await client
           .from('categories')
           .select('id,name')
@@ -87,6 +100,11 @@ class _State extends State<ProviderProductFormScreen> {
         _qtyCtrl.text = '${prod['quantity'] ?? ''}';
         _categoryId = prod['category_id'];
         _isAvailable = prod['is_available'] ?? true;
+        final prodLoc = GeoPoint.parse(prod['location']);
+        if (prodLoc != null) {
+          _lat = prodLoc.lat;
+          _lng = prodLoc.lng;
+        }
         _existingImages = List<Map<String, dynamic>>.from(
             (prod['product_images'] as List?) ?? []);
       }
@@ -115,6 +133,14 @@ class _State extends State<ProviderProductFormScreen> {
       final qty = int.tryParse(_qtyCtrl.text);
 
       String productId;
+      // Real listing GPS: geography point from the captured device position
+      // (falls back to the business profile location).
+      final lat = _lat;
+      final lng = _lng;
+      final locationValue = (lat != null && lng != null)
+          ? 'SRID=4326;POINT($lng $lat)'
+          : null;
+
       if (_isEdit) {
         await client.from('products').update({
           'name': _nameCtrl.text.trim(),
@@ -125,6 +151,7 @@ class _State extends State<ProviderProductFormScreen> {
           'quantity': qty,
           'category_id': _categoryId,
           'is_available': _isAvailable,
+          if (locationValue != null) 'location': locationValue,
         }).eq('id', widget.productId!);
         productId = widget.productId!;
       } else {
@@ -140,6 +167,7 @@ class _State extends State<ProviderProductFormScreen> {
               'quantity': qty,
               'category_id': _categoryId,
               'is_available': _isAvailable,
+              if (locationValue != null) 'location': locationValue,
             })
             .select()
             .single();
@@ -173,6 +201,23 @@ class _State extends State<ProviderProductFormScreen> {
       }
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// Capture the real device GPS for this listing (search distance +
+  /// buyer directions use it).
+  Future<void> _useCurrentLocation() async {
+    setState(() => _capturingGps = true);
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!mounted) return;
+    if (r.success) {
+      setState(() {
+        _lat = r.position!.latitude;
+        _lng = r.position!.longitude;
+        _capturingGps = false;
+      });
+    } else {
+      setState(() => _capturingGps = false);
     }
   }
 
@@ -226,6 +271,43 @@ class _State extends State<ProviderProductFormScreen> {
                               child: Text(c['name'] ?? '')))
                           .toList(),
                       onChanged: (v) => setState(() => _categoryId = v),
+                    ),
+                    const SizedBox(height: 16),
+                    // Listing GPS capture row
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.creamDark,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.place_outlined,
+                              size: 20, color: AppTheme.primaryGreen),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _lat != null && _lng != null
+                                  ? '${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)}'
+                                  : 'No GPS location set',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _capturingGps ? null : _useCurrentLocation,
+                            icon: _capturingGps
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppTheme.primaryGreen))
+                                : const Icon(Icons.my_location, size: 16),
+                            label: const Text('Use GPS'),
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 16),
                     SwitchListTile(
