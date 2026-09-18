@@ -177,10 +177,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign up with email + password, then create profile and assign role.
+  /// Sign up with email + password.
   /// Phone number is stored in the profile but NOT used for auth.
-  /// The profile insert triggers auto-creation of the approval request
-  /// via the trg_profiles_auto_approval_request database trigger.
+  ///
+  /// IMPORTANT: all profile data is passed via signUp(data: ...) metadata —
+  /// the SECURITY DEFINER handle_new_user() trigger creates the profile
+  /// (and the provider profile when provider_type is present), the USER
+  /// role, and the approval request. No client-side table writes happen
+  /// here, because when email confirmation is enabled signUp() returns
+  /// NO session and any client-side write fails RLS with 42501
+  /// ("new row violates row-level security policy for table \"profiles\"”).
   Future<void> signUp({
     required String email,
     required String phone,
@@ -199,6 +205,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         password: password,
         data: {
           'full_name': fullName,
+          'phone': e164 ?? phone,
           'national_id': nationalId,
         },
       );
@@ -207,16 +214,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
         throw Exception('Sign up failed: no user returned');
       }
 
-      // Profile insert — the database trigger auto-creates the approval
-      // request, so no client-side approval_requests insert is needed.
-      await _svc.client.from('profiles').upsert({
-        'id': response.user!.id,
-        'full_name': fullName,
-        'phone': e164 ?? phone,
-        'national_id': nationalId,
-        'status': 'PENDING_APPROVAL',
-      });
+      // Email confirmation flow: no session is returned until the user
+      // confirms their email. The handle_new_user() trigger already created
+      // the profile + USER role + approval request. Reset to a logged-out
+      // state so the router treats the user as unauthenticated and the UI
+      // can direct them to verify their email and sign in.
+      if (response.session == null) {
+        state = const AuthState(isLoading: false);
+        return;
+      }
 
+      // Session available — load the profile created by the trigger.
       await _loadUserProfile(response.user!);
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -226,10 +234,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   /// Sign up as a provider (vehicle or service) with email + password.
   /// Phone number is stored in the profile but NOT used for auth.
-  /// The provider_profiles insert triggers auto-creation of the approval
-  /// request and role assignment via the trg_provider_profiles_auto_setup
-  /// database trigger — no client-side approval_requests or user_roles
-  /// inserts are needed (and they would be blocked by RLS anyway).
+  ///
+  /// All writes happen server-side: handle_new_user() creates the profile
+  /// AND the provider_profiles row (from provider_type in the signup
+  /// metadata); trg_provider_profiles_auto_setup then assigns the provider
+  /// role and opens the approval request. No client-side table writes are
+  /// attempted (they would be blocked by RLS when email confirmation
+  /// prevents a session from being issued).
   Future<void> signUpAsProvider({
     required String email,
     required String phone,
@@ -246,35 +257,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final response = await _svc.client.auth.signUp(
         email: email,
         password: password,
+        data: {
+          'full_name': businessName,
+          'phone': e164 ?? phone,
+          'national_id': ownerNationalId,
+          'provider_type': providerType,
+          'business_name': businessName,
+        },
       );
 
       if (response.user == null) {
         throw Exception('Sign up failed');
       }
 
-      // Create profile
-      await _svc.client.from('profiles').upsert({
-        'id': response.user!.id,
-        'full_name': businessName,
-        'phone': e164 ?? phone,
-        'national_id': ownerNationalId,
-        'status': 'PENDING_APPROVAL',
-      });
+      // Email confirmation flow: no session yet — see signUp() above.
+      if (response.session == null) {
+        state = const AuthState(isLoading: false);
+        return;
+      }
 
-      // Create provider profile — the database trigger auto-creates the
-      // approval request and assigns the provider role.
-      await _svc.client
-          .from('provider_profiles')
-          .insert({
-            'user_id': response.user!.id,
-            'provider_type': providerType,
-            'business_name': businessName,
-            'owner_national_id': ownerNationalId,
-            'status': 'PENDING_APPROVAL',
-          })
-          .select()
-          .single();
-
+      // Session available — load the profile + provider profile created
+      // by the triggers.
       await _loadUserProfile(response.user!);
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
