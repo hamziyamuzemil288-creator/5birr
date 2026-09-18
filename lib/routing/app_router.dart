@@ -202,7 +202,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           );
         },
       ),
-      GoRoute(path: '/user/search', builder: (_, __) => const UserSearchScreen()),
+      // Standalone search route: the screen is a bare Column (tab content),
+      // so it must get a Material/Scaffold ancestor here — otherwise the
+      // TextField crashes with "No Material widget found" and the in-build
+      // error box overflows the unscrollable column.
+      GoRoute(
+        path: '/user/search',
+        builder: (_, __) => Scaffold(
+          appBar: AppBar(title: const Text('Search')),
+          body: const SafeArea(child: UserSearchScreen()),
+        ),
+      ),
       GoRoute(path: '/user/ride-request', builder: (_, __) => const UserRideRequestScreen()),
       GoRoute(path: '/user/ride-active', builder: (_, __) => const UserActiveRideScreen()),
       GoRoute(path: '/user/ride-history', builder: (_, __) => const RideHistoryScreen(isProvider: false)),

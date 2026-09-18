@@ -19,12 +19,15 @@ class _UserDashboardState extends ConsumerState<UserDashboard> {
   int _navIndex = 0;
   bool _initFromRoute = false;
 
+  // Each tab gets its own Material ancestor: tabs are hosted inside an
+  // IndexedStack in the Scaffold body, which does NOT provide Material —
+  // and text fields (UserSearchScreen) crash without it.
   final _screens = const [
-    UserHomeScreen(),
-    UserSearchScreen(),
-    UserOrdersScreen(),
-    UserNotificationsScreen(),
-    UserProfileScreen(),
+    Material(child: UserHomeScreen()),
+    Material(child: UserSearchScreen()),
+    Material(child: UserOrdersScreen()),
+    Material(child: UserNotificationsScreen()),
+    Material(child: UserProfileScreen()),
   ];
 
   @override
