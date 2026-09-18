@@ -99,7 +99,7 @@ class _WalletScreenState extends State<WalletScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: () => context.go('/wallet/recharge'),
+                      onPressed: () => context.push('/wallet/recharge'),
                       icon: const Icon(Icons.add),
                       label: const Text('RECHARGE WALLET'),
                       style: ElevatedButton.styleFrom(

@@ -168,7 +168,7 @@ class _State extends State<UserProviderDetailScreen> {
                   final prod = _products[i];
                   return ListTile(
                     onTap: () =>
-                        context.go('/user/product/${prod['id']}'),
+                        context.push('/user/product/${prod['id']}'),
                     leading: Container(
                       width: 48,
                       height: 48,

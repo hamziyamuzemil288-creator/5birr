@@ -164,7 +164,7 @@ class _State extends State<ProviderProductFormScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(_isEdit ? 'Product updated' : 'Product created')));
-        context.go('/provider/products');
+        context.pop();
       }
     } catch (e) {
       if (mounted) {

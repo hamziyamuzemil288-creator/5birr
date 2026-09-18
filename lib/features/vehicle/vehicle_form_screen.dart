@@ -101,7 +101,7 @@ class _State extends State<VehicleFormScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(_isEdit ? 'Vehicle updated' : 'Vehicle added')));
-        context.go('/vehicle/vehicles');
+        context.pop();
       }
     } catch (e) {
       if (mounted) {

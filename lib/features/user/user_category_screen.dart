@@ -103,7 +103,7 @@ class _State extends State<UserCategoryScreen> {
                   else
                     ..._products.map((p) => ListTile(
                           onTap: () =>
-                              context.go('/user/product/${p['id']}'),
+                              context.push('/user/product/${p['id']}'),
                           leading: Container(
                             width: 48,
                             height: 48,

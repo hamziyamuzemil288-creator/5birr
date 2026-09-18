@@ -240,13 +240,13 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           children: [
                             if (_pendingProviders > 0)
                               _pendingCard(Icons.approval, 'Provider Approvals',
-                                  '$_pendingProviders pending', AppTheme.warning, () => context.go('/admin/approvals')),
+                                  '$_pendingProviders pending', AppTheme.warning, () => context.push('/admin/approvals')),
                             if (_pendingUsers > 0)
                               _pendingCard(Icons.person_add, 'User Approvals',
-                                  '$_pendingUsers pending', AppTheme.teal, () => context.go('/admin/users')),
+                                  '$_pendingUsers pending', AppTheme.teal, () => context.push('/admin/users')),
                             if (_pendingRecharges > 0)
                               _pendingCard(Icons.payment, 'Recharge Requests',
-                                  '$_pendingRecharges pending', AppTheme.info, () => context.go('/admin/payments')),
+                                  '$_pendingRecharges pending', AppTheme.info, () => context.push('/admin/payments')),
                           ],
                         ),
                       ),
@@ -273,11 +273,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Column(
                         children: [
-                          _menuCard(Icons.person_add, 'User Approvals', '$_pendingUsers pending', () => context.go('/admin/users')),
-                          _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.go('/admin/approvals')),
-                          _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.go('/admin/providers')),
-                          _menuCard(Icons.payment, 'Payment Verification', null, () => context.go('/admin/payments')),
-                          _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.go('/admin/payment-methods')),
+                          _menuCard(Icons.person_add, 'User Approvals', '$_pendingUsers pending', () => context.push('/admin/users')),
+                          _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.push('/admin/approvals')),
+                          _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.push('/admin/providers')),
+                          _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
+                          _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.push('/admin/payment-methods')),
                         ],
                       ),
                     ),
@@ -303,10 +303,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Column(
                         children: [
-                          _menuCard(Icons.receipt_long, 'Transaction History', '1% fees & orders', () => context.go('/admin/transactions')),
-                          _menuCard(Icons.account_balance_wallet, 'Income Summary', 'ETB ${_totalIncome.toStringAsFixed(0)} total', () => context.go('/admin/income')),
-                          _menuCard(Icons.receipt, 'Expenses', 'Log & track', () => context.go('/admin/expenses')),
-                          _menuCard(Icons.analytics_outlined, 'Sector Reports', 'Per-category data', () => context.go('/admin/reports')),
+                          _menuCard(Icons.receipt_long, 'Transaction History', '1% fees & orders', () => context.push('/admin/transactions')),
+                          _menuCard(Icons.account_balance_wallet, 'Income Summary', 'ETB ${_totalIncome.toStringAsFixed(0)} total', () => context.push('/admin/income')),
+                          _menuCard(Icons.receipt, 'Expenses', 'Log & track', () => context.push('/admin/expenses')),
+                          _menuCard(Icons.analytics_outlined, 'Sector Reports', 'Per-category data', () => context.push('/admin/reports')),
                         ],
                       ),
                     ),
@@ -332,8 +332,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                       child: Column(
                         children: [
-                          _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.go('/admin/registrations')),
-                          _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.go('/admin/send-notifications')),
+                          _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
+                          _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
                         ],
                       ),
                     ),

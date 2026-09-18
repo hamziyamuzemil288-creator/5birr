@@ -174,7 +174,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                         const SizedBox(height: 16),
                         // Search bar
                         GestureDetector(
-                          onTap: () => context.go('/user/search'),
+                          onTap: () => context.push('/user/search'),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 16, vertical: 13),
@@ -204,7 +204,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           children: [
                             Expanded(
                               child: GestureDetector(
-                                onTap: () => context.go('/user/ride-request'),
+                                onTap: () => context.push('/user/ride-request'),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 14, vertical: 12),
@@ -233,7 +233,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                             const SizedBox(width: 10),
                             Expanded(
                               child: GestureDetector(
-                                onTap: () => context.go('/user/search'),
+                                onTap: () => context.push('/user/search'),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 14, vertical: 12),
@@ -291,7 +291,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                             name: c.name,
                             icon: _catIcon(c.slug),
                             onTap: () =>
-                                context.go('/user/category/${c.id}'),
+                                context.push('/user/category/${c.id}'),
                           );
                         },
                       ),
@@ -315,7 +315,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           ),
                           if (_products.isNotEmpty)
                             GestureDetector(
-                              onTap: () => context.go('/user/search'),
+                              onTap: () => context.push('/user/search'),
                               child: const Text('See all',
                                   style: TextStyle(
                                       fontSize: 13,
@@ -405,7 +405,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                         (_, i) => ProductCard(
                           product: _products[i],
                           onTap: () =>
-                              context.go('/user/product/${_products[i].id}'),
+                              context.push('/user/product/${_products[i].id}'),
                         ),
                         childCount: _products.length,
                       ),

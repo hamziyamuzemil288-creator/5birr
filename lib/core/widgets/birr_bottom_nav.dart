@@ -133,7 +133,7 @@ class BirrBottomNav extends ConsumerWidget {
                 top: -4,
                 right: 4,
                 child: GestureDetector(
-                  onTap: () => context.go('/user/cart'),
+                  onTap: () => context.push('/user/cart'),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 250),
                     curve: Curves.easeOutBack,

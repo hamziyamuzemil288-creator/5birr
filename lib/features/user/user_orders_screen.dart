@@ -217,7 +217,7 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
             ),
             const SizedBox(height: 28),
             ElevatedButton.icon(
-              onPressed: () => context.go('/user/search'),
+              onPressed: () => context.push('/user/search'),
               icon: const Icon(Icons.explore_outlined, size: 18),
               label: const Text('Explore Products'),
               style: ElevatedButton.styleFrom(

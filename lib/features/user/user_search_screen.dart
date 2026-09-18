@@ -111,7 +111,7 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                             final p = _results[i];
                             return ListTile(
                               onTap: () =>
-                                  context.go('/user/product/${p['id']}'),
+                                  context.push('/user/product/${p['id']}'),
                               leading: Container(
                                 width: 48,
                                 height: 48,

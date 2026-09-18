@@ -72,9 +72,9 @@ class _State extends State<UserFavoritesScreen> {
                     return ListTile(
                       onTap: () {
                         if (type == 'PRODUCT') {
-                          context.go('/user/product/$id');
+                          context.push('/user/product/$id');
                         } else if (type == 'PROVIDER') {
-                          context.go('/user/provider/$id');
+                          context.push('/user/provider/$id');
                         }
                       },
                       leading: Icon(

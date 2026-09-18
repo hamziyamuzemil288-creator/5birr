@@ -85,7 +85,7 @@ class _State extends State<VehicleManagementScreen> {
       appBar: AppBar(title: const Text('My Vehicles')),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppTheme.teal,
-        onPressed: () => context.go('/vehicle/vehicles/new'),
+        onPressed: () => context.push('/vehicle/vehicles/new'),
         child: const Icon(Icons.add, color: Colors.white),
       ),
       body: _loading
@@ -103,7 +103,7 @@ class _State extends State<VehicleManagementScreen> {
                         style: TextStyle(color: AppTheme.textMuted)),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
-                      onPressed: () => context.go('/vehicle/vehicles/new'),
+                      onPressed: () => context.push('/vehicle/vehicles/new'),
                       icon: const Icon(Icons.add),
                       label: const Text('Add Vehicle'),
                     ),
@@ -135,7 +135,7 @@ class _State extends State<VehicleManagementScreen> {
                             ],
                             onSelected: (v2) {
                               if (v2 == 'edit') {
-                                context.go('/vehicle/vehicles/${v['id']}');
+                                context.push('/vehicle/vehicles/${v['id']}');
                               } else if (v2 == 'delete') {
                                 _delete(v['id']);
                               }

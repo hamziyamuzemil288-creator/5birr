@@ -83,7 +83,7 @@ class _State extends State<DriverRideRequestsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Ride claimed!')));
-        context.go('/vehicle/trip');
+        context.push('/vehicle/trip');
       }
     } catch (e) {
       if (mounted) {

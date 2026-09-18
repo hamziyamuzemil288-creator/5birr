@@ -102,7 +102,7 @@ class _State extends State<ProviderProductListScreen> {
       appBar: AppBar(title: const Text('My Products')),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppTheme.primaryGreen,
-        onPressed: () => context.go('/provider/products/new'),
+        onPressed: () => context.push('/provider/products/new'),
         child: const Icon(Icons.add, color: Colors.white),
       ),
       body: _loading
@@ -120,7 +120,7 @@ class _State extends State<ProviderProductListScreen> {
                         style: TextStyle(color: AppTheme.textMuted)),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
-                      onPressed: () => context.go('/provider/products/new'),
+                      onPressed: () => context.push('/provider/products/new'),
                       icon: const Icon(Icons.add),
                       label: const Text('Add Product'),
                     ),
@@ -193,7 +193,7 @@ class _State extends State<ProviderProductListScreen> {
                             ],
                             onSelected: (v) {
                               if (v == 'edit') {
-                                context.go('/provider/products/${p['id']}');
+                                context.push('/provider/products/${p['id']}');
                               } else if (v == 'toggle') {
                                 _toggleAvailability(
                                     p['id'], p['is_available'] ?? true);
