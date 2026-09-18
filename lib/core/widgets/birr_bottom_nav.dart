@@ -137,8 +137,9 @@ class BirrBottomNav extends ConsumerWidget {
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 250),
                     curve: Curves.easeOutBack,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: cartBadge > 0 ? 6 : 4, vertical: cartBadge > 0 ? 2 : 3),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: cartBadge > 0 ? 6 : 4,
+                        vertical: cartBadge > 0 ? 2 : 3),
                     decoration: BoxDecoration(
                       color: cartBadge > 0
                           ? AppTheme.error

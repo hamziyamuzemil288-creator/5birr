@@ -477,6 +477,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                       child: FadeInWidget(
                         delay: Duration(milliseconds: 200 + (150 * i)),
                         child: SkeletonBox(
+                          width: double.infinity,
                           height: 220,
                           borderRadius: 14,
                         ),
