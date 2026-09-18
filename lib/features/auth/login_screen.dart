@@ -57,9 +57,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (raw.contains('Invalid login credentials')) {
       return 'Invalid email or password.';
     }
-    if (raw.contains('Email not confirmed')) {
-      return 'Please verify your email first. Check your inbox for a confirmation link.';
-    }
     if (raw.contains('network') || raw.contains('SocketException')) {
       return 'Network error. Please check your connection.';
     }
