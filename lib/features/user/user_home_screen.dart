@@ -6,6 +6,7 @@ import '../../core/widgets/product_card.dart';
 import '../../core/widgets/category_card.dart';
 import '../../core/widgets/shimmer_effect.dart';
 import '../../core/widgets/retry_widget.dart';
+import '../../core/widgets/cart_icon_button.dart';
 import '../../core/models/product.dart';
 import '../../core/models/category.dart';
 
@@ -158,6 +159,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                                     fontWeight: FontWeight.w800,
                                     color: Colors.white,
                                     letterSpacing: 1.5)),
+                            const Spacer(),
+                            const CartIconButton(iconColor: Colors.white),
                           ],
                         ),
                         const SizedBox(height: 6),

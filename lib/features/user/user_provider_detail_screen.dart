@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/models/product.dart';
+import '../../core/widgets/provider_trust_section.dart';
 
 class UserProviderDetailScreen extends StatefulWidget {
   final String providerId;
@@ -17,6 +18,7 @@ class _State extends State<UserProviderDetailScreen> {
   Map<String, dynamic>? _provider;
   List<Map<String, dynamic>> _products = [];
   List<Map<String, dynamic>> _reviews = [];
+  ProviderTrustStats? _trust;
   bool _loading = true;
   bool _fav = false;
 
@@ -48,11 +50,15 @@ class _State extends State<UserProviderDetailScreen> {
         reviews = await ReviewService.instance
             .getReviewsForProvider(widget.providerId);
       } catch (_) {}
+      // Trust stats come from the provider_trust_stats view (real,
+      // aggregated data; view read is non-fatal if unavailable).
+      final trust = await ProviderTrustStats.fetch(widget.providerId);
       if (mounted) {
         setState(() {
           _provider = prov;
           _products = List<Map<String, dynamic>>.from(prods as List);
           _reviews = reviews;
+          _trust = trust;
           _fav = fav;
           _loading = false;
         });
@@ -120,8 +126,12 @@ class _State extends State<UserProviderDetailScreen> {
                     children: [
                       const Icon(Icons.star, color: AppTheme.gold, size: 16),
                       const SizedBox(width: 4),
-                      const Text('0.0',
-                          style: TextStyle(color: Colors.white, fontSize: 13)),
+                      Text(
+                          _trust != null
+                              ? _trust!.avgRating.toStringAsFixed(1)
+                              : '0.0',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13)),
                       const SizedBox(width: 12),
                       Text('${_products.length} products',
                           style: TextStyle(
@@ -132,6 +142,8 @@ class _State extends State<UserProviderDetailScreen> {
                 ],
               ),
             ),
+            // Trust & quality summary — real aggregated stats
+            ProviderTrustSection(stats: _trust),
             // Products
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/cart_icon_button.dart';
 
 class UserCategoryScreen extends StatefulWidget {
   final String categoryId;
@@ -56,7 +57,10 @@ class _State extends State<UserCategoryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_category?['name'] ?? 'Category')),
+      appBar: AppBar(
+        title: Text(_category?['name'] ?? 'Category'),
+        actions: const [CartIconButton()],
+      ),
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))

@@ -7,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/cart_service.dart';
 import '../../core/services/review_service.dart';
+import '../../core/widgets/cart_icon_button.dart';
 
 class UserProductDetailScreen extends ConsumerStatefulWidget {
   final String productId;
@@ -75,6 +76,7 @@ class _State extends ConsumerState<UserProductDetailScreen> {
       appBar: AppBar(
         title: Text(p['name'] ?? ''),
         actions: [
+          const CartIconButton(),
           IconButton(
             icon: Icon(_fav ? Icons.favorite : Icons.favorite_border,
                 color: _fav ? AppTheme.error : null),

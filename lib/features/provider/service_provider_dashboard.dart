@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/points_service.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -18,6 +19,7 @@ class _ServiceProviderDashboardState
   Map<String, dynamic>? _providerProfile;
   int _productCount = 0;
   int _orderCount = 0;
+  int _points = 0;
   bool _loading = true;
 
   @override
@@ -52,11 +54,13 @@ class _ServiceProviderDashboardState
           .select('id')
           .eq('provider_id', prov['id'])
           .count(CountOption.exact);
+      final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
       if (mounted) {
         setState(() {
           _providerProfile = prov;
           _productCount = prods.count ?? 0;
           _orderCount = orders.count ?? 0;
+          _points = points;
           _loading = false;
         });
       }
@@ -146,7 +150,8 @@ class _ServiceProviderDashboardState
                         _statCard(
                             Icons.receipt_long, 'Orders', '$_orderCount'),
                         const SizedBox(width: 12),
-                        _statCard(Icons.star_outline, 'Rating', '0.0'),
+                        _statCard(
+                            Icons.stars_rounded, 'Points', '$_points'),
                       ],
                     ),
                     const SizedBox(height: 24),

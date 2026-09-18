@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/points_service.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -21,6 +22,7 @@ class _VehicleProviderDashboardState
   Map<String, dynamic>? _providerProfile;
   Map<String, dynamic>? _driverStatus;
   int _vehicleCount = 0;
+  int _points = 0;
   bool _loading = true;
   bool _togglingOnline = false;
   StreamSubscription? _posSub;
@@ -56,11 +58,13 @@ class _VehicleProviderDashboardState
           .select()
           .eq('provider_id', prov['id'])
           .maybeSingle();
+      final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
       if (mounted) {
         setState(() {
           _providerProfile = prov;
           _vehicleCount = vehicles.count ?? 0;
           _driverStatus = status;
+          _points = points;
           _loading = false;
         });
       }
@@ -236,9 +240,9 @@ class _VehicleProviderDashboardState
                       children: [
                         _stat(Icons.directions_car, 'Vehicles', '$_vehicleCount'),
                         const SizedBox(width: 12),
-                        _stat(Icons.star_outline, 'Rating', '0.0'),
+                        _stat(Icons.stars_rounded, 'Points', '$_points'),
                         const SizedBox(width: 12),
-                        _stat(Icons.receipt_long, 'Rides', '0'),
+                        _stat(Icons.star_outline, 'Rating', '0.0'),
                       ],
                     ),
                     const SizedBox(height: 24),

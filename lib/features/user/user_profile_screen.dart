@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/points_service.dart';
 
 class UserProfileScreen extends ConsumerWidget {
   const UserProfileScreen({super.key});
@@ -94,6 +95,9 @@ class UserProfileScreen extends ConsumerWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 16),
+            // Loyalty points card
+            _PointsCard(),
             const SizedBox(height: 20),
             // Menu card
             Container(
@@ -174,6 +178,84 @@ class UserProfileScreen extends ConsumerWidget {
     return const Padding(
       padding: EdgeInsets.symmetric(horizontal: 16),
       child: Divider(height: 1, thickness: 0.5, color: AppTheme.cardBorder),
+    );
+  }
+}
+
+/// Live loyalty-points total for the signed-in user (Feature 3).
+class _PointsCard extends StatefulWidget {
+  @override
+  State<_PointsCard> createState() => _PointsCardState();
+}
+
+class _PointsCardState extends State<_PointsCard> {
+  int _points = 0;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final p = await PointsService.instance.getMyPoints();
+      if (mounted) setState(() { _points = p; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryGreen.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.25)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppTheme.primaryGreen.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.stars_rounded,
+                color: AppTheme.primaryGreen, size: 24),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('My Points',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondary)),
+                const SizedBox(height: 2),
+                _loading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppTheme.primaryGreen))
+                    : Text('$_points points',
+                        style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.primaryGreenDark)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

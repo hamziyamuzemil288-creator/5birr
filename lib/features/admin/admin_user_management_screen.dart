@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/services/points_service.dart';
 
 class AdminUserManagementScreen extends StatefulWidget {
   const AdminUserManagementScreen({super.key});
@@ -204,6 +205,9 @@ class _State extends State<AdminUserManagementScreen> {
                                         style: const TextStyle(
                                             fontSize: 13,
                                             color: AppTheme.textSecondary)),
+                                    const SizedBox(height: 6),
+                                    _PointsLine(
+                                        userId: u['id'] as String),
                                     if (u['national_id'] != null &&
                                         (u['national_id'] as String)
                                             .isNotEmpty)
@@ -211,6 +215,7 @@ class _State extends State<AdminUserManagementScreen> {
                                           style: const TextStyle(
                                               fontSize: 12,
                                               color: AppTheme.textMuted)),
+                                    const SizedBox(height: 8),
                                     const SizedBox(height: 8),
                                     // View National ID button
                                     OutlinedButton.icon(
@@ -303,6 +308,49 @@ class _State extends State<AdminUserManagementScreen> {
             color: selected ? Colors.white : AppTheme.textPrimary,
             fontSize: 13),
       ),
+    );
+  }
+}
+
+/// Live points total for one user row (Feature 3 admin view).
+class _PointsLine extends StatefulWidget {
+  final String userId;
+  const _PointsLine({required this.userId});
+  @override
+  State<_PointsLine> createState() => _PointsLineState();
+}
+
+class _PointsLineState extends State<_PointsLine> {
+  int? _points;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final map = await PointsService.instance.getUserPointsBulk([widget.userId]);
+      if (mounted) setState(() => _points = map[widget.userId] ?? 0);
+    } catch (_) {
+      if (mounted) setState(() => _points = 0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const Icon(Icons.stars_rounded,
+            size: 15, color: AppTheme.primaryGreen),
+        const SizedBox(width: 5),
+        Text('Points: ${_points ?? "…"}',
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary)),
+      ],
     );
   }
 }

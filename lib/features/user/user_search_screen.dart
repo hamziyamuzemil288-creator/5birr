@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+
+import '../../core/widgets/cart_icon_button.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
@@ -61,25 +63,32 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
           color: AppTheme.primaryGreen,
-          child: TextField(
-            controller: _ctrl,
-            onSubmitted: _onQueryChanged,
-            onChanged: _onQueryChanged,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Search products, services...',
-              hintStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-              prefixIcon:
-                  const Icon(Icons.search, color: Colors.white70, size: 20),
-              filled: true,
-              fillColor: Colors.white.withOpacity(0.15),
-              contentPadding: const EdgeInsets.symmetric(vertical: 12),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none),
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  onSubmitted: _onQueryChanged,
+                  onChanged: _onQueryChanged,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Search products, services...',
+                    hintStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
+                    prefixIcon: const Icon(Icons.search,
+                        color: Colors.white70, size: 20),
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.15),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              const CartIconButton(iconColor: Colors.white),
+            ],
           ),
         ),
         Expanded(
