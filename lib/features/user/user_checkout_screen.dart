@@ -23,6 +23,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   bool _loading = true;
   bool _submitting = false;
   String? _error;
+  DateTime? _lastOrderTime;
   final _addressCtrl = TextEditingController();
   final _refCtrl = TextEditingController();
   File? _screenshot;
@@ -74,6 +75,13 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   }
 
   Future<void> _placeOrder() async {
+    // Duplicate-tap guard: prevent double-submission within 3 seconds.
+    final now = DateTime.now();
+    if (_lastOrderTime != null && now.difference(_lastOrderTime!) < const Duration(seconds: 3)) {
+      return; // silently ignore rapid re-tap
+    }
+    _lastOrderTime = now;
+
     if (_items.isEmpty) {
       setState(() => _error = 'Your cart is empty for this provider');
       return;

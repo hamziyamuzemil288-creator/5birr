@@ -34,6 +34,12 @@ import '../features/admin/admin_payment_methods_screen.dart';
 import '../features/admin/admin_payment_verification_screen.dart';
 import '../features/admin/admin_cash_recharge_screen.dart';
 import '../features/admin/admin_provider_wallet_screen.dart';
+import '../features/admin/admin_transaction_history_screen.dart';
+import '../features/admin/admin_registration_history_screen.dart';
+import '../features/admin/admin_income_summary_screen.dart';
+import '../features/admin/admin_expense_screen.dart';
+import '../features/admin/admin_reports_screen.dart';
+import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
 import '../features/vehicle/driver_ride_requests_screen.dart';
@@ -222,6 +228,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/payments', builder: (_, __) => const AdminPaymentVerificationScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/admin/providers/:id/wallet/recharge', builder: (_, s) => AdminCashRechargeScreen(providerId: s.pathParameters['id']!)),
+      // ── Admin — New sections ──
+      GoRoute(path: '/admin/transactions', builder: (_, __) => const AdminTransactionHistoryScreen()),
+      GoRoute(path: '/admin/registrations', builder: (_, __) => const AdminRegistrationHistoryScreen()),
+      GoRoute(path: '/admin/income', builder: (_, __) => const AdminIncomeSummaryScreen()),
+      GoRoute(path: '/admin/expenses', builder: (_, __) => const AdminExpenseScreen()),
+      GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
+      GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
     ],
   );
 });

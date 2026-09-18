@@ -18,6 +18,7 @@ class PhoneFormatter {
   ///   - `251918968444` → `+251918968444`
   ///   - `+251918968444` → `+251918968444`
   ///   - `0918 968 444` → `+251918968444`
+  ///   - `918968444` → `+251918968444` (9-digit mobile without leading 0)
   ///
   /// Returns `null` if the number is invalid.
   static String? formatToE164(String input) {
@@ -26,14 +27,14 @@ class PhoneFormatter {
 
     if (digits.isEmpty) return null;
 
-    // Already in E.164 format (12 digits after country code)
-    if (digits.length == 12 && digits.startsWith('251')) {
-      return '+$digits';
+    // 13 digits with leading 0 after country code (e.g. +2510918968444 — malformed but handle it)
+    if (digits.length == 13 && digits.startsWith('2510')) {
+      return '+${digits.substring(0, 3)}${digits.substring(4)}';
     }
 
-    // 13 digits with leading 0 after country code — shouldn't happen but handle it
-    if (digits.length == 13 && digits.startsWith('251')) {
-      return '+${digits.substring(1)}';
+    // Already in E.164 format (12 digits starting with 251)
+    if (digits.length == 12 && digits.startsWith('251')) {
+      return '+$digits';
     }
 
     // Local format: 10 digits starting with 0 (e.g., 0918968444)
@@ -41,10 +42,9 @@ class PhoneFormatter {
       return '+$_countryCode${digits.substring(1)}';
     }
 
-    // Already has + prefix in original input and matches E.164
-    if (input.trimLeft().startsWith('+') && digits.length == 12 &&
-        digits.startsWith('251')) {
-      return '+$digits';
+    // 9-digit mobile without leading 0 (e.g., 918968444)
+    if (digits.length == 9 && (digits.startsWith('9') || digits.startsWith('7') || digits.startsWith('1'))) {
+      return '+$_countryCode$digits';
     }
 
     return null;
@@ -54,18 +54,26 @@ class PhoneFormatter {
   ///
   /// Returns a human-readable error message, or null if valid.
   static String? validateEthiopianPhone(String input) {
-    final formatted = formatToE164(input);
-    if (formatted == null) {
-      return 'Enter a valid phone number (e.g. 0918968444)';
+    if (input.trim().isEmpty) {
+      return 'Phone number is required';
     }
 
-    // Ethiopian mobile numbers: 09xx, 07xx after removing country code
-    final localNumber = formatted.substring(4); // Remove +251
-    final prefix = localNumber.substring(0, 2);
+    final formatted = formatToE164(input);
+    if (formatted == null) {
+      return 'Please enter a valid Ethiopian phone number\nFormat: 09XXXXXXXX, +2519XXXXXXXX, or 2519XXXXXXXX';
+    }
 
-    // 09x, 07x = mobile; 01x = Addis Ababa landline
+    // Ethiopian mobile numbers: 9x = mobile (09xx), 7x = mobile (07xx), 1x = Addis Ababa landline (01xx)
+    final localNumber = formatted.substring(4); // Remove +251
+    final prefix = localNumber.isNotEmpty ? localNumber.substring(0, 1) : '';
+
     if (prefix != '9' && prefix != '7' && prefix != '1') {
-      return 'Enter a valid Ethiopian phone number';
+      return 'Ethiopian numbers start with 09, 07, or 01\nPlease use a valid Ethiopian phone number';
+    }
+
+    // Check length: should be 9 digits after +251
+    if (localNumber.length != 9) {
+      return 'Ethiopian phone numbers should be 9 digits after the country code\nExample: +251918968444';
     }
 
     return null;

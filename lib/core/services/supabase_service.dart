@@ -33,6 +33,10 @@ class SupabaseService {
     await Supabase.initialize(
       url: url,
       anonKey: Env.supabaseAnonKey,
+      // Limit realtime event rate to prevent abuse and reduce bandwidth.
+      realtimeClientOptions: const RealtimeClientOptions(
+        eventsPerSecond: 2,
+      ),
     );
   }
 

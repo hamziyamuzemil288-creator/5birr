@@ -18,9 +18,6 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
   bool _searched = false;
   Timer? _debounce;
 
-  String _escapeIlike(String input) =>
-      input.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-
   void _onQueryChanged(String value) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 300), () => _search(value));
@@ -40,14 +37,14 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       _searched = true;
     });
     try {
-      final safe = _escapeIlike(q);
+      // Use server-side search_products RPC for full-text search with
+      // proper indexes instead of slow client-side ILIKE.
       final data = await Supabase.instance.client
-          .from('products')
-          .select('*, product_images(*), provider_profiles(business_name)')
-          .eq('is_active', true)
-          .or('name.ilike.%$safe%,description.ilike.%$safe%')
-          .order('created_at', ascending: false)
-          .limit(30);
+          .rpc('search_products', params: {
+            'p_query': q.trim(),
+            'p_limit': 30,
+            'p_offset': 0,
+          });
       if (mounted) {
         setState(() {
           _results = List<Map<String, dynamic>>.from(data as List);
@@ -121,7 +118,7 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(fontSize: 14)),
                               subtitle: Text(
-                                  '${p['price']} ${p['currency'] ?? 'ETB'}',
+                                  '${p['provider_name'] ?? ''} · ${p['price']} ${p['currency'] ?? 'ETB'}',
                                   style: const TextStyle(
                                       fontSize: 12,
                                       color: AppTheme.primaryGreen,

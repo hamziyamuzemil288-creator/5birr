@@ -19,6 +19,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _totalProviders = 0;
   int _totalUsers = 0;
   int _totalProducts = 0;
+  int _totalOrders = 0;
+  double _totalIncome = 0;
   bool _loading = true;
 
   @override
@@ -57,6 +59,35 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
           .from('products')
           .select('id')
           .count(CountOption.exact);
+      final orders = await client
+          .from('orders')
+          .select('id')
+          .eq('payment_status', 'PAID')
+          .count(CountOption.exact);
+
+      // Total income = sum of admin_fee from paid orders + sum from subscriptions
+      double income = 0;
+      try {
+        final txFees = await client
+            .from('orders')
+            .select('admin_fee')
+            .eq('payment_status', 'PAID')
+            .limit(1000);
+        for (final tx in txFees as List) {
+          income += (tx['admin_fee'] as num?)?.toDouble() ?? 0;
+        }
+      } catch (_) {}
+      try {
+        final subFees = await client
+            .from('subscriptions')
+            .select('amount')
+            .eq('status', 'PAID')
+            .limit(1000);
+        for (final sub in subFees as List) {
+          income += (sub['amount'] as num?)?.toDouble() ?? 0;
+        }
+      } catch (_) {}
+
       if (mounted) {
         setState(() {
           _pendingProviders = pending.count ?? 0;
@@ -65,6 +96,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
           _totalProviders = total.count ?? 0;
           _totalUsers = users.count ?? 0;
           _totalProducts = prods.count ?? 0;
+          _totalOrders = orders.count ?? 0;
+          _totalIncome = income;
           _loading = false;
         });
       }
@@ -76,156 +109,362 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
+    final hasPending = _pendingProviders > 0 || _pendingUsers > 0 || _pendingRecharges > 0;
+
     return Scaffold(
+      backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text('5BIRR Admin'),
+        title: const Text('Aliob Admin',
+            style: TextStyle(fontWeight: FontWeight.w700)),
         backgroundColor: AppTheme.primaryGreenDark,
+        elevation: 0,
         actions: [
+          if (hasPending)
+            Badge(
+              label: Text('${_pendingProviders + _pendingUsers + _pendingRecharges}',
+                  style: const TextStyle(fontSize: 10, color: Colors.white)),
+              backgroundColor: AppTheme.error,
+              child: IconButton(
+                icon: const Icon(Icons.notifications_outlined),
+                onPressed: () {},
+              ),
+            ),
           IconButton(
-              icon: const Icon(Icons.logout),
-              onPressed: () => ref.read(authProvider.notifier).signOut()),
+            icon: const Icon(Icons.logout),
+            onPressed: () => ref.read(authProvider.notifier).signOut(),
+          ),
         ],
       ),
       body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : RefreshIndicator(
               onRefresh: _load,
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
+              child: CustomScrollView(
+                slivers: [
+                  // Header with gradient
+                  SliverToBoxAdapter(
+                    child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                            colors: [AppTheme.primaryGreenDark, Color(0xFF071F0A)]),
-                        borderRadius: BorderRadius.circular(16),
+                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 28),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [AppTheme.primaryGreenDark, Color(0xFF071F0A)],
+                        ),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Admin Panel',
-                              style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white)),
-                          const SizedBox(height: 4),
-                          Text('Manage the 5BIRR platform',
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  color: Colors.white.withOpacity(0.7))),
+                          Row(
+                            children: [
+                              Container(
+                                width: 44,
+                                height: 44,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(Icons.admin_panel_settings, color: Colors.white, size: 24),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Welcome back!',
+                                        style: TextStyle(fontSize: 13, color: Colors.white70)),
+                                    Text('Aliob Dashboard',
+                                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          // Income highlight
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.white.withOpacity(0.1)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.account_balance_wallet, color: AppTheme.gold, size: 22),
+                                const SizedBox(width: 10),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Total Income', style: TextStyle(fontSize: 11, color: Colors.white60)),
+                                    Text('ETB ${_totalIncome.toStringAsFixed(2)}',
+                                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
+                                  ],
+                                ),
+                                const Spacer(),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text('$_totalOrders orders',
+                                        style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                                    Text('$_totalProducts products',
+                                        style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
-                    GridView.count(
-                      crossAxisCount: 2,
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      mainAxisSpacing: 12,
-                      crossAxisSpacing: 12,
-                      childAspectRatio: 1.6,
-                      children: [
-                        _statCard(Icons.pending_actions, 'Pending Providers',
-                            '$_pendingProviders', AppTheme.warning),
-                        _statCard(Icons.person_add, 'Pending Users',
-                            '$_pendingUsers', AppTheme.teal),
-                        _statCard(Icons.payment, 'Pending Recharges',
-                            '$_pendingRecharges', AppTheme.teal),
-                        _statCard(Icons.storefront, 'Providers',
-                            '$_totalProviders', AppTheme.primaryGreen),
-                        _statCard(Icons.people, 'Users', '$_totalUsers', AppTheme.info),
-                      ],
+                  ),
+
+                  // Quick stats
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: Row(
+                        children: [
+                          _quickStat(Icons.pending_actions, 'Pending', '$_pendingProviders', AppTheme.warning),
+                          const SizedBox(width: 8),
+                          _quickStat(Icons.people, 'Users', '$_totalUsers', AppTheme.info),
+                          const SizedBox(width: 8),
+                          _quickStat(Icons.storefront, 'Providers', '$_totalProviders', AppTheme.primaryGreen),
+                          const SizedBox(width: 8),
+                          _quickStat(Icons.receipt, 'Orders', '$_totalOrders', AppTheme.teal),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 24),
-                    // Provider Management
-                    const Text('Approvals',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    _action(Icons.person_add, 'Pending User Approvals',
-                        () => context.go('/admin/users')),
-                    _action(Icons.approval, 'Pending Provider Approvals',
-                        () => context.go('/admin/approvals')),
-                    const SizedBox(height: 20),
-                    // Provider Management
-                    const Text('Provider Management',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    _action(Icons.storefront_outlined, 'All Providers',
-                        () => context.go('/admin/providers')),
-                    _action(Icons.directions_car_outlined, 'Vehicle Providers',
-                        () => context.go('/admin/providers')),
-                    const SizedBox(height: 20),
-                    // Financial
-                    const Text('Financial',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    _action(Icons.payment, 'Payment Verification',
-                        () => context.go('/admin/payments')),
-                    _action(Icons.money, 'Cash Recharge',
-                        () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Coming soon')),
-                        )),
-                    _action(Icons.account_balance_wallet_outlined, 'Payment Methods',
-                        () => context.go('/admin/payment-methods')),
-                    const SizedBox(height: 20),
-                    // System
-                    const Text('System',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    _action(Icons.people_outline, 'All Users',
-                        () => context.go('/admin/users')),
-                    _action(Icons.category_outlined, 'Categories',
-                        () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Coming soon')),
-                        )),
-                    _action(Icons.analytics_outlined, 'Analytics',
-                        () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Coming soon')),
-                        )),
+                  ),
+
+                  // Approvals (if any pending)
+                  if (hasPending) ...[
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                        child: Row(
+                          children: [
+                            Container(width: 3, height: 16,
+                                decoration: BoxDecoration(color: AppTheme.warning, borderRadius: BorderRadius.circular(2))),
+                            const SizedBox(width: 8),
+                            const Text('Requires Attention',
+                                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Column(
+                          children: [
+                            if (_pendingProviders > 0)
+                              _pendingCard(Icons.approval, 'Provider Approvals',
+                                  '$_pendingProviders pending', AppTheme.warning, () => context.go('/admin/approvals')),
+                            if (_pendingUsers > 0)
+                              _pendingCard(Icons.person_add, 'User Approvals',
+                                  '$_pendingUsers pending', AppTheme.teal, () => context.go('/admin/users')),
+                            if (_pendingRecharges > 0)
+                              _pendingCard(Icons.payment, 'Recharge Requests',
+                                  '$_pendingRecharges pending', AppTheme.info, () => context.go('/admin/payments')),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
-                ),
+
+                  // Operations section
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                      child: Row(
+                        children: [
+                          Container(width: 3, height: 16,
+                              decoration: BoxDecoration(color: AppTheme.primaryGreen, borderRadius: BorderRadius.circular(2))),
+                          const SizedBox(width: 8),
+                          const Text('Operations',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        children: [
+                          _menuCard(Icons.person_add, 'User Approvals', '$_pendingUsers pending', () => context.go('/admin/users')),
+                          _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.go('/admin/approvals')),
+                          _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.go('/admin/providers')),
+                          _menuCard(Icons.payment, 'Payment Verification', null, () => context.go('/admin/payments')),
+                          _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.go('/admin/payment-methods')),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Financial section
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                      child: Row(
+                        children: [
+                          Container(width: 3, height: 16,
+                              decoration: BoxDecoration(color: AppTheme.gold, borderRadius: BorderRadius.circular(2))),
+                          const SizedBox(width: 8),
+                          const Text('Financial',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        children: [
+                          _menuCard(Icons.receipt_long, 'Transaction History', '1% fees & orders', () => context.go('/admin/transactions')),
+                          _menuCard(Icons.account_balance_wallet, 'Income Summary', 'ETB ${_totalIncome.toStringAsFixed(0)} total', () => context.go('/admin/income')),
+                          _menuCard(Icons.receipt, 'Expenses', 'Log & track', () => context.go('/admin/expenses')),
+                          _menuCard(Icons.analytics_outlined, 'Sector Reports', 'Per-category data', () => context.go('/admin/reports')),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Data & Communications
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                      child: Row(
+                        children: [
+                          Container(width: 3, height: 16,
+                              decoration: BoxDecoration(color: AppTheme.teal, borderRadius: BorderRadius.circular(2))),
+                          const SizedBox(width: 8),
+                          const Text('Data & Communications',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                      child: Column(
+                        children: [
+                          _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.go('/admin/registrations')),
+                          _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.go('/admin/send-notifications')),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
     );
   }
 
-  Widget _statCard(IconData icon, String label, String value, Color color) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.cardBorder),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 20),
-          const Spacer(),
-          Text(value,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-          Text(label,
-              style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
-        ],
+  Widget _quickStat(IconData icon, String label, String value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppTheme.cardBorder),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 18),
+            const SizedBox(height: 4),
+            Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: color)),
+            Text(label, style: const TextStyle(fontSize: 9, color: AppTheme.textMuted)),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _action(IconData icon, String label, VoidCallback? onTap) {
+  Widget _pendingCard(IconData icon, String title, String subtitle, Color color, VoidCallback onTap) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        onTap: onTap,
-        leading: Icon(icon, color: AppTheme.primaryGreenDark),
-        title: Text(label,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-        trailing: const Icon(Icons.chevron_right, color: AppTheme.textMuted, size: 20),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        tileColor: AppTheme.surface,
+      child: Material(
+        color: color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                      Text(subtitle, style: TextStyle(fontSize: 11, color: color)),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: color, size: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _menuCard(IconData icon, String title, String? subtitle, VoidCallback onTap) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryGreen.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: AppTheme.primaryGreen, size: 19),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
+                      if (subtitle != null)
+                        Text(subtitle, style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, color: AppTheme.textMuted, size: 18),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

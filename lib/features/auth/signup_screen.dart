@@ -558,7 +558,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         const SizedBox(height: 16),
         BirrTextField(
           label: 'Phone Number',
-          hint: '09XX XXX XXX',
+          hint: '0912345678',
           controller: _phoneController,
           keyboardType: TextInputType.phone,
           textInputAction: TextInputAction.next,
@@ -568,6 +568,14 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             }
             return PhoneFormatter.validateEthiopianPhone(v);
           },
+        ),
+        const SizedBox(height: 4),
+        const Padding(
+          padding: EdgeInsets.only(left: 4),
+          child: Text(
+            'Ethiopian numbers only — enter as 0912345678, +251912345678, or 251912345678',
+            style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+          ),
         ),
         const SizedBox(height: 16),
         BirrTextField(
