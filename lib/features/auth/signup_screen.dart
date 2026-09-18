@@ -173,11 +173,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     });
 
     try {
-      // Capture whether we got a session BEFORE calling signUp (the
-      // notifier may reset the auth state when email confirmation is
-      // enabled and signUp() returns no session).
-      final hadSessionBefore = _supabase.auth.currentSession != null;
-
       if (_isProvider) {
         await ref.read(authProvider.notifier).signUpAsProvider(
               email: _emailController.text.trim(),
@@ -246,45 +241,29 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         }
       }
 
+      // Admin approval is the account gate (email confirmation is
+      // disabled in Supabase Auth), so signUp() returns a session
+      // immediately and the handle_new_user() trigger has already created
+      // the profile in PENDING_APPROVAL status. Go straight to the
+      // waiting-for-admin-approval screen.
       final hasSession = _supabase.auth.currentSession != null;
-      final emailConfirmationRequired =
-          !hadSessionBefore && !hasSession;
+      if (!mounted) return;
 
-      // Email confirmation flow: the account was created and the profile
-      // exists server-side (created by the handle_new_user trigger), but
-      // the user must verify their email before a session is issued.
-      if (emailConfirmationRequired) {
-        if (mounted) {
-          await showDialog<void>(
-            context: context,
-            barrierDismissible: false,
-            builder: (dialogCtx) => AlertDialog(
-              title: const Text('Verify your email'),
-              content: Text(
-                'We sent a confirmation link to ${_emailController.text.trim()}. '
-                'Please check your inbox (and spam folder), confirm your '
-                'email, then sign in.',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogCtx).pop(),
-                  child: const Text('OK'),
-                ),
-              ],
-            ),
-          );
-          if (mounted) {
-            context.go('/login');
-          }
-        }
+      if (!hasSession) {
+        // Defensive: only possible if email confirmation gets re-enabled
+        // in Supabase Auth. The account was still created — send the user
+        // to sign in instead of pretending registration failed.
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text('Account created. Please sign in to continue.')),
+        );
+        context.go('/login');
         return;
       }
 
-      // Session available — upload documents now (client-side writes need
-      // the authenticated session).
-      if (mounted) {
-        context.go('/pending-approval');
-      }
+      context.go('/pending-approval');
     } catch (e) {
       if (mounted) {
         setState(() {

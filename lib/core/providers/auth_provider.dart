@@ -183,10 +183,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// IMPORTANT: all profile data is passed via signUp(data: ...) metadata —
   /// the SECURITY DEFINER handle_new_user() trigger creates the profile
   /// (and the provider profile when provider_type is present), the USER
-  /// role, and the approval request. No client-side table writes happen
-  /// here, because when email confirmation is enabled signUp() returns
-  /// NO session and any client-side write fails RLS with 42501
-  /// ("new row violates row-level security policy for table \"profiles\"”).
+  /// role, and the approval request. The app never writes tables client-
+  /// side during signup, so this works whether or not Supabase returns a
+  /// session (e.g. if email confirmation is ever re-enabled).
   Future<void> signUp({
     required String email,
     required String phone,
@@ -214,17 +213,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
         throw Exception('Sign up failed: no user returned');
       }
 
-      // Email confirmation flow: no session is returned until the user
-      // confirms their email. The handle_new_user() trigger already created
-      // the profile + USER role + approval request. Reset to a logged-out
-      // state so the router treats the user as unauthenticated and the UI
-      // can direct them to verify their email and sign in.
+      // Email confirmation is disabled in Supabase Auth (admin approval is
+      // the account gate), so a session is issued immediately. If a session
+      // is somehow still absent, reset to a logged-out state so the router
+      // treats the user as unauthenticated and the UI sends them to sign in.
       if (response.session == null) {
         state = const AuthState(isLoading: false);
         return;
       }
 
-      // Session available — load the profile created by the trigger.
+      // Session available — load the profile created by the trigger
+      // (status PENDING_APPROVAL, so the router lands on
+      // /pending-approval).
       await _loadUserProfile(response.user!);
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -238,9 +238,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// All writes happen server-side: handle_new_user() creates the profile
   /// AND the provider_profiles row (from provider_type in the signup
   /// metadata); trg_provider_profiles_auto_setup then assigns the provider
-  /// role and opens the approval request. No client-side table writes are
-  /// attempted (they would be blocked by RLS when email confirmation
-  /// prevents a session from being issued).
+  /// role and opens the approval request. The app never writes tables
+  /// client-side during signup, so this works whether or not Supabase
+  /// returns a session.
   Future<void> signUpAsProvider({
     required String email,
     required String phone,
@@ -270,7 +270,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         throw Exception('Sign up failed');
       }
 
-      // Email confirmation flow: no session yet — see signUp() above.
+      // No-session fallback — see signUp() above.
       if (response.session == null) {
         state = const AuthState(isLoading: false);
         return;

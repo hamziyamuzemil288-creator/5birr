@@ -140,6 +140,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         }
       }
 
+      // Approval resolved (e.g. admin approved while the user sat on the
+      // pending screen and tapped REFRESH STATUS) — move to the dashboard
+      // instead of dead-ending on the approval screen.
+      if (isApprovalRoute &&
+          !authState.isPendingApproval &&
+          !authState.isRejected) {
+        return _getDashboardPath(authState);
+      }
+
       // ── On an auth route (login, signup, role-select) — redirect away ──
       if (isAuthRoute || isSignupRoute) {
         return _getDashboardPath(authState);
