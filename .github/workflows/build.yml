@@ -34,7 +34,7 @@ jobs:
       - name: Build release AAB
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_ALIAS: fivebirr
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           flutter build appbundle \
