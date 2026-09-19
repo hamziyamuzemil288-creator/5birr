@@ -149,7 +149,11 @@ jobs:
 
       - name: Apply migrations (db push)
         if: ${{ !inputs.dry_run }}
-        run: supabase db push
+        # --include-all: 0034 is newer than the CLI-recorded remote history
+        # baseline but predates the newest remote migration; without the flag
+        # db push refuses with "Found local migration files to be inserted
+        # before the last migration on remote database".
+        run: supabase db push --include-all
 
       - name: Deploy function repo-chat
         if: ${{ !inputs.dry_run }}
