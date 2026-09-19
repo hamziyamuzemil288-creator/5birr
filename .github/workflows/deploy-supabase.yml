@@ -61,11 +61,25 @@ jobs:
 
       - name: Dry run (db push --dry-run)
         if: ${{ inputs.dry_run }}
-        run: supabase db push --dry-run
+        run: supabase db push --dry-run --include-all
 
       - name: Apply migrations (db push)
         if: ${{ !inputs.dry_run }}
-        run: supabase db push
+        # The live DB was built by pasting SQL in the Supabase editor, so the
+        # CLI migration-history table has no record of 0001-0033 — a plain
+        # `db push` replays them from scratch and dies on the first existing
+        # object (run #2: "type \"app_role\" already exists" in 0001).
+        # --include-all marks all local migration files as applied WITHOUT
+        # re-executing them; the three 20260919* files are NOT in that table
+        # yet, so they still apply normally.
+        run: supabase db push --include-all
+
+      - name: Notify PostgREST of schema change
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -eu
+          echo "NOTIFY pgrst, 'reload schema';" > /tmp/notify_pgrst.sql
+          supabase db execute --file /tmp/notify_pgrst.sql
 
       - name: Deploy function repo-chat
         if: ${{ !inputs.dry_run }}
