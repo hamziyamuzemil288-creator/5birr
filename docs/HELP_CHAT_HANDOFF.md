@@ -82,19 +82,24 @@ in the run log. Project ref `xnwieehlrhrffoikpglj` is a plain env var
    → Actions → New repository secret). Generate `INDEXER_KEY` with e.g.
    `openssl rand -hex 32` — keep the value; the same string goes into
    `INDEXER_URL`'s sibling GitHub secret in step 5.
-2. Run **Deploy Supabase** with `dry_run = true` (the default). Read the
-   schema diff in the run log; nothing is changed. If the CLI reports
-   out-of-order migrations, re-run after merging PR #1 so
-   `20260919000001_match_chunks_kinds.sql` is present on main (the
-   dry-run only sees migrations in the checked-out tree).
+2. **After merging PR #12** run **Deploy Supabase** with
+   `baseline_history = true` and `dry_run = true` (the default). The live DB
+   was built via the SQL editor, so the CLI history table is empty and a
+   plain push would replay every old migration. The baseline step marks
+   0001–0033 as applied in the history table ONLY (`supabase migration
+   repair`, never executes them); the dry run must then list exactly the
+   three 20260919* files and nothing older. Files with non-timestamp names
+   (0022a–0022d) are skipped by the CLI and reported as warnings — their
+   content was already pasted live, so nothing is lost.
 3. Owner applies the Task B data repair in the Supabase SQL editor (the
    single transactional UPDATE for approved-but-PENDING profiles) — this
    is data, not schema, so the workflow does not do it.
-4. Run **Deploy Supabase** with `dry_run = false`: applies migrations in
-   timestamp order (`20260919000001`, then `20260919000002`), deploys
-   `repo-chat` and `index-chunks` (`--no-verify-jwt`), and sets Supabase
-   function secrets `INDEXER_KEY` + `LLM_PROVIDER=none` (values from the
-   GitHub secrets, never printed).
+4. Run **Deploy Supabase** with `dry_run = false` and
+   `baseline_history = false`: applies the three pending migrations in
+   timestamp order (`20260919000000`–`20260919000002`), reloads the
+   PostgREST schema cache, deploys `repo-chat` and `index-chunks`
+   (`--no-verify-jwt`), and sets Supabase function secrets `INDEXER_KEY`
+   + `LLM_PROVIDER=none` (values from the GitHub secrets, never printed).
 5. Owner adds `INDEXER_URL` (=
    `https://xnwieehlrhrffoikpglj.supabase.co/functions/v1/index-chunks`)
    and `INDEXER_KEY` as GitHub Actions secrets — the workflow env can read
