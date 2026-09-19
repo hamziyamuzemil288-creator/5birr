@@ -15,7 +15,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node tools/indexer/index.mjs
+      - name: Run indexer (non-critical)
+        continue-on-error: true
+        run: node tools/indexer/index.mjs
         env:
           INDEXER_URL: ${{ secrets.INDEXER_URL }}
           INDEXER_KEY: ${{ secrets.INDEXER_KEY }}
