@@ -27,15 +27,42 @@ class _State extends State<AdminProviderManagementScreen> {
       _error = null;
     });
     try {
+      // Providers + their profile embed. user_documents CANNOT be embedded
+      // here: user_documents.user_id references auth.users(id) (0001) and
+      // profiles(id) (0031), never provider_profiles — PostgREST resolves
+      // embeds only through declared FKs, so the old embed failed with
+      // PGRST200 and killed the whole query. Documents are fetched
+      // separately below and grouped per provider in Dart.
       final data = await Supabase.instance.client
           .from('provider_profiles')
-          .select(
-              '*, profiles(full_name, phone), user_documents(id, document_type, storage_path, uploaded_at)')
+          .select('*, profiles(full_name, phone)')
           .eq('status', _filter)
           .order('created_at', ascending: false);
+      final providers = List<Map<String, dynamic>>.from(data as List);
+
+      // Second query: documents for all listed providers' auth user ids.
+      final userIds = providers
+          .map((p) => p['user_id'])
+          .whereType<String>()
+          .toSet()
+          .toList();
+      final Map<String, List<Map<String, dynamic>>> docsByUser = {};
+      if (userIds.isNotEmpty) {
+        final docs = await Supabase.instance.client
+            .from('user_documents')
+            .select('id, user_id, document_type, storage_path, uploaded_at')
+            .inFilter('user_id', userIds);
+        for (final d in (docs as List).whereType<Map<String, dynamic>>()) {
+          docsByUser.putIfAbsent(d['user_id'] as String, () => []).add(d);
+        }
+      }
+      for (final p in providers) {
+        p['user_documents'] = docsByUser[p['user_id']] ?? const [];
+      }
+
       if (mounted) {
         setState(() {
-          _providers = List<Map<String, dynamic>>.from(data as List);
+          _providers = providers;
           _loading = false;
         });
       }
