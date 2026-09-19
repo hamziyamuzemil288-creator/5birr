@@ -25,7 +25,6 @@ const MARKDOWN_ALLOWLIST = [
   /^docs\/help\//,
   /^privacy-policy\.md$/,
   /^delete-account\.md$/,
-  /^README\.md$/, // root overview only; user-facing, no internal ops content
 ];
 const EXCLUDE = [
   /\.g\.dart$/,
