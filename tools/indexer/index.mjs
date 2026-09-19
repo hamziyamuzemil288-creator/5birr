@@ -9,29 +9,56 @@ if (!INDEXER_URL || !INDEXER_KEY) throw new Error("INDEXER_URL and INDEXER_KEY a
 const sh = (cmd) => execSync(cmd, { encoding: "utf8", maxBuffer: 1 << 28 }).trim();
 const commit = AFTER || sh("git rev-parse HEAD");
 
-// What the agent is allowed to learn from. Adjust to your repo layout.
+// Code/config the agent may index (kind 'code'/'database'; never served to
+// end users — repo-chat free mode only returns kind 'doc'/'ui_text').
 const INCLUDE = [
   /^lib\/.*\.dart$/,
   /^lib\/l10n\/.*\.arb$/,
   /^supabase\/migrations\/.*\.sql$/,
   /^supabase\/functions\/.*\.ts$/,
-  /\.md$/,
   /^pubspec\.yaml$/,
+];
+// Markdown is an ALLOWLIST: only user-facing docs are ever indexed. Markdown
+// under n8n/, scripts/, test/, supabase/, tools/ and .github/ is excluded by
+// construction (nothing in the allowlist lives there).
+const MARKDOWN_ALLOWLIST = [
+  /^docs\/help\//,
+  /^privacy-policy\.md$/,
+  /^delete-account\.md$/,
 ];
 const EXCLUDE = [
   /\.g\.dart$/,
   /\.freezed\.dart$/,
   /(^|\/)\.env/,
+  // Help-chat's own machinery is never indexed (as before this change).
   /^supabase\/functions\/(repo-chat|index-chunks)\//,
+  // Explicit never-index list (belt-and-braces vs allowlist drift), plus the
+  // generated combined-migration dump produced by scripts/apply_migrations_sql.sh.
+  /(^|\/)help-chat-agent-ALL-IN-ONE\.md$/,
+  /(^|\/)knowledge\.md$/,
+  /(^|\/)HELP_CHAT_SETUP\.md$/,
+  /(^|\/)HELP_CHAT_HANDOFF\.md$/,
+];
+// Markdown-scoped directory excludes: explicit per the security policy. Scoped
+// to .md files only so the supabase/ and tools/ entries above keep working.
+const MARKDOWN_EXCLUDE_DIRS = [
+  /^n8n\//,
+  /^scripts\//,
+  /^test\//,
+  /^supabase\//,
   /^tools\//,
   /^\.github\//,
-  // Agent/ops-facing docs: never user help content (contain code or internal details).
-  /^help-chat-agent-ALL-IN-ONE\.md$/,
-  /^HELP_CHAT_SETUP\.md$/,
-  /^docs\/HELP_CHAT_HANDOFF\.md$/,
-  /^knowledge\.md$/,
 ];
-const wanted = (p) => INCLUDE.some((r) => r.test(p)) && !EXCLUDE.some((r) => r.test(p));
+const wanted = (p) => {
+  if (p.endsWith(".md")) {
+    return (
+      MARKDOWN_ALLOWLIST.some((r) => r.test(p)) &&
+      !MARKDOWN_EXCLUDE_DIRS.some((r) => r.test(p)) &&
+      !EXCLUDE.some((r) => r.test(p))
+    );
+  }
+  return INCLUDE.some((r) => r.test(p)) && !EXCLUDE.some((r) => r.test(p));
+};
 
 // Remove anything that looks like a secret before it leaves the repo.
 const redact = (s) =>
