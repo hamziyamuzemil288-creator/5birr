@@ -12,10 +12,15 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (schema diff only, no changes applied)'
+        description: 'Dry run (list pending migrations only, no changes applied)'
         type: boolean
         required: false
         default: true
+      baseline_history:
+        description: 'Mark pre-20260919 migrations as applied in history (never executes them)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -58,6 +63,43 @@ jobs:
             fi
           done
           exit $missing
+
+      # The live DB was built by pasting SQL in the Supabase editor, so the
+      # CLI migration-history table has no record of 0001-0033 and a plain
+      # `db push` would replay them from scratch (run #2: "type \"app_role\"
+      # already exists" in 0001). `migration repair --status applied` writes
+      # ONLY the history table — it never executes the files — so it is
+      # safe to re-run. The CLI accepts files whose name starts with an
+      # all-numeric prefix + `_` (0001_core_schema.sql -> version 0001);
+      # files like 0022a_*.sql (non-numeric prefix) are IGNORED by the CLI
+      # and surfaced here as warnings. 20260919* files are NEVER marked
+      # applied by this step. Runs BEFORE both dry-run and push so a
+      # baseline+dry_run dispatch lists exactly the 20260919* files. The
+      # following dry run is the gate: it must list exactly the three
+      # 20260919* files and nothing older.
+      - name: Baseline migration history (repair, no execution)
+        if: ${{ inputs.baseline_history }}
+        run: |
+          set -eu
+          versions=""
+          for f in supabase/migrations/*.sql; do
+            base="$(basename "$f")"
+            v="${base%%_*}"
+            case "$v" in
+              ''|*[!0-9]*)
+                echo "::warning::CLI ignores migration file with non-numeric prefix: $base"
+                continue ;;
+            esac
+            if [ $((10#$v)) -lt 20260919000000 ]; then
+              versions="$versions $v"
+            else
+              echo "kept pending: $base"
+            fi
+          done
+          for v in $(printf '%s\n' $versions | sort -u); do
+            echo "Marking $v applied (no execution)"
+            supabase migration repair --status applied "$v"
+          done
 
       - name: Dry run (db push --dry-run)
         if: ${{ inputs.dry_run }}
