@@ -25,6 +25,11 @@ const EXCLUDE = [
   /^supabase\/functions\/(repo-chat|index-chunks)\//,
   /^tools\//,
   /^\.github\//,
+  // Agent/ops-facing docs: never user help content (contain code or internal details).
+  /^help-chat-agent-ALL-IN-ONE\.md$/,
+  /^HELP_CHAT_SETUP\.md$/,
+  /^docs\/HELP_CHAT_HANDOFF\.md$/,
+  /^knowledge\.md$/,
 ];
 const wanted = (p) => INCLUDE.some((r) => r.test(p)) && !EXCLUDE.some((r) => r.test(p));
 
