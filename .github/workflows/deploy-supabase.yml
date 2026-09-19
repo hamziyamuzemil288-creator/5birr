@@ -45,6 +45,20 @@ jobs:
       - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
 
+      # Fail loudly on missing/empty secrets. GitHub maps a missing secret to
+      # an EMPTY string, so [ -z ] is the reliable check — not shell unset.
+      - name: Verify required secrets are present
+        run: |
+          set -eu
+          missing=0
+          for v in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD INDEXER_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret $v is missing or empty. Add it in Settings → Secrets and variables → Actions."
+              missing=1
+            fi
+          done
+          exit $missing
+
       - name: Dry run (db push --dry-run)
         if: ${{ inputs.dry_run }}
         run: supabase db push --dry-run
@@ -68,7 +82,8 @@ jobs:
           supabase secrets set INDEXER_KEY="$INDEXER_KEY"
           supabase secrets set LLM_PROVIDER=none
 
-      # Fail loudly: each step above already fails the job on non-zero exit
-      # (`set -e` is default in GH Actions run steps). `set -eu` on the
-      # secrets step additionally treats empty vars as errors, so a missing
-      # INDEXER_KEY secret aborts instead of silently setting an empty value.
+      # Fail loudly: every step fails the job on non-zero exit (`set -e` is
+      # default in GH Actions run steps). The "Verify required secrets" step
+      # aborts the run before anything touches the live project when any
+      # secret is missing or empty, and the `set -eu` on the secrets step is
+      # a second guard against an emptied INDEXER_KEY.
