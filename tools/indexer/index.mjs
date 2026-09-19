@@ -9,14 +9,17 @@ if (!INDEXER_URL || !INDEXER_KEY) throw new Error("INDEXER_URL and INDEXER_KEY a
 const sh = (cmd) => execSync(cmd, { encoding: "utf8", maxBuffer: 1 << 28 }).trim();
 const commit = AFTER || sh("git rev-parse HEAD");
 
-// Code/config the agent may index (kind 'code'/'database'; never served to
-// end users — repo-chat free mode only returns kind 'doc'/'ui_text').
+// Chunk POST batch size (index-chunks embeds each chunk sequentially with
+// gte-small; 2 per request sits safely inside free-plan worker limits).
+const BATCH = Math.max(1, parseInt(process.env.BATCH || "2", 10) || 2);
+
+// Docs-only allowlist: index ONLY user-facing content. repo-chat free mode
+// (LLM_PROVIDER=none) serves kind 'doc' and 'ui_text' exclusively, so code,
+// migrations and function sources are never returned to users — embedding them
+// wasted the edge worker's compute budget (HTTP 546 WORKER_RESOURCE_LIMIT,
+// full-index runs #13/#16).
 const INCLUDE = [
-  /^lib\/.*\.dart$/,
   /^lib\/l10n\/.*\.arb$/,
-  /^supabase\/migrations\/.*\.sql$/,
-  /^supabase\/functions\/.*\.ts$/,
-  /^pubspec\.yaml$/,
 ];
 // Markdown is an ALLOWLIST: only user-facing docs are ever indexed. Markdown
 // under n8n/, scripts/, test/, supabase/, tools/ and .github/ is excluded by
@@ -98,12 +101,24 @@ function chunk(path, text) {
 }
 
 async function post(body) {
-  const res = await fetch(INDEXER_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-indexer-key": INDEXER_KEY },
-    body: JSON.stringify({ commit, ...body }),
-  });
-  if (!res.ok) throw new Error(`index-chunks ${res.status}: ${await res.text()}`);
+  // Retry up to 3 times with backoff on 5xx / 546 (free-plan worker limits
+  // are transient under load). Never logs body content or secrets.
+  const delays = [2000, 6000, 15000];
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(INDEXER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-indexer-key": INDEXER_KEY },
+      body: JSON.stringify({ commit, ...body }),
+    });
+    if (res.ok) return res.json();
+    const retryable = res.status >= 500 || res.status === 546 || res.status === 429;
+    if (!retryable || attempt >= 3) {
+      throw new Error(`index-chunks ${res.status}: ${await res.text()}`);
+    }
+    const wait = delays[attempt];
+    console.log(`index-chunks ${res.status}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+    await new Promise((r) => setTimeout(r, wait));
+  }
 }
 
 const batches = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
@@ -128,10 +143,20 @@ console.log(`${full ? "Full" : "Incremental"} index: ${changed.length} changed, 
 if (full) await post({ delete_all: true });
 else for (const b of batches([...changed, ...deleted], 100)) await post({ delete_paths: b });
 
-// 3. Send fresh chunks.
-const chunks = changed.flatMap((p) => chunk(p, redact(readFileSync(p, "utf8"))));
-// Small batches: index-chunks runs gte-small sequentially per chunk inside one
-// worker; 15 embeds per request exceeded the free-plan worker's CPU/memory
-// limit (HTTP 546 WORKER_RESOURCE_LIMIT, run #13). 4 is well within it.
-for (const b of batches(chunks, 4)) await post({ chunks: b });
-console.log(`Indexed ${chunks.length} chunks at ${commit.slice(0, 7)}`);
+// 3. Send fresh chunks.const chunks = changed.flatMap((p) => chunk(p, redact(readFileSync(p, "utf8"))));
+const list = batches(chunks, BATCH);
+let totals = { inserted: 0, embedded: 0, failed: 0 };
+for (let i = 0; i < list.length; i++) {
+  const out = await post({ chunks: list[i] });
+  totals.inserted += out.inserted || 0;
+  totals.embedded += out.embedded || 0;
+  totals.failed += out.failed || 0;
+  console.log(`batch ${i + 1}/${list.length} ok`);
+}
+console.log(
+  `Indexed ${totals.inserted} chunks at ${commit.slice(0, 7)}` +
+    ` (embedded: ${totals.embedded}, failed-embed: ${totals.failed})`,
+);
+if (totals.failed > 0 && totals.embedded === 0) {
+  throw new Error(`every embedding failed (${totals.failed} rows inserted with NULL embedding)`);
+}
