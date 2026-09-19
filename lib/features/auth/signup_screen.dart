@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:storage_client/storage_client.dart' show FileOptions;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/utils/phone_formatter.dart';
@@ -148,8 +147,22 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
 
   /// Shown when the account itself was created but document storage failed.
   /// The error must reach the user (and support), never disappear silently.
-  Future<void> _showDocumentUploadError(Object error) async {
-    if (!mounted) return;
+  /// [router]/[messenger] are captured at method entry so this still works
+  /// when navigation has disposed the signup screen mid-flight.
+  Future<void> _showDocumentUploadError(
+    Object error,
+    GoRouter router,
+    ScaffoldMessengerState messenger,
+  ) async {
+    // Report even if navigation has disposed this screen: the pending-
+    // approval screen offers a recovery action for exactly this case.
+    final message = _documentErrorText(error);
+    if (!mounted) {
+      router.push(
+          '/pending-approval?resumeDocUpload=true&docError=${Uri.encodeComponent(message)}');
+      return;
+    }
+    setState(() => _uploadingDocs = false);
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -158,8 +171,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         content: Text(
           'Your account was created, but your documents could not be '
           'uploaded, so verification cannot start yet.\n\n'
-          'Reason: $error\n\n'
-          'Please contact support — they will help you finish verification.',
+          'Reason: $message\n\n'
+          'Please contact support — they will help you finish verification. '
+          'You can also retry from the pending-approval screen.',
         ),
         actions: [
           TextButton(
@@ -171,8 +185,26 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     );
   }
 
+  /// Human-readable, secret-free text for a document pipeline failure.
+  String _documentErrorText(Object error) {
+    if (error is PostgrestException) {
+      final details = error.details?.toString();
+      return 'database error ${error.code}: ${error.message}'
+          '${details == null || details.isEmpty ? '' : ' — $details'}';
+    }
+    if (error is StorageException) {
+      return 'storage error: ${error.message}';
+    }
+    return error.toString();
+  }
+
   Future<void> _handleSignup() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // Captured before any await: used to report failures even if navigation
+    // has disposed this screen by the time an upload/insert fails.
+    final router = GoRouter.of(context);
+    final messenger = ScaffoldMessenger.of(context);
 
     // National ID image is required for ALL users (not just providers)
     if (_nationalIdImage == null) {
@@ -209,38 +241,53 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         // Upload documents after account is created. Failures are surfaced:
         // without the documents the admin cannot verify the account, so the
         // user must know (and contact support) instead of the signup silently
-        // "succeeding" without them.
+        // "succeeding" without them. The router only navigates away after
+        // this completes (success, partial success, or reported failure).
         final userId = _supabase.auth.currentUser?.id;
-        if (userId != null) {
+        if (userId == null) {
+          // No session (e.g. email confirmation enabled): GoTrue issued no
+          // JWT, so nothing can be uploaded or recorded now. Tell the user
+          // instead of silently skipping — documents are requested again
+          // after they log in.
+          final msg = 'Account created. Your verification documents will be '
+              'requested after you sign in.';
+          messenger.showSnackBar(SnackBar(content: Text(msg)));
+          setState(() => _uploadError = msg);
+        } else {
           setState(() => _uploadingDocs = true);
           final nationalIdPath =
               '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
           final licensePath =
               '$userId/license_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
+          Object? licenseError;
           try {
+            final uploaded = <String>[];
             await _uploadDocument(
                 _nationalIdImage!, 'user-documents', nationalIdPath);
-            await _uploadDocument(
-                _licenseImage!, 'user-documents', licensePath);
+            uploaded.add('NATIONAL_ID|$nationalIdPath');
+            try {
+              await _uploadDocument(
+                  _licenseImage!, 'user-documents', licensePath);
+              uploaded.add(
+                  '${_roleName == 'Vehicle Provider' ? 'DRIVING_LICENSE' : 'TRADE_LICENSE'}|$licensePath');
+            } catch (e) {
+              // First file is already stored; keep going so it is recorded.
+              licenseError = e;
+            }
 
-            // Record documents
-            await _supabase.from('user_documents').insert([
-              {
-                'user_id': userId,
-                'document_type': 'NATIONAL_ID',
-                'storage_path': nationalIdPath,
-              },
-              {
-                'user_id': userId,
-                'document_type': _roleName == 'Vehicle Provider'
-                    ? 'DRIVING_LICENSE'
-                    : 'TRADE_LICENSE',
-                'storage_path': licensePath,
-              },
-            ]);
+            // Record documents. Rows are inserted per uploaded file; one
+            // retry covers a transient failure before the error surfaces.
+            await _recordUploadedDocuments(uploaded, userId, retriesLeft: 1);
           } catch (docError) {
-            await _showDocumentUploadError(docError);
+            await _showDocumentUploadError(docError, router, messenger);
+          } finally {
+            if (mounted) setState(() => _uploadingDocs = false);
+          }
+          // Report a second-file failure only after the first file's row
+          // was recorded (never instead of it).
+          if (licenseError != null) {
+            await _showDocumentUploadError(licenseError, router, messenger);
           }
         }
       } else {
@@ -256,7 +303,13 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         // Upload National ID document for regular users. Failures are
         // surfaced for the same reason: the admin cannot verify without it.
         final userId = _supabase.auth.currentUser?.id;
-        if (userId != null && _nationalIdImage != null) {
+        if (_nationalIdImage == null) {
+          // Nothing to do.
+        } else if (userId == null) {
+          setState(() => _uploadError =
+              'Account created. Please sign in once approved to upload your '
+              'verification documents.');
+        } else {
           setState(() => _uploadingDocs = true);
           final nationalIdPath =
               '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
@@ -265,13 +318,13 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             await _uploadDocument(
                 _nationalIdImage!, 'user-documents', nationalIdPath);
 
-            await _supabase.from('user_documents').insert({
-              'user_id': userId,
-              'document_type': 'NATIONAL_ID',
-              'storage_path': nationalIdPath,
-            });
+            await _recordUploadedDocuments(
+                ['NATIONAL_ID|$nationalIdPath'], userId,
+                retriesLeft: 1);
           } catch (docError) {
-            await _showDocumentUploadError(docError);
+            await _showDocumentUploadError(docError, router, messenger);
+          } finally {
+            if (mounted) setState(() => _uploadingDocs = false);
           }
         }
       }
@@ -307,6 +360,35 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           _error = _friendlyError(e.toString());
         });
       }
+    }
+  }
+
+  /// Records rows in user_documents for every file that reached storage.
+  /// Retries once on failure before rethrowing so the caller can surface
+  /// the real error. The second file's upload failure (if any) is reported
+  /// after the first file's rows are safely recorded.
+  Future<void> _recordUploadedDocuments(
+    List<String> uploaded,
+    String userId, {
+    required int retriesLeft,
+  }) async {
+    if (uploaded.isEmpty) return;
+    try {
+      await _supabase.from('user_documents').insert([
+        for (final entry in uploaded)
+          {
+            'user_id': userId,
+            'document_type': entry.split('|').first,
+            'storage_path': entry.split('|').skip(1).join('|'),
+          },
+      ]);
+    } catch (e) {
+      if (retriesLeft > 0) {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        return _recordUploadedDocuments(uploaded, userId,
+            retriesLeft: retriesLeft - 1);
+      }
+      rethrow;
     }
   }
 
