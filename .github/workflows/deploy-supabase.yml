@@ -109,13 +109,6 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase db push
 
-      - name: Reload PostgREST schema cache
-        if: ${{ !inputs.dry_run }}
-        run: |
-          set -eu
-          echo "NOTIFY pgrst, 'reload schema';" > /tmp/notify_pgrst.sql
-          supabase db execute --file /tmp/notify_pgrst.sql
-
       - name: Deploy function repo-chat
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy repo-chat
