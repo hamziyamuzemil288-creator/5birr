@@ -138,14 +138,37 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     );
   }
 
-  Future<String?> _uploadDocument(File file, String bucket, String path) async {
-    try {
-      await _supabase.storage.from(bucket).upload(path, file,
-          fileOptions: const FileOptions(upsert: true));
-      return path;
-    } catch (e) {
-      return null;
-    }
+  /// Uploads one document and returns its storage path.
+  /// Throws on failure — callers surface the error; it is never swallowed.
+  Future<String> _uploadDocument(File file, String bucket, String path) async {
+    await _supabase.storage.from(bucket).upload(path, file,
+        fileOptions: const FileOptions(upsert: true));
+    return path;
+  }
+
+  /// Shown when the account itself was created but document storage failed.
+  /// The error must reach the user (and support), never disappear silently.
+  Future<void> _showDocumentUploadError(Object error) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Documents not uploaded'),
+        content: Text(
+          'Your account was created, but your documents could not be '
+          'uploaded, so verification cannot start yet.\n\n'
+          'Reason: $error\n\n'
+          'Please contact support — they will help you finish verification.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _handleSignup() async {
@@ -183,7 +206,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               providerType: _providerType,
             );
 
-        // Upload documents after account is created
+        // Upload documents after account is created. Failures are surfaced:
+        // without the documents the admin cannot verify the account, so the
+        // user must know (and contact support) instead of the signup silently
+        // "succeeding" without them.
         final userId = _supabase.auth.currentUser?.id;
         if (userId != null) {
           setState(() => _uploadingDocs = true);
@@ -192,26 +218,30 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           final licensePath =
               '$userId/license_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-          await _uploadDocument(
-              _nationalIdImage!, 'user-documents', nationalIdPath);
-          await _uploadDocument(
-              _licenseImage!, 'user-documents', licensePath);
+          try {
+            await _uploadDocument(
+                _nationalIdImage!, 'user-documents', nationalIdPath);
+            await _uploadDocument(
+                _licenseImage!, 'user-documents', licensePath);
 
-          // Record documents
-          await _supabase.from('user_documents').insert([
-            {
-              'user_id': userId,
-              'document_type': 'NATIONAL_ID',
-              'storage_path': nationalIdPath,
-            },
-            {
-              'user_id': userId,
-              'document_type': _roleName == 'Vehicle Provider'
-                  ? 'DRIVING_LICENSE'
-                  : 'TRADE_LICENSE',
-              'storage_path': licensePath,
-            },
-          ]);
+            // Record documents
+            await _supabase.from('user_documents').insert([
+              {
+                'user_id': userId,
+                'document_type': 'NATIONAL_ID',
+                'storage_path': nationalIdPath,
+              },
+              {
+                'user_id': userId,
+                'document_type': _roleName == 'Vehicle Provider'
+                    ? 'DRIVING_LICENSE'
+                    : 'TRADE_LICENSE',
+                'storage_path': licensePath,
+              },
+            ]);
+          } catch (docError) {
+            await _showDocumentUploadError(docError);
+          }
         }
       } else {
         await ref.read(authProvider.notifier).signUp(
@@ -223,21 +253,26 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               role: AppUserRole.user,
             );
 
-        // Upload National ID document for regular users
+        // Upload National ID document for regular users. Failures are
+        // surfaced for the same reason: the admin cannot verify without it.
         final userId = _supabase.auth.currentUser?.id;
         if (userId != null && _nationalIdImage != null) {
           setState(() => _uploadingDocs = true);
           final nationalIdPath =
               '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-          await _uploadDocument(
-              _nationalIdImage!, 'user-documents', nationalIdPath);
+          try {
+            await _uploadDocument(
+                _nationalIdImage!, 'user-documents', nationalIdPath);
 
-          await _supabase.from('user_documents').insert({
-            'user_id': userId,
-            'document_type': 'NATIONAL_ID',
-            'storage_path': nationalIdPath,
-          });
+            await _supabase.from('user_documents').insert({
+              'user_id': userId,
+              'document_type': 'NATIONAL_ID',
+              'storage_path': nationalIdPath,
+            });
+          } catch (docError) {
+            await _showDocumentUploadError(docError);
+          }
         }
       }
 
