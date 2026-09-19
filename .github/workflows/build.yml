@@ -31,10 +31,26 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # Keystore lives in Actions secrets (KEYSTORE_BASE64), never in the repo.
+      # See docs/SIGNING.md. PKCS12: the key password equals the store password.
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "::error::One or more signing secrets are missing/empty. Required: KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_PASSWORD, KEY_ALIAS (see docs/SIGNING.md)."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release-keystore.p12"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release-keystore.p12" >> "$GITHUB_ENV"
+
       - name: Build release AAB
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: fivebirr
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           flutter build appbundle \

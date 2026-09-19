@@ -11,3 +11,7 @@ build/
 supabase/.branches
 supabase/.temp
 node_modules/
+
+# Android signing keystores are never committed (see docs/SIGNING.md)
+*.p12
+**/*.p12
