@@ -1,0 +1,75 @@
+name: Test APK
+
+# Signed universal APK for manual testing on a phone. The Play-ready
+# artifact remains the AAB from "Build Release AAB" — this workflow exists
+# only because AABs cannot be installed directly on a device.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail loudly if required secrets are missing
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          missing=0
+          for v in SUPABASE_URL SUPABASE_ANON_KEY GOOGLE_MAPS_API_KEY KEYSTORE_PASSWORD KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Required secret $v is empty or missing"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter info
+        run: flutter doctor -v
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Same signing setup as Build Release AAB: the gradle config reads the
+      # committed release-keystore.p12 with KEYSTORE_PASSWORD/KEY_PASSWORD.
+      - name: Build universal release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: fivebirr
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          flutter build apk \
+            --release \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 3
+          if-no-files-found: error
