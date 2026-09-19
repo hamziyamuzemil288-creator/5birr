@@ -74,6 +74,9 @@ export function sanitizeError(msg: string): string {
     "ONLY_ADMINISTRATORS", "ADMINISTRATORS_CANNOT", "ROLE_REQUIRED",
     "ONLY_CLAIMING_PROVIDER", "ONLY_RIDER_OR_ADMIN", "RIDE_ALREADY_TERMINAL",
     "RECHARGE_STATUS_CAN_ONLY", "SUBSCRIPTION_STATUS_CANNOT_BE_SELF_MODIFIED",
+    // Provider/profile approval flow (see 0029/0030/0033/0034 server-path fixes)
+    "PROFILE_STATUS_CANNOT_BE_SELF_MODIFIED", "STATUS_CANNOT_BE_SELF_MODIFIED",
+    "CANNOT_APPROVE_OWN_ACCOUNT", "ONLY_ADMINISTRATORS",
   ];
   for (const code of safeCodes) {
     if (msg.includes(code)) return msg;
