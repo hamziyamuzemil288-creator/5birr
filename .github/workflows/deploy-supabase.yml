@@ -1,0 +1,89 @@
+# Manual Supabase deploy — runs ONLY when dispatched, never on push.
+# All live-project credentials come from GitHub secrets; none are echoed.
+# Secrets required (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  — supabase CLI auth (Management API)
+#   SUPABASE_DB_PASSWORD   — used by `supabase db push`
+#   INDEXER_KEY            — set as a Supabase function secret (never printed)
+# Project ref is not a secret — it is public in every Supabase URL.
+
+name: Deploy Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (schema diff only, no changes applied)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-supabase
+  cancel-in-progress: false
+
+env:
+  SUPABASE_PROJECT_REF: xnwieehlrhrffoikpglj
+  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+  SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+  INDEXER_KEY: ${{ secrets.INDEXER_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.117.0
+
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      # Fail loudly on missing/empty secrets. GitHub maps a missing secret to
+      # an EMPTY string, so [ -z ] is the reliable check — not shell unset.
+      - name: Verify required secrets are present
+        run: |
+          set -eu
+          missing=0
+          for v in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD INDEXER_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret $v is missing or empty. Add it in Settings → Secrets and variables → Actions."
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Dry run (db push --dry-run)
+        if: ${{ inputs.dry_run }}
+        run: supabase db push --dry-run
+
+      - name: Apply migrations (db push)
+        if: ${{ !inputs.dry_run }}
+        run: supabase db push
+
+      - name: Deploy function repo-chat
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy repo-chat
+
+      - name: Deploy function index-chunks (no JWT verification)
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy index-chunks --no-verify-jwt
+
+      - name: Set Supabase function secrets
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -eu
+          supabase secrets set INDEXER_KEY="$INDEXER_KEY"
+          supabase secrets set LLM_PROVIDER=none
+
+      # Fail loudly: every step fails the job on non-zero exit (`set -e` is
+      # default in GH Actions run steps). The "Verify required secrets" step
+      # aborts the run before anything touches the live project when any
+      # secret is missing or empty, and the `set -eu` on the secrets step is
+      # a second guard against an emptied INDEXER_KEY.
