@@ -30,12 +30,25 @@ Deno.serve(async (req) => {
     if (error) return reply({ error: error.message }, 500);
   }
 
+  // Embed each chunk defensively: a per-chunk embedder failure (worker CPU
+  // pressure, odd content) must not lose the chunk — the row is still inserted
+  // with a NULL embedding so keyword (fts) search keeps working; only semantic
+  // search skips NULL rows.
+  let embedded = 0;
+  let failed = 0;
   const rows = [];
   for (const c of chunks) {
-    const emb = await embedder.run(String(c.content).slice(0, 2000), {
-      mean_pool: true,
-      normalize: true,
-    });
+    let embedding: string | null = null;
+    try {
+      const emb = await embedder.run(String(c.content).slice(0, 2000), {
+        mean_pool: true,
+        normalize: true,
+      });
+      embedding = JSON.stringify(Array.from(emb));
+      embedded++;
+    } catch (_e) {
+      failed++;
+    }
     rows.push({
       path: c.path,
       start_line: c.start_line,
@@ -43,7 +56,7 @@ Deno.serve(async (req) => {
       kind: c.kind,
       content: c.content,
       commit_sha: commit,
-      embedding: JSON.stringify(Array.from(emb)),
+      embedding,
     });
   }
 
@@ -52,5 +65,5 @@ Deno.serve(async (req) => {
     if (error) return reply({ error: error.message }, 500);
   }
 
-  return reply({ ok: true, inserted: rows.length });
+  return reply({ ok: true, inserted: rows.length, embedded, failed });
 });
