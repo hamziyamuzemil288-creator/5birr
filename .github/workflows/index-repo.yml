@@ -1,0 +1,24 @@
+name: Index repo for help chat
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # manual run = full re-index
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node tools/indexer/index.mjs
+        env:
+          INDEXER_URL: ${{ secrets.INDEXER_URL }}
+          INDEXER_KEY: ${{ secrets.INDEXER_KEY }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          FULL: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}

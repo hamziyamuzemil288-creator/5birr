@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/points_service.dart';
@@ -123,7 +124,8 @@ class UserProfileScreen extends ConsumerWidget {
                   _divider(),
                   _menuTile(Icons.notifications_outlined, 'Notification Settings', AppTheme.info),
                   _divider(),
-                  _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold),
+                  _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
+                      onTap: () => context.push('/help')),
                   _divider(),
                   _menuTile(Icons.info_outline, 'About 5BIRR', AppTheme.textSecondary),
                 ],
@@ -154,7 +156,8 @@ class UserProfileScreen extends ConsumerWidget {
     );
   }
 
-  Widget _menuTile(IconData icon, String label, Color iconColor) {
+  Widget _menuTile(IconData icon, String label, Color iconColor,
+      {VoidCallback? onTap}) {
     return ListTile(
       leading: Container(
         width: 36,
@@ -165,6 +168,7 @@ class UserProfileScreen extends ConsumerWidget {
         ),
         child: Icon(icon, color: iconColor, size: 18),
       ),
+      onTap: onTap,
       title: Text(label,
           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
       trailing: const Icon(Icons.chevron_right,

@@ -47,6 +47,7 @@ import '../features/vehicle/driver_trip_screen.dart';
 import '../features/user/user_ride_request_screen.dart';
 import '../features/user/user_active_ride_screen.dart';
 import '../features/shared/ride_history_screen.dart';
+import '../features/help_chat/help_chat_screen.dart';
 
 /// A [ChangeNotifier] that fires whenever [authProvider] state changes,
 /// allowing [GoRouter] to re-evaluate its redirect callback.
@@ -254,6 +255,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/expenses', builder: (_, __) => const AdminExpenseScreen()),
       GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
       GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
+
+      // ── Help (signed-in users) ──
+      GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),
     ],
   );
 });
