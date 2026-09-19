@@ -130,5 +130,8 @@ else for (const b of batches([...changed, ...deleted], 100)) await post({ delete
 
 // 3. Send fresh chunks.
 const chunks = changed.flatMap((p) => chunk(p, redact(readFileSync(p, "utf8"))));
-for (const b of batches(chunks, 15)) await post({ chunks: b });
+// Small batches: index-chunks runs gte-small sequentially per chunk inside one
+// worker; 15 embeds per request exceeded the free-plan worker's CPU/memory
+// limit (HTTP 546 WORKER_RESOURCE_LIMIT, run #13). 4 is well within it.
+for (const b of batches(chunks, 4)) await post({ chunks: b });
 console.log(`Indexed ${chunks.length} chunks at ${commit.slice(0, 7)}`);
