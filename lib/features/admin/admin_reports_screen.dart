@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
@@ -42,18 +41,35 @@ class _State extends State<AdminReportsScreen> {
       final providerCount = await client.from('provider_profiles').select('id');
       final userCount = await client.from('profiles').select('id');
       
-      // Orders by category
-      final ordersByCategory = await client
+      // Orders by category. orders has no category_id / payment_status
+      // columns (0001) — categories live on the order's products, and the
+      // closest equivalent to "paid" is a COMPLETED order. A single order
+      // can span categories (order_items → products), so an order is
+      // counted under every category represented in its items.
+      final paidOrders = await client
           .from('orders')
-          .select('id, category_id, categories(name, sector)')
-          .eq('payment_status', 'PAID');
+          .select('id, order_items(product_id, products(category_id))')
+          .eq('status', 'COMPLETED');
 
-      // Group orders by category
+      final categoryIdById = {
+        for (final c in (catData as List).whereType<Map<String, dynamic>>())
+          c['id'] as String: c,
+      };
+
+      // Group completed orders by category via their items' products.
       final Map<String, int> orderCountsByCat = {};
-      final Map<String, double> revenueByCat = {};
-      for (final o in ordersByCategory as List) {
-        final catName = (o['categories'] as Map?)?['name'] as String? ?? 'Unknown';
-        orderCountsByCat[catName] = (orderCountsByCat[catName] ?? 0) + 1;
+      for (final o in paidOrders as List) {
+        final items = (o['order_items'] as List?) ?? const [];
+        final catNames = <String>{};
+        for (final item in items.whereType<Map<String, dynamic>>()) {
+          final product = item['products'] as Map<String, dynamic>?;
+          final catId = product?['category_id'] as String?;
+          final cat = catId == null ? null : categoryIdById[catId];
+          if (cat != null) catNames.add(cat['name'] as String? ?? 'Unknown');
+        }
+        for (final name in catNames) {
+          orderCountsByCat[name] = (orderCountsByCat[name] ?? 0) + 1;
+        }
       }
 
       // Products by category
