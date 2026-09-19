@@ -159,6 +159,12 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy index-chunks --no-verify-jwt
 
+      # Provider approval — wired to the admin Provider Management screen
+      # (Approve / Correction / Reject buttons).
+      - name: Deploy function provider-approval
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy provider-approval
+
       # Wallet functions. admin-wallet-recharge is wired to the admin UI
       # (payment verification approve/reject); the other two are deployed
       # ahead of need so the subscription scheduler only has to be enabled.
