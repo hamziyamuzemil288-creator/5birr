@@ -64,19 +64,61 @@ jobs:
           done
           exit $missing
 
+      # WHY STAGING IS ALWAYS RUN: the CLI identifies migrations by the
+      # numeric prefix ONLY. `supabase_migrations.schema_migrations` has
+      # `version text PRIMARY KEY` (verified in cli v2.117.0 source,
+      # pkg/migration/history.go), and db push matches local files against
+      # remote history by version (pkg/migration/apply.go,
+      # FindPendingMigrations). This repo has two files sharing each of the
+      # versions 0020/0021/0022/0024, so only one of each pair can ever be
+      # recorded; the sibling stays "unapplied but older than the newest
+      # remote migration" and fails the push with "Found local migration
+      # files to be inserted before the last migration on remote database"
+      # (run #4). We never rename or edit applied migrations, so instead the
+      # workflow stages a copy of the migrations dir with ONE file per
+      # version (alphabetically first, deterministic) and runs all CLI
+      # commands against that copy. The duplicates' effects already exist in
+      # the live DB (pasted via SQL editor); hiding them from the CLI is a
+      # no-op there. For a FRESH/empty database this staging must be removed
+      # so every file applies.
+      - name: Stage migrations (one file per version)
+        run: |
+          set -eu
+          stage="$(mktemp -d)"
+          seen="$(mktemp)"
+          count=0
+          for f in supabase/migrations/*.sql; do
+            base="$(basename "$f")"
+            v="${base%%_*}"
+            case "$v" in
+              ''|*[!0-9]*)
+                echo "skip (CLI-ignored, non-numeric prefix): $base"
+                continue ;;
+            esac
+            if grep -qx "$v" "$seen"; then
+              echo "skip (duplicate version $v, sibling already staged): $base"
+              continue
+            fi
+            echo "$v" >> "$seen"
+            cp "$f" "$stage/"
+            count=$((count+1))
+          done
+          rm -f "$seen"
+          rm -rf supabase/migrations
+          mv "$stage" supabase/migrations
+          echo "Staged $count migration files (one per version, no duplicates)"
+
       # The live DB was built by pasting SQL in the Supabase editor, so the
       # CLI migration-history table has no record of 0001-0033 and a plain
       # `db push` would replay them from scratch (run #2: "type \"app_role\"
       # already exists" in 0001). `migration repair --status applied` writes
-      # ONLY the history table — it never executes the files — so it is
-      # safe to re-run. The CLI accepts files whose name starts with an
-      # all-numeric prefix + `_` (0001_core_schema.sql -> version 0001);
-      # files like 0022a_*.sql (non-numeric prefix) are IGNORED by the CLI
-      # and surfaced here as warnings. 20260919* files are NEVER marked
-      # applied by this step. Runs BEFORE both dry-run and push so a
-      # baseline+dry_run dispatch lists exactly the 20260919* files. The
-      # following dry run is the gate: it must list exactly the three
-      # 20260919* files and nothing older.
+      # ONLY the history table (UPSERT ... ON CONFLICT (version)) — it never
+      # executes the files — so it is safe to re-run. Versions 0001..0033
+      # are marked applied from the STAGED dir (one file per version, so the
+      # repair glob `version_*.sql` matches exactly one file each).
+      # 20260919* files are NEVER marked applied by this step. The following
+      # dry run is the gate: it must list exactly the three 20260919* files
+      # and nothing older.
       - name: Baseline migration history (repair, no execution)
         if: ${{ inputs.baseline_history }}
         run: |
