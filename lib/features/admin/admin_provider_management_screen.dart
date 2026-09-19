@@ -29,7 +29,8 @@ class _State extends State<AdminProviderManagementScreen> {
     try {
       final data = await Supabase.instance.client
           .from('provider_profiles')
-          .select('*, profiles(full_name, phone)')
+          .select(
+              '*, profiles(full_name, phone), user_documents(id, document_type, storage_path, uploaded_at)')
           .eq('status', _filter)
           .order('created_at', ascending: false);
       if (mounted) {
@@ -238,6 +239,15 @@ class _State extends State<AdminProviderManagementScreen> {
                                     const SizedBox(height: 6),
                                     _ProviderPointsLine(
                                         providerId: p['id'] as String),
+                                    const SizedBox(height: 8),
+                                    _ProviderDocumentsRow(
+                                      documents:
+                                          (p['user_documents'] as List?) ??
+                                              const [],
+                                      businessName:
+                                          p['business_name']?.toString() ??
+                                              '',
+                                    ),
                                     if (_filter == 'PENDING_APPROVAL') ...[
                                       const SizedBox(height: 12),
                                       Row(
@@ -377,6 +387,215 @@ class _ProviderPointsLineState extends State<_ProviderPointsLine> {
                 fontWeight: FontWeight.w600,
                 color: AppTheme.textSecondary)),
       ],
+    );
+  }
+}
+
+/// Documents summary row for one provider: shows what was uploaded and
+/// opens a viewer with signed-URL previews (admin can always read the
+/// user-documents bucket).
+class _ProviderDocumentsRow extends StatelessWidget {
+  final List<dynamic> documents;
+  final String businessName;
+  const _ProviderDocumentsRow({
+    required this.documents,
+    required this.businessName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final docs = documents
+        .whereType<Map<String, dynamic>>()
+        .where((d) =>
+            (d['storage_path'] as String?)?.isNotEmpty == true)
+        .toList();
+    return Row(
+      children: [
+        const Icon(Icons.badge_outlined,
+            size: 15, color: AppTheme.textSecondary),
+        const SizedBox(width: 5),
+        Expanded(
+          child: Text(
+            docs.isEmpty
+                ? 'No documents uploaded'
+                : docs.map((d) => _shortType(d['document_type'])).join(', '),
+            style: const TextStyle(
+                fontSize: 12, color: AppTheme.textSecondary),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (docs.isNotEmpty)
+          TextButton.icon(
+            onPressed: () => showDialog(
+              context: context,
+              builder: (_) => _ProviderDocumentsDialog(
+                docs: docs,
+                businessName: businessName,
+              ),
+            ),
+            icon: const Icon(Icons.visibility_outlined, size: 15),
+            label: const Text('View', style: TextStyle(fontSize: 12)),
+            style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 6)),
+          ),
+      ],
+    );
+  }
+
+  static String _shortType(dynamic t) {
+    switch (t?.toString()) {
+      case 'NATIONAL_ID':
+        return 'National ID';
+      case 'DRIVING_LICENSE':
+        return 'Driving license';
+      case 'TRADE_LICENSE':
+        return 'Trade license';
+      default:
+        return (t ?? 'Document').toString();
+    }
+  }
+}
+
+class _ProviderDocumentsDialog extends StatelessWidget {
+  final List<Map<String, dynamic>> docs;
+  final String businessName;
+  const _ProviderDocumentsDialog({required this.docs, required this.businessName});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Documents — $businessName',
+          style: const TextStyle(fontSize: 16)),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final d in docs)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.image_outlined),
+                title: Text(_ProviderDocumentsRow._shortType(d['document_type']),
+                    style: const TextStyle(fontSize: 14)),
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (_) => _ProviderDocPreview(
+                    storagePath: d['storage_path'] as String,
+                    docType:
+                        _ProviderDocumentsRow._shortType(d['document_type']),
+                    businessName: businessName,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close')),
+      ],
+    );
+  }
+}
+
+/// Full-screen-ish preview of one document via a 5-minute signed URL.
+class _ProviderDocPreview extends StatefulWidget {
+  final String storagePath;
+  final String docType;
+  final String businessName;
+  const _ProviderDocPreview({
+    required this.storagePath,
+    required this.docType,
+    required this.businessName,
+  });
+
+  @override
+  State<_ProviderDocPreview> createState() => _ProviderDocPreviewState();
+}
+
+class _ProviderDocPreviewState extends State<_ProviderDocPreview> {
+  String? _signedUrl;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImage();
+  }
+
+  Future<void> _loadImage() async {
+    try {
+      final url = await Supabase.instance.client.storage
+          .from('user-documents')
+          .createSignedUrl(widget.storagePath, 300);
+      if (mounted) {
+        setState(() {
+          _signedUrl = url;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _signedUrl = null;
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 400, maxHeight: 600),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppBar(
+              title: Text('${widget.businessName} — ${widget.docType}',
+                  style: const TextStyle(fontSize: 16)),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            Expanded(
+              child: _loading
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                          color: AppTheme.primaryGreen))
+                  : _signedUrl != null
+                      ? InteractiveViewer(
+                          minScale: 0.5,
+                          maxScale: 3.0,
+                          child: Image.network(
+                            _signedUrl!,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => const Center(
+                              child: Text('Failed to load image'),
+                            ),
+                          ),
+                        )
+                      : const Center(
+                          child: Text(
+                              'Document file is missing from storage.\nAsk the provider to re-upload.',
+                              textAlign: TextAlign.center)),
+            ),
+            Container(
+              padding: const EdgeInsets.all(12),
+              child: const Text(
+                'Signed URL expires in 5 minutes',
+                style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
