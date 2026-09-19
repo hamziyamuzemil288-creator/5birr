@@ -51,6 +51,21 @@ document.
 - Env on `repo-chat`: `LLM_PROVIDER` (default `none`)
 - Secrets: `INDEXER_KEY`, `INDEXER_URL` (GitHub Actions + Supabase)
 
+## d0) Status snapshot (2026-09-19)
+
+**Merged to main:** PR #3 (Deploy Supabase workflow), PR #2 (provider
+approval profile sync), PR #1 (help chat free mode), PR #4 (indexer
+markdown allowlist: `docs/help/**`, `privacy-policy.md`,
+`delete-account.md`; `help-chat-agent-ALL-IN-ONE.md` removed).
+
+**Open:** PR #5 (`chore/keystore-from-secrets`) — release signing moves
+to GitHub secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`,
+`KEY_PASSWORD`, `KEY_ALIAS`; see `docs/SIGNING.md`). **Do not merge until
+those four Actions secrets exist.** The old committed
+`android/app/release-keystore.p12` is untracked but still in git history
+and must be treated as compromised — use a new keystore for the secrets
+(app is testing-only, so no Play upload-key reset is needed).
+
 ## d) Remaining steps — IN THIS ORDER
 
 The agent never touches the live Supabase project. All live-project
@@ -84,16 +99,21 @@ in the run log. Project ref `xnwieehlrhrffoikpglj` is a plain env var
    `https://xnwieehlrhrffoikpglj.supabase.co/functions/v1/index-chunks`)
    and `INDEXER_KEY` as GitHub Actions secrets — the workflow env can read
    them but cannot create them.
-6. Merge the PRs (Task B `fix/provider-signup-image-admin` #2 first, then
-   `chore/help-chat-integration` #1) and confirm main CI is green after
-   each.
+6. ~~Merge the PRs~~ — done: PRs #3, #2, #1 and #4 are merged (main CI
+   green after each; the index-repo run that failed between PR #1 and the
+   real deploy is expected and passes once step 7's full index runs).
 7. Run the **"Index repo for help chat"** workflow once
-   (workflow_dispatch) for a full index.
+   (workflow_dispatch) for a full index — this also purges the stale
+   chunks the PR #4 allowlist retired.
 8. Smoke test: ask 3 real questions in the app; confirm replies never
    contain code, file paths, or table names.
-9. Rotate `SUPABASE_DB_PASSWORD` afterwards — it transitied GitHub
-   Actions logs/secrets infrastructure and good hygiene after any
-   credential exposure window.
+9. Keystore: add the four signing secrets from `docs/SIGNING.md`
+   (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_PASSWORD`, `KEY_ALIAS`),
+   then merge PR #5, then run **Build Release AAB** and verify with
+   `jarsigner -verify -verbose -certs app-release.aab`.
+10. Rotate `SUPABASE_DB_PASSWORD` afterwards — it transitied GitHub
+    Actions logs/secrets infrastructure and good hygiene after any
+    credential exposure window.
 
 ## e) Warning
 
