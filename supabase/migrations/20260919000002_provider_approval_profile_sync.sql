@@ -27,6 +27,11 @@
 --   suspend_provider():  profiles.status -> SUSPENDED
 --   unsuspend_provider(): profiles.status -> APPROVED (restore)
 -- Full function bodies restated (CREATE OR REPLACE) — no other logic changed.
+-- suspend_provider keeps `p_reason text default null` because the live
+-- function was created with that default (see 0021_live_schema_snapshot.sql:
+-- 1400) and PostgreSQL forbids removing parameter defaults via CREATE OR
+-- REPLACE (SQLSTATE 42P13). The default is behavior-compatible: the body
+-- already coalesce()s p_reason.
 -- Idempotent. No DDL on tables, no policy changes, no data writes.
 
 -- ============================================================
@@ -221,7 +226,7 @@ $$;
 create or replace function public.suspend_provider(
   p_provider_id uuid,
   p_admin_id uuid,
-  p_reason text
+  p_reason text default null
 )
 returns public.provider_profiles
 language plpgsql
