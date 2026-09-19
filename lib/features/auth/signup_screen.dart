@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/document_upload_service.dart';
 import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
@@ -137,14 +138,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     );
   }
 
-  /// Uploads one document and returns its storage path.
-  /// Throws on failure — callers surface the error; it is never swallowed.
-  Future<String> _uploadDocument(File file, String bucket, String path) async {
-    await _supabase.storage.from(bucket).upload(path, file,
-        fileOptions: const FileOptions(upsert: true));
-    return path;
-  }
-
   /// Shown when the account itself was created but document storage failed.
   /// The error must reach the user (and support), never disappear silently.
   /// [router]/[messenger] are captured at method entry so this still works
@@ -255,30 +248,30 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           setState(() => _uploadError = msg);
         } else {
           setState(() => _uploadingDocs = true);
-          final nationalIdPath =
-              '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
-          final licensePath =
-              '$userId/license_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
+          // Same shared per-file unit (upload + user_documents insert + one
+          // retry) the pending-approval recovery screen uses. The real
+          // exception is kept so the dialog/deep-link below shows the same
+          // detail as before.
           Object? licenseError;
           try {
-            final uploaded = <String>[];
-            await _uploadDocument(
-                _nationalIdImage!, 'user-documents', nationalIdPath);
-            uploaded.add('NATIONAL_ID|$nationalIdPath');
+            await DocumentUploadService.instance.uploadAndRecord(
+              file: _nationalIdImage!,
+              userId: userId,
+              documentType: 'NATIONAL_ID',
+            );
             try {
-              await _uploadDocument(
-                  _licenseImage!, 'user-documents', licensePath);
-              uploaded.add(
-                  '${_roleName == 'Vehicle Provider' ? 'DRIVING_LICENSE' : 'TRADE_LICENSE'}|$licensePath');
+              await DocumentUploadService.instance.uploadAndRecord(
+                file: _licenseImage!,
+                userId: userId,
+                documentType: _roleName == 'Vehicle Provider'
+                    ? 'DRIVING_LICENSE'
+                    : 'TRADE_LICENSE',
+              );
             } catch (e) {
-              // First file is already stored; keep going so it is recorded.
+              // First file is already stored and recorded; keep going.
               licenseError = e;
             }
-
-            // Record documents. Rows are inserted per uploaded file; one
-            // retry covers a transient failure before the error surfaces.
-            await _recordUploadedDocuments(uploaded, userId, retriesLeft: 1);
           } catch (docError) {
             await _showDocumentUploadError(docError, router, messenger);
           } finally {
@@ -311,16 +304,13 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               'verification documents.');
         } else {
           setState(() => _uploadingDocs = true);
-          final nationalIdPath =
-              '$userId/national_id_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
           try {
-            await _uploadDocument(
-                _nationalIdImage!, 'user-documents', nationalIdPath);
-
-            await _recordUploadedDocuments(
-                ['NATIONAL_ID|$nationalIdPath'], userId,
-                retriesLeft: 1);
+            await DocumentUploadService.instance.uploadAndRecord(
+              file: _nationalIdImage!,
+              userId: userId,
+              documentType: 'NATIONAL_ID',
+            );
           } catch (docError) {
             await _showDocumentUploadError(docError, router, messenger);
           } finally {
@@ -360,35 +350,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           _error = _friendlyError(e.toString());
         });
       }
-    }
-  }
-
-  /// Records rows in user_documents for every file that reached storage.
-  /// Retries once on failure before rethrowing so the caller can surface
-  /// the real error. The second file's upload failure (if any) is reported
-  /// after the first file's rows are safely recorded.
-  Future<void> _recordUploadedDocuments(
-    List<String> uploaded,
-    String userId, {
-    required int retriesLeft,
-  }) async {
-    if (uploaded.isEmpty) return;
-    try {
-      await _supabase.from('user_documents').insert([
-        for (final entry in uploaded)
-          {
-            'user_id': userId,
-            'document_type': entry.split('|').first,
-            'storage_path': entry.split('|').skip(1).join('|'),
-          },
-      ]);
-    } catch (e) {
-      if (retriesLeft > 0) {
-        await Future<void>.delayed(const Duration(seconds: 1));
-        return _recordUploadedDocuments(uploaded, userId,
-            retriesLeft: retriesLeft - 1);
-      }
-      rethrow;
     }
   }
 
