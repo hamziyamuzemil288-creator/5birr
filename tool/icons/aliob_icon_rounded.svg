@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Aliob app icon mark (rounded-corner variant for Android + in-app use).
+       Extracted verbatim from aliob-logo.svg (the 512x512 mark group).
+       Regenerate all launcher icons with: dart run flutter_launcher_icons -->
+  <defs>
+    <linearGradient id="gl" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#19BC7F"/><stop offset="1" stop-color="#05462F"/></linearGradient>
+    <radialGradient id="hl" cx="0.3" cy="0.2" r="0.8"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#gl)"/>
+  <rect width="512" height="512" rx="116" fill="url(#hl)"/>
+  <mask id="ml" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+    <rect width="512" height="512" fill="#000"/>
+    <path d="M256 470 L145 287.6 A130 130 0 1 1 367 287.6 Z" fill="#fff" stroke="#fff" stroke-width="14" stroke-linejoin="round"/>
+    <path d="M196 305 L256 172 L316 305" fill="none" stroke="#000" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+  </mask>
+  <g transform="translate(256 256) scale(0.86) translate(-256 -280)">
+    <g mask="url(#ml)"><rect x="0" y="0" width="256" height="512" fill="#FFFFFF"/><rect x="256" y="0" width="256" height="512" fill="#D3F6E6"/></g>
+    <circle cx="256" cy="276" r="17" fill="#F5A524"/>
+  </g>
+</svg>

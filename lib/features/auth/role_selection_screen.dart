@@ -25,23 +25,11 @@ class RoleSelectionScreen extends StatelessWidget {
             child: Column(
               children: [
                 const SizedBox(height: 20),
-                // Logo mark
-                Container(
+                // Aliob logo mark
+                Image.asset(
+                  'assets/images/aliob_logo_mark.png',
                   width: 72,
                   height: 72,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                        color: Colors.white.withOpacity(0.3), width: 2),
-                  ),
-                  child: const Center(
-                    child: Text('₅',
-                        style: TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white)),
-                  ),
                 ),
                 const SizedBox(height: 20),
                 const Text('Choose Your Role',
@@ -52,7 +40,7 @@ class RoleSelectionScreen extends StatelessWidget {
                         height: 1.2)),
                 const SizedBox(height: 8),
                 Text(
-                  'Select how you want to use 5BIRR',
+                  'Select how you want to use Aliob',
                   style: TextStyle(
                       fontSize: 14,
                       color: Colors.white.withOpacity(0.8),

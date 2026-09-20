@@ -127,7 +127,7 @@ class UserProfileScreen extends ConsumerWidget {
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),
                   _divider(),
-                  _menuTile(Icons.info_outline, 'About 5BIRR', AppTheme.textSecondary),
+                  _menuTile(Icons.info_outline, 'About Aliob', AppTheme.textSecondary),
                 ],
               ),
             ),

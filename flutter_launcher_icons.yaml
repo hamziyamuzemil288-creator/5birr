@@ -1,0 +1,10 @@
+# Aliob launcher icon generation.
+# Run: dart run flutter_launcher_icons
+# Sources rendered from tool/icons/*.svg (see tool/icons/render.js for the
+# exact pipeline used when the Flutter SDK is unavailable).
+flutter_launcher_icons:
+  image_path_android: tool/icons/aliob_icon_android.png
+  image_path_ios: tool/icons/aliob_icon_ios.png
+  android: ic_launcher
+  ios: true
+  remove_alpha_ios: true

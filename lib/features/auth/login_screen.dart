@@ -88,33 +88,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 // Logo
                 AdminGate(
                   onUnlocked: () => context.go('/admin-login'),
-                  child: Container(
+                  child: Image.asset(
+                    'assets/images/aliob_logo_mark.png',
                     width: 84,
                     height: 84,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                          color: Colors.white.withOpacity(0.3), width: 2),
-                    ),
-                    child: const Center(
-                      child: Text('₅',
-                          style: TextStyle(
-                              fontSize: 42,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white)),
-                    ),
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text('5BIRR',
+                const Text('Aliob',
                     style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
                         letterSpacing: 3)),
                 const SizedBox(height: 6),
-                Text('Marketplace • Services • Transport',
+                Text('All in one',
                     style: TextStyle(
                         fontSize: 13,
                         color: Colors.white.withOpacity(0.7),

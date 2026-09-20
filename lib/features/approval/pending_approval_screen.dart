@@ -66,7 +66,7 @@ class _PendingApprovalViewState extends ConsumerState<_PendingApprovalView> {
                           color: Colors.white)),
                   const SizedBox(height: 8),
                   Text(
-                    'Thank you for applying to join 5BIRR',
+                    'Thank you for applying to join Aliob',
                     style: TextStyle(
                         fontSize: 14, color: Colors.white.withOpacity(0.8)),
                   ),

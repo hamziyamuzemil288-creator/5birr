@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Birr5</string>
+	<string>Aliob</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>birr5</string>
+	<string>Aliob</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -30,9 +30,9 @@
 	     WhenInUse is what the app requests; the Always key prevents an
 	     App Store submission rejection if the OS escalates the prompt. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Birr5 uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
+	<string>Aliob uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Birr5 uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
+	<string>Aliob uses your location to find nearby providers, set your ride pickup point, and share your location with your driver after a ride is confirmed.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -53,30 +53,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Logo mark
-              Container(
+              // Aliob logo mark
+              Image.asset(
+                'assets/images/aliob_logo_mark.png',
                 width: 100,
                 height: 100,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: Colors.white.withOpacity(0.3), width: 2),
-                ),
-                child: const Center(
-                  child: Text(
-                    '₅',
-                    style: TextStyle(
-                      fontSize: 48,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
               ),
               const SizedBox(height: 20),
               const Text(
-                '5BIRR',
+                'Aliob',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w700,
@@ -86,7 +71,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                'Marketplace • Services • Transport',
+                'All in one',
                 style: TextStyle(
                   fontSize: 13,
                   color: Colors.white.withOpacity(0.7),

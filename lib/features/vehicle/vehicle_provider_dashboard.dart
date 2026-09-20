@@ -157,7 +157,7 @@ class _VehicleProviderDashboardState
     final auth = ref.watch(authProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('5BIRR Transport'),
+        title: const Text('Aliob Transport'),
         actions: [
           IconButton(
               icon: const Icon(Icons.notifications_outlined),

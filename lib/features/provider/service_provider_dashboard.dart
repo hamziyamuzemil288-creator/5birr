@@ -74,7 +74,8 @@ class _ServiceProviderDashboardState
     final auth = ref.watch(authProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('5BIRR Business'),          actions: [
+        title: const Text('Aliob Business'),
+        actions: [
           IconButton(
               icon: const Icon(Icons.notifications_outlined),
               onPressed: () => ScaffoldMessenger.of(context).showSnackBar(

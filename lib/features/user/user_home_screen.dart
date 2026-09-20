@@ -137,23 +137,13 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                         // Greeting + logo row
                         Row(
                           children: [
-                            Container(
+                            Image.asset(
+                              'assets/images/aliob_logo_mark.png',
                               width: 36,
                               height: 36,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.15),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Center(
-                                child: Text('₅',
-                                    style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w800,
-                                        color: Colors.white)),
-                              ),
                             ),
                             const SizedBox(width: 10),
-                            const Text('5BIRR',
+                            const Text('Aliob',
                                 style: TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.w800,
