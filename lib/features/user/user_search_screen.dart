@@ -64,17 +64,17 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       // makes the server compute real distance_km per result and lets the
       // user sort by distance; without permission it still works (no distance).
       final pos = _myPos;
-      final data = await Supabase.instance.client
-          .rpc('search_products', params: {
-            'p_query': q.trim(),
-            'p_limit': 30,
-            'p_offset': 0,
-            if (pos != null) ...{
-              'p_lat': pos.latitude,
-              'p_lng': pos.longitude,
-              'p_sort_by': 'distance',
-            },
-          });
+      final data =
+          await Supabase.instance.client.rpc('search_products', params: {
+        'p_query': q.trim(),
+        'p_limit': 30,
+        'p_offset': 0,
+        if (pos != null) ...{
+          'p_lat': pos.latitude,
+          'p_lng': pos.longitude,
+          'p_sort_by': 'distance',
+        },
+      });
       if (mounted) {
         setState(() {
           _results = List<Map<String, dynamic>>.from(data as List);
@@ -134,8 +134,8 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
         Expanded(
           child: _loading
               ? const Center(
-                  child: CircularProgressIndicator(
-                      color: AppTheme.primaryGreen))
+                  child:
+                      CircularProgressIndicator(color: AppTheme.primaryGreen))
               : !_searched
                   ? const Center(
                       child: Text('Search for products and services',
@@ -167,7 +167,9 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(fontSize: 14)),
                               subtitle: Text(
-                                  '${p['provider_name'] ?? ''} · ${p['price']} ${p['currency'] ?? 'ETB'}'
+                                  '${p['provider_name'] ?? ''} · '
+                                  '${p['price']} ${p['currency'] ?? 'ETB'}'
+                                  '${p['unit'] == 'KG' ? '/kg' : p['unit'] == 'LTR' ? '/liter' : ''}'
                                   '${_distanceSuffix(p)}',
                                   style: const TextStyle(
                                       fontSize: 12,

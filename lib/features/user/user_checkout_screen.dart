@@ -16,8 +16,7 @@ class UserCheckoutScreen extends ConsumerStatefulWidget {
   final String providerId;
   const UserCheckoutScreen({super.key, required this.providerId});
   @override
-  ConsumerState<UserCheckoutScreen> createState() =>
-      _UserCheckoutScreenState();
+  ConsumerState<UserCheckoutScreen> createState() => _UserCheckoutScreenState();
 }
 
 class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
@@ -56,13 +55,11 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
           .eq('id', widget.providerId)
           .maybeSingle();
       if (prov != null) {
-        _providerName =
-            (prov['business_name'] as String?)?.isNotEmpty == true
-                ? prov['business_name'] as String
-                : _providerName;
-        _providerActivated =
-            (prov['registration_fee_paid'] as bool?) == true &&
-                prov['status'] == 'APPROVED';
+        _providerName = (prov['business_name'] as String?)?.isNotEmpty == true
+            ? prov['business_name'] as String
+            : _providerName;
+        _providerActivated = (prov['registration_fee_paid'] as bool?) == true &&
+            prov['status'] == 'APPROVED';
         final wallet = await Supabase.instance.client
             .from('wallets')
             .select('balance')
@@ -148,20 +145,19 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     }
   }
 
-  double get _total =>
-      _items.fold(0.0, (sum, i) => sum + i.lineTotal);
+  double get _total => _items.fold(0.0, (sum, i) => sum + i.lineTotal);
 
   Future<void> _pickScreenshot() async {
-    final picked = await _picker.pickImage(
-        source: ImageSource.gallery, imageQuality: 85);
+    final picked =
+        await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
     if (picked != null) {
       setState(() => _screenshot = File(picked.path));
     }
   }
 
   Future<void> _pickNationalId() async {
-    final picked = await _picker.pickImage(
-        source: ImageSource.gallery, imageQuality: 85);
+    final picked =
+        await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
     if (picked != null) {
       setState(() => _nationalId = File(picked.path));
     }
@@ -170,7 +166,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   Future<void> _placeOrder() async {
     // Duplicate-tap guard: prevent double-submission within 3 seconds.
     final now = DateTime.now();
-    if (_lastOrderTime != null && now.difference(_lastOrderTime!) < const Duration(seconds: 3)) {
+    if (_lastOrderTime != null &&
+        now.difference(_lastOrderTime!) < const Duration(seconds: 3)) {
       return; // silently ignore rapid re-tap
     }
     _lastOrderTime = now;
@@ -180,8 +177,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       return;
     }
     if (_needsNationalId && _nationalId == null) {
-      setState(() =>
-          _error = 'Please upload a photo of your National ID to place an order');
+      setState(() => _error =
+          'Please upload a photo of your National ID to place an order');
       return;
     }
 
@@ -214,6 +211,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final client = Supabase.instance.client;
 
       // Send ONLY product_id + quantity — the server computes prices/total.
+      // Quantity stays a double: unit-priced lines (kg/liter) are fractional
+      // (order_items.quantity is numeric(10,3)); fixed-price lines are whole.
       final noteParts = <String>[
         if (_addressCtrl.text.trim().isNotEmpty)
           'Delivery: ${_addressCtrl.text.trim()}',
@@ -230,7 +229,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final data = Map<String, dynamic>.from(result.data as Map);
       final order = data['order'] as Map<String, dynamic>?;
       final orderId = order?['id'] as String?;
-      final orderNumber = onf.formatOrderNumber(order?['order_number'] as String?);
+      final orderNumber =
+          onf.formatOrderNumber(order?['order_number'] as String?);
 
       // ID on file → upload it with the same retry as signup (user_documents).
       // Follows the screenshot pattern: the order is already placed, so a
@@ -247,8 +247,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         } catch (_) {
           idIssue =
               'Your order was placed, but the National ID photo could not be '
-                  'uploaded. Please contact support so your identity can be '
-                  'verified (WhatsApp 0917686990).';
+              'uploaded. Please contact support so your identity can be '
+              'verified (WhatsApp 0917686990).';
         }
       }
 
@@ -258,13 +258,10 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       if (_screenshot != null && orderId != null) {
         try {
           final userId = client.auth.currentUser!.id;
-          final fileName =
-              '${DateTime.now().millisecondsSinceEpoch}.jpg';
+          final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
           final path = '$userId/$orderId/$fileName';
-          await client.storage
-              .from('payment-proofs')
-              .upload(path, _screenshot!,
-                  fileOptions: const FileOptions(upsert: true));
+          await client.storage.from('payment-proofs').upload(path, _screenshot!,
+              fileOptions: const FileOptions(upsert: true));
           await client.from('payment_proofs').insert({
             'order_id': orderId,
             'storage_path': path,
@@ -323,6 +320,9 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       });
     }
   }
+
+  static String _fmtQty(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
 
   String _errorMessage(Object e) {
     // Strip any exception-type prefix so the server's message shows cleanly.
@@ -388,15 +388,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                               fontWeight: FontWeight.w500)),
                                     ),
                                     const SizedBox(width: 8),
-                                    Text('${item.quantity} × '
+                                    Text(
+                                        '${_fmtQty(item.quantity)} ${item.unit != null ? item.unitLabel : '×'} '
                                         '${item.price.toStringAsFixed(2)}',
                                         style: const TextStyle(
                                             fontSize: 13,
                                             color: AppTheme.textSecondary)),
                                     const SizedBox(width: 12),
-                                    Text(
-                                        item.lineTotal
-                                            .toStringAsFixed(2),
+                                    Text(item.lineTotal.toStringAsFixed(2),
                                         style: const TextStyle(
                                             fontSize: 13,
                                             fontWeight: FontWeight.w600)),
@@ -427,8 +426,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                               const SizedBox(height: 6),
                             ],
                             Row(
-                              mainAxisAlignment:
-                                  MainAxisAlignment.spaceBetween,
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 const Text('Total',
                                     style: TextStyle(
@@ -486,8 +484,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                       fit: BoxFit.cover),
                                 )
                               : const Column(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.center,
+                                  mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
                                     Icon(Icons.add_a_photo_outlined,
                                         size: 32, color: AppTheme.textMuted),

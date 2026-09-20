@@ -22,6 +22,14 @@ class _State extends ConsumerState<UserProductDetailScreen> {
   bool _loading = true;
   bool _fav = false;
   bool _adding = false;
+  // Unit-priced items (per kg / liter) are bought in decimal amounts.
+  final _qtyCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _qtyCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -40,8 +48,8 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           .isFavorited('PRODUCT', widget.productId);
       List<Map<String, dynamic>> reviews = [];
       try {
-        reviews = await ReviewService.instance
-            .getReviewsForProduct(widget.productId);
+        reviews =
+            await ReviewService.instance.getReviewsForProduct(widget.productId);
       } catch (_) {}
       if (mounted) {
         setState(() {
@@ -71,6 +79,9 @@ class _State extends ConsumerState<UserProductDetailScreen> {
     final p = _product!;
     final imgs = (p['product_images'] as List?) ?? [];
     final provider = p['provider_profiles'] as Map<String, dynamic>?;
+    final unit = p['unit'] as String?;
+    final isUnitPriced = unit == 'KG' || unit == 'LTR';
+    final unitWord = unit == 'KG' ? 'kg' : 'liter';
 
     return Scaffold(
       appBar: AppBar(
@@ -110,8 +121,8 @@ class _State extends ConsumerState<UserProductDetailScreen> {
                             imageUrl: imageUrl,
                             fit: BoxFit.cover,
                             placeholder: (_, __) => const Center(
-                              child: CircularProgressIndicator(
-                                  color: AppTheme.primaryGreen)),
+                                child: CircularProgressIndicator(
+                                    color: AppTheme.primaryGreen)),
                             errorWidget: (_, __, ___) => Container(
                               color: AppTheme.creamDark,
                               child: const Center(
@@ -149,7 +160,10 @@ class _State extends ConsumerState<UserProductDetailScreen> {
                           fontWeight: FontWeight.w700,
                           color: AppTheme.textPrimary)),
                   const SizedBox(height: 8),
-                  Text('${p['price']} ${p['currency'] ?? 'ETB'}',
+                  Text(
+                      isUnitPriced
+                          ? '${_fmtNum((p['price'] as num?)?.toDouble() ?? 0)} ${p['currency'] ?? 'ETB'}/$unitWord'
+                          : '${p['price']} ${p['currency'] ?? 'ETB'}',
                       style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.w700,
@@ -171,8 +185,8 @@ class _State extends ConsumerState<UserProductDetailScreen> {
                   const SizedBox(height: 16),
                   if (provider != null)
                     GestureDetector(
-                      onTap: () => context
-                          .go('/user/provider/${provider['id']}'),
+                      onTap: () =>
+                          context.go('/user/provider/${provider['id']}'),
                       child: Row(
                         children: [
                           const Icon(Icons.store_outlined,
@@ -218,12 +232,22 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           ],
         ),
         child: SafeArea(
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _adding ? null : _addToCart,
-              child: Text(_adding ? 'ADDING…' : 'ADD TO CART'),
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _adding ? null : _addToCart,
+                  child: const Text('ADD TO CART'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _adding ? null : _buyNow,
+                  child: Text(_adding ? 'PLEASE WAIT…' : 'BUY NOW'),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -235,8 +259,7 @@ class _State extends ConsumerState<UserProductDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text('Reviews',
-            style:
-                TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
         const SizedBox(height: 12),
         if (_reviews.isEmpty)
           const Text('No reviews yet',
@@ -269,15 +292,13 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           ),
           if (when.isNotEmpty)
             Text(when,
-                style: const TextStyle(
-                    fontSize: 11, color: AppTheme.textMuted)),
+                style:
+                    const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
           if (r['comment'] != null && (r['comment'] as String).isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(r['comment'] as String,
                 style: const TextStyle(
-                    fontSize: 13,
-                    color: AppTheme.textSecondary,
-                    height: 1.4)),
+                    fontSize: 13, color: AppTheme.textSecondary, height: 1.4)),
           ],
         ],
       ),
@@ -287,39 +308,134 @@ class _State extends ConsumerState<UserProductDetailScreen> {
   Widget _stars(int rating) {
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: List.generate(5, (i) => Icon(
-            i < rating ? Icons.star : Icons.star_border,
-            size: 14,
-            color: AppTheme.gold,
-          )),
+      children: List.generate(
+          5,
+          (i) => Icon(
+                i < rating ? Icons.star : Icons.star_border,
+                size: 14,
+                color: AppTheme.gold,
+              )),
     );
   }
 
   String _fmtDate(DateTime dt) {
     final l = dt.toLocal();
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     String two(int v) => v.toString().padLeft(2, '0');
     return '${months[l.month - 1]} ${l.day}, ${l.year} '
         '${two(l.hour)}:${two(l.minute)}';
   }
 
+  static String _fmtNum(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
   Future<void> _addToCart() async {
+    final isUnitPriced =
+        _product != null && (_product!['unit'] as String?) != null;
+    double qty = 1;
+    if (isUnitPriced) {
+      // Ask for the amount in kg / liters (decimals allowed: 0.5 kg, 1.25 L…).
+      final entered = await _promptQuantity();
+      if (entered == null) return; // user cancelled
+      qty = entered;
+    }
     setState(() => _adding = true);
     try {
       await CartService.instance
-          .addToCart(productId: widget.productId, quantity: 1);
+          .addToCart(productId: widget.productId, quantity: qty);
       ref.invalidate(cartCountProvider);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Added to cart')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'Added ${_fmtNum(qty)} ${isUnitPriced ? (_product!['unit'] == 'KG' ? 'kg' : 'liter') : 'pc'} to cart')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not add to cart: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  /// Decimal amount prompt for unit-priced items (kg / liter).
+  Future<double?> _promptQuantity() async {
+    final ctrl = TextEditingController(
+        text: _qtyCtrl.text.isEmpty ? '1' : _qtyCtrl.text);
+    final unitWord = _product!['unit'] == 'KG' ? 'kg' : 'liter';
+    return showDialog<double>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text('Amount ($unitWord)'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: 'How many $unitWord?',
+            hintText: 'e.g. 0.5, 1, 2.25',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () {
+              final v = double.tryParse(ctrl.text.trim().replaceAll(',', '.'));
+              if (v == null || v <= 0) return;
+              Navigator.pop(dialogCtx, v);
+            },
+            child: const Text('ADD'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Direct-buy: put the chosen amount in the cart, then jump straight to
+  /// checkout for this provider.
+  Future<void> _buyNow() async {
+    final isUnitPriced =
+        _product != null && (_product!['unit'] as String?) != null;
+    double qty = 1;
+    if (isUnitPriced) {
+      final entered = await _promptQuantity();
+      if (entered == null) return;
+      qty = entered;
+    }
+    setState(() => _adding = true);
+    try {
+      await CartService.instance
+          .addToCart(productId: widget.productId, quantity: qty);
+      ref.invalidate(cartCountProvider);
+      if (!mounted) return;
+      final providerId = ((_product!['provider_profiles']
+          as Map<String, dynamic>?)?['id']) as String?;
+      if (providerId != null) {
+        context.push('/user/checkout', extra: providerId);
+      } else {
+        context.push('/user/cart');
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not add to cart: $e')));
+            SnackBar(content: Text('Could not start checkout: $e')));
       }
     } finally {
       if (mounted) setState(() => _adding = false);

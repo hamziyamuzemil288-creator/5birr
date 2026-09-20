@@ -77,8 +77,8 @@ class UserProfileScreen extends ConsumerWidget {
                   const SizedBox(height: 12),
                   // Status badge
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 5),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                     decoration: BoxDecoration(
                       color: AppTheme.success.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
@@ -116,18 +116,31 @@ class UserProfileScreen extends ConsumerWidget {
               ),
               child: Column(
                 children: [
-                  _menuTile(Icons.person_outline, 'Edit Profile', AppTheme.primaryGreen),
+                  _menuTile(Icons.person_outline, 'Edit Profile',
+                      AppTheme.primaryGreen),
                   _divider(),
-                  _menuTile(Icons.location_on_outlined, 'Addresses', AppTheme.teal),
+                  _menuTile(
+                      Icons.location_on_outlined, 'Addresses', AppTheme.teal),
                   _divider(),
-                  _menuTile(Icons.favorite_border, 'Favorites', AppTheme.error),
+                  _menuTile(Icons.favorite_border, 'Favorites', AppTheme.error,
+                      onTap: () => context.push('/user/favorites')),
                   _divider(),
-                  _menuTile(Icons.notifications_outlined, 'Notification Settings', AppTheme.info),
+                  _menuTile(Icons.notifications_outlined,
+                      'Notification Settings', AppTheme.info),
+                  _divider(),
+                  // GPS / ride tracking: live map + directions to the driver.
+                  _menuTile(Icons.map_outlined, 'My Rides (Live Tracking)',
+                      AppTheme.teal,
+                      onTap: () => context.push('/user/ride-active')),
+                  _divider(),
+                  _menuTile(Icons.history, 'Ride History', AppTheme.info,
+                      onTap: () => context.push('/user/ride-history')),
                   _divider(),
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),
                   _divider(),
-                  _menuTile(Icons.info_outline, 'About Aliob', AppTheme.textSecondary),
+                  _menuTile(Icons.info_outline, 'About Aliob',
+                      AppTheme.textSecondary),
                 ],
               ),
             ),
@@ -136,8 +149,7 @@ class UserProfileScreen extends ConsumerWidget {
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: () =>
-                    ref.read(authProvider.notifier).signOut(),
+                onPressed: () => ref.read(authProvider.notifier).signOut(),
                 icon: const Icon(Icons.logout, color: AppTheme.error, size: 18),
                 label: const Text('Logout',
                     style: TextStyle(color: AppTheme.error)),
@@ -171,8 +183,8 @@ class UserProfileScreen extends ConsumerWidget {
       onTap: onTap,
       title: Text(label,
           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-      trailing: const Icon(Icons.chevron_right,
-          color: AppTheme.textMuted, size: 20),
+      trailing:
+          const Icon(Icons.chevron_right, color: AppTheme.textMuted, size: 20),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(0)),
     );
@@ -205,7 +217,11 @@ class _PointsCardState extends State<_PointsCard> {
   Future<void> _load() async {
     try {
       final p = await PointsService.instance.getMyPoints();
-      if (mounted) setState(() { _points = p; _loading = false; });
+      if (mounted)
+        setState(() {
+          _points = p;
+          _loading = false;
+        });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
