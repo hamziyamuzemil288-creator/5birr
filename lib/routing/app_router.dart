@@ -180,14 +180,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(path: '/admin-login', builder: (_, __) => const AdminLoginScreen()),
-      GoRoute(
-        path: '/pending-approval',
-        builder: (_, state) => PendingApprovalScreen(
-          resumeDocUpload:
-              state.uri.queryParameters['resumeDocUpload'] == 'true',
-          docError: state.uri.queryParameters['docError'],
-        ),
-      ),
+      GoRoute(path: '/pending-approval', builder: (_, __) => const PendingApprovalScreen()),
       GoRoute(path: '/rejected', builder: (_, __) => const RejectedScreen()),
 
       // ── User ──
