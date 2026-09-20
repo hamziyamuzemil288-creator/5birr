@@ -43,13 +43,32 @@ alter table public.provider_profiles
 alter table public.provider_profiles
   add column if not exists last_active_at timestamptz;
 
-insert into system_settings (key, value, description) values
+-- NOTE ON THE SETTINGS GUARD: system_settings carries a row-level trigger
+-- trg_system_settings_security (0022d) -> prevent_system_settings_self_modification()
+-- -> is_admin() -> has_role('ADMIN') -> user_id = auth.uid(). auth.uid() reads
+-- request.jwt_claim_sub from the GUC store; a migration connection has no JWT,
+-- so it returns NULL and the guard fires with SETTINGS_ARE_ADMIN_ONLY no matter
+-- how privileged the migration role is (0034's migrate-only settings write was
+-- disabled for exactly this reason; only its own function had an allow trigger).
+-- MIGRATION-TIME SEED BYPASS ONLY: the table owner may disable its row triggers
+-- for the scope of this transaction. Session-local, reverted below, requires
+-- owner privilege (migrations have it, the app's anon/authenticated roles do
+-- not), and does not touch RLS or the trigger definition — app-level writes
+-- remain guarded exactly as before. Same pattern 0028 used for its
+-- 'points_per_trade' seed.
+BEGIN;
+ALTER TABLE public.system_settings DISABLE TRIGGER trg_system_settings_security;
+
+INSERT INTO system_settings (key, value, description) VALUES
   ('provider_registration_fee', '100', 'One-time birr fee withheld from the first approved recharge to activate a provider account'),
   ('transaction_fee_min', '5', 'Minimum birr transaction fee charged per completed provider transaction')
-on conflict (key) do nothing;
+ON CONFLICT (key) DO NOTHING;
 
-update system_settings set value = '20', description = 'Balance at or below this triggers the one-time-per-drop low-wallet warning'
-  where key = 'low_wallet_threshold' and value <> '20';
+UPDATE system_settings SET value = '20', description = 'Balance at or below this triggers the one-time-per-drop low-wallet warning'
+  WHERE key = 'low_wallet_threshold' AND value <> '20';
+
+ALTER TABLE public.system_settings ENABLE TRIGGER trg_system_settings_security;
+COMMIT;
 
 -- ============================================================================
 -- 2. Shared, non-spamming low-balance notification
