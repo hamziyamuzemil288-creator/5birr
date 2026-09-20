@@ -8,6 +8,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/review_service.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/order_chat_service.dart';
 
 /// Statuses from which CANCELLED is a legal transition
 /// (see transition_order_status whitelist in 0003_functions.sql).
@@ -72,6 +73,16 @@ class _UserOrderDetailScreenState
   geo.Position? _myPos;
   bool _locSharing = false;
   bool _directionsLaunching = false;
+
+  // In-order chat (buyer ↔ provider).
+  final _chatCtrl = TextEditingController();
+  bool _sendingChat = false;
+
+  @override
+  void dispose() {
+    _chatCtrl.dispose();
+    super.dispose();
+  }
 
   bool get _isProvider => widget.viewerRole == 'provider';
 
@@ -159,6 +170,261 @@ class _UserOrderDetailScreenState
   bool get _canCancel {
     final status = _order?['status'] as String?;
     return status != null && _cancellableStatuses.contains(status);
+  }
+
+  /// In-order chat: text coordination any time, location sharing gated by
+  /// the same escrow reveal window as the GPS card above (enforced both
+  /// client-side for messaging and server-side in migration 0036).
+  Widget _chatCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: Row(
+              children: [
+                const Icon(Icons.forum_outlined,
+                    size: 18, color: AppTheme.teal),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Order Chat',
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary)),
+                ),
+                if (!_deliveryRevealed)
+                  const Text('Location sharing after payment verified',
+                      style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 300,
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: OrderChatService.instance.streamMessages(widget.orderId),
+              builder: (context, snap) {
+                final msgs = (snap.data ?? const [])
+                    .map(OrderChatMessage.fromRow)
+                    .toList();
+                if (msgs.isEmpty) {
+                  return const Center(
+                    child: Text(
+                        'No messages yet — say hello or ask about this order.',
+                        style: TextStyle(
+                            fontSize: 12, color: AppTheme.textMuted)),
+                  );
+                }
+                final myId =
+                    Supabase.instance.client.auth.currentUser?.id;
+                return ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: msgs.length,
+                  itemBuilder: (_, i) => _chatBubble(msgs[i], mine: msgs[i].senderId == myId),
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Share live location',
+                    onPressed: _sendingChat ? null : _shareChatLocation,
+                    icon: const Icon(Icons.share_location_outlined,
+                        color: AppTheme.teal),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _chatCtrl,
+                      minLines: 1,
+                      maxLines: 3,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendChatText(),
+                      decoration: const InputDecoration(
+                        hintText: 'Message…',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton.filled(
+                    onPressed: _sendingChat ? null : _sendChatText,
+                    icon: _sendingChat
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.send, size: 18),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chatBubble(OrderChatMessage m, {required bool mine}) {
+    final align = mine ? Alignment.centerRight : Alignment.centerLeft;
+    final who = mine ? 'You' : (_isProvider ? 'Buyer' : 'Provider');
+    final time =
+        '${m.createdAt.hour}:${m.createdAt.minute.toString().padLeft(2, '0')}';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Align(
+        alignment: align,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.7),
+          decoration: BoxDecoration(
+            color: m.isLocation
+                ? AppTheme.teal.withOpacity(0.08)
+                : (mine
+                    ? AppTheme.primaryGreen.withOpacity(0.08)
+                    : AppTheme.creamDark),
+            borderRadius: BorderRadius.circular(12),
+            border: m.isLocation
+                ? Border.all(color: AppTheme.teal.withOpacity(0.4))
+                : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$who · $time',
+                  style: const TextStyle(
+                      fontSize: 10, color: AppTheme.textMuted)),
+              const SizedBox(height: 4),
+              if (m.isLocation)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.location_on_outlined,
+                            size: 16, color: AppTheme.teal),
+                        SizedBox(width: 4),
+                        Text('Live location shared',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textPrimary)),
+                      ],
+                    ),
+                    if (m.locationLabel != null &&
+                        m.locationLabel!.trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(m.locationLabel!,
+                            style: const TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.textSecondary)),
+                      ),
+                    TextButton.icon(
+                      onPressed: (m.lat == null || m.lng == null)
+                          ? null
+                          : () => LocationService.instance.openDirectionsTo(
+                                destLat: m.lat!,
+                                destLng: m.lng!,
+                                label: m.locationLabel ?? 'Shared location',
+                              ),
+                      icon: const Icon(Icons.navigation_outlined, size: 16),
+                      label: const Text('Get directions',
+                          style: TextStyle(fontSize: 12)),
+                      style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.teal,
+                          padding: const EdgeInsets.symmetric(horizontal: 4)),
+                    ),
+                  ],
+                )
+              else
+                SelectableText(m.body ?? '',
+                    style: const TextStyle(
+                        fontSize: 13, color: AppTheme.textPrimary)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendChatText() async {
+    final text = _chatCtrl.text.trim();
+    if (text.isEmpty || _sendingChat) return;
+    setState(() => _sendingChat = true);
+    try {
+      await OrderChatService.instance
+          .sendText(orderId: widget.orderId, body: text);
+      _chatCtrl.clear();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not send message: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _sendingChat = false);
+    }
+  }
+
+  /// One-shot live GPS share into the chat. Server-side gate (0036)
+  /// enforces the escrow reveal window; mirror the error here.
+  Future<void> _shareChatLocation() async {
+    setState(() => _sendingChat = true);
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!r.success) {
+      if (mounted) {
+        setState(() => _sendingChat = false);
+        final openSettings = r.status == LocationStatus.deniedForever ||
+            r.status == LocationStatus.serviceDisabled;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(openSettings
+              ? 'Enable location services to share your location'
+              : 'Location permission is needed to share your location'),
+          action: openSettings
+              ? SnackBarAction(
+                  label: 'Open settings',
+                  onPressed: () =>
+                      LocationService.instance.openLocationSettings())
+              : null,
+        ));
+      }
+      return;
+    }
+    try {
+      await OrderChatService.instance.sendLocation(
+        orderId: widget.orderId,
+        lat: r.position!.latitude,
+        lng: r.position!.longitude,
+      );
+    } on LocationNotRevealedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Location sharing unlocks once the payment is verified.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not share location: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _sendingChat = false);
+    }
   }
 
   /// Escrow reveal window: payment verified (APPROVED) or delivery in
@@ -431,6 +697,8 @@ class _UserOrderDetailScreenState
                         const SizedBox(height: 16),
                         if (_proofUrl != null) _proofCard(),
                         if (_proofUrl != null) const SizedBox(height: 16),
+                        _chatCard(),
+                        const SizedBox(height: 16),
                         _timelineCard(),
                         const SizedBox(height: 20),
                         if (_isProvider && _providerActions.isNotEmpty)
