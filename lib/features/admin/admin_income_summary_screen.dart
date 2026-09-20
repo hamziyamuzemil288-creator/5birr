@@ -14,11 +14,14 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
   bool _loading = true;
   DateTime? _startDate;
   DateTime? _endDate;
-  String _typeFilter = 'ALL'; // ALL, TRANSACTION_FEE, MONTHLY_FEE
+  String _typeFilter = 'ALL'; // ALL, TRANSACTION_FEE, SUBSCRIPTION_FEE
 
-  // 1% transaction fees
+  // Both fee types come from wallet_transactions — the authoritative ledger
+  // the fee functions write. (The previous sources were permanently empty:
+  // orders.admin_fee is never written by any migration, and subscriptions
+  // rows are schedules with status ACTIVE/DUE/GRACE/SUSPENDED — never PAID —
+  // and have no amount column, so that query errored silently.)
   List<Map<String, dynamic>> _txFees = [];
-  // 5birr monthly fees
   List<Map<String, dynamic>> _monthlyFees = [];
 
   @override
@@ -33,17 +36,20 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       final client = Supabase.instance.client;
       final String startIso =
           _startDate?.toIso8601String() ?? '2000-01-01T00:00:00.000Z';
-      final String endIso =
-          (_endDate ?? DateTime.now()).add(const Duration(days: 1)).toIso8601String();
+      final String endIso = (_endDate ?? DateTime.now())
+          .add(const Duration(days: 1))
+          .toIso8601String();
 
-      // 1% fees come from order_transactions (admin_fee column on orders table)
+      // 1% transaction fees — wallet_transactions rows written by
+      // deduct_transaction_fee() (fee = max(1%, 5 birr), idempotent).
       if (_typeFilter == 'ALL' || _typeFilter == 'TRANSACTION_FEE') {
         final data = await client
-            .from('orders')
-            .select('id, total_amount, admin_fee, created_at, user_id, provider_id')
+            .from('wallet_transactions')
+            .select(
+                'id, provider_id, order_id, ride_request_id, gross_amount, platform_fee, created_at')
             .gte('created_at', startIso)
             .lt('created_at', endIso)
-            .eq('payment_status', 'PAID')
+            .eq('transaction_type', 'TRANSACTION_FEE')
             .order('created_at', ascending: false)
             .limit(500);
         _txFees = List<Map<String, dynamic>>.from(data as List);
@@ -51,22 +57,28 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
         _txFees = [];
       }
 
-      // 5birr monthly fees — stored in subscriptions table
-      if (_typeFilter == 'ALL' || _typeFilter == 'MONTHLY_FEE') {
+      // 5birr monthly fees — same ledger, SUBSCRIPTION_FEE rows written by
+      // deduct_subscription_fee() via the subscription scheduler.
+      if (_typeFilter == 'ALL' || _typeFilter == 'SUBSCRIPTION_FEE') {
         final data = await client
-            .from('subscriptions')
-            .select('id, amount, provider_id, created_at, period_start, period_end')
+            .from('wallet_transactions')
+            .select(
+                'id, provider_id, order_id, ride_request_id, gross_amount, platform_fee, created_at')
             .gte('created_at', startIso)
             .lt('created_at', endIso)
-            .eq('status', 'PAID')
+            .eq('transaction_type', 'SUBSCRIPTION_FEE')
             .order('created_at', ascending: false)
             .limit(500);
         _monthlyFees = List<Map<String, dynamic>>.from(data as List);
       } else {
         _monthlyFees = [];
       }
-    } catch (_) {
-      // gracefully handle
+    } catch (e) {
+      // Surface failures instead of silently rendering a fake zero summary.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not load income data: $e')));
+      }
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -80,16 +92,18 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
     _load();
   }
 
-  double get _totalTxAmount =>
-      _txFees.fold(0.0, (s, e) => s + ((e['admin_fee'] as num?)?.toDouble() ?? 0));
-  double get _totalMonthlyAmount =>
-      _monthlyFees.fold(0.0, (s, e) => s + ((e['amount'] as num?)?.toDouble() ?? 0));
+  double get _totalTxAmount => _txFees.fold(
+      0.0, (s, e) => s + ((e['platform_fee'] as num?)?.toDouble() ?? 0));
+  double get _totalMonthlyAmount => _monthlyFees.fold(
+      0.0, (s, e) => s + ((e['platform_fee'] as num?)?.toDouble() ?? 0));
   double get _totalIncome => _totalTxAmount + _totalMonthlyAmount;
 
   Future<void> _pickDate({required bool isStart}) async {
     final picked = await showDatePicker(
       context: context,
-      initialDate: isStart ? (_startDate ?? DateTime.now()) : (_endDate ?? DateTime.now()),
+      initialDate: isStart
+          ? (_startDate ?? DateTime.now())
+          : (_endDate ?? DateTime.now()),
       firstDate: DateTime(2023),
       lastDate: DateTime.now().add(const Duration(days: 1)),
     );
@@ -111,26 +125,30 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
     for (final tx in _txFees) {
       rows.add({
         'Type': '1% Transaction Fee',
-        'Order ID': tx['id'] ?? '',
-        'Total Amount': 'ETB ${tx['total_amount'] ?? 0}',
-        'Admin Fee (1%)': 'ETB ${tx['admin_fee'] ?? 0}',
-        'Date': DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(tx['created_at'])),
+        'Ref': tx['order_id'] ?? tx['ride_request_id'] ?? tx['id'] ?? '',
+        'Gross Amount': 'ETB ${tx['gross_amount'] ?? 0}',
+        'Fee Charged': 'ETB ${tx['platform_fee'] ?? 0}',
+        'Date': DateFormat('dd/MM/yyyy HH:mm')
+            .format(DateTime.parse(tx['created_at'])),
       });
     }
 
     for (final sub in _monthlyFees) {
       rows.add({
         'Type': '5birr Monthly Fee',
-        'Subscription ID': sub['id'] ?? '',
-        'Amount': 'ETB ${sub['amount'] ?? 0}',
-        'Date': DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(sub['created_at'])),
+        'Ref': sub['provider_id'] ?? sub['id'] ?? '',
+        'Gross Amount': 'ETB ${sub['gross_amount'] ?? 0}',
+        'Fee Charged': 'ETB ${sub['platform_fee'] ?? 0}',
+        'Date': DateFormat('dd/MM/yyyy HH:mm')
+            .format(DateTime.parse(sub['created_at'])),
       });
     }
 
     await CsvExport.exportAndShare(
-      columns: ['Type', 'Order ID', 'Total Amount', 'Admin Fee (1%)', 'Subscription ID', 'Amount', 'Date'],
+      columns: ['Type', 'Ref', 'Gross Amount', 'Fee Charged', 'Date'],
       rows: rows,
-      fileName: 'income_summary_${DateFormat('yyyyMMdd').format(DateTime.now())}',
+      fileName:
+          'income_summary_${DateFormat('yyyyMMdd').format(DateTime.now())}',
       title: 'Income Summary',
     );
   }
@@ -149,7 +167,8 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
@@ -194,26 +213,36 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text('Filters',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary)),
                           const SizedBox(height: 8),
                           Row(
                             children: [
                               Expanded(
                                 child: _dateBtn(
-                                  _startDate != null ? DateFormat('dd/MM/yyyy').format(_startDate!) : 'From',
+                                  _startDate != null
+                                      ? DateFormat('dd/MM/yyyy')
+                                          .format(_startDate!)
+                                      : 'From',
                                   () => _pickDate(isStart: true),
                                 ),
                               ),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: _dateBtn(
-                                  _endDate != null ? DateFormat('dd/MM/yyyy').format(_endDate!) : 'To',
+                                  _endDate != null
+                                      ? DateFormat('dd/MM/yyyy')
+                                          .format(_endDate!)
+                                      : 'To',
                                   () => _pickDate(isStart: false),
                                 ),
                               ),
                               const SizedBox(width: 8),
                               IconButton(
-                                icon: const Icon(Icons.clear, size: 20, color: AppTheme.textMuted),
+                                icon: const Icon(Icons.clear,
+                                    size: 20, color: AppTheme.textMuted),
                                 onPressed: _clearFilters,
                                 tooltip: 'Clear filters',
                               ),
@@ -224,7 +253,7 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                             children: [
                               _filterChip('ALL'),
                               _filterChip('TRANSACTION_FEE'),
-                              _filterChip('MONTHLY_FEE'),
+                              _filterChip('SUBSCRIPTION_FEE'),
                             ],
                           ),
                         ],
@@ -235,7 +264,8 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
 
                   // Transaction fee details
                   if (_txFees.isNotEmpty) ...[
-                    _sectionHeader('1% Transaction Fee Details', AppTheme.primaryGreen),
+                    _sectionHeader(
+                        '1% Transaction Fee Details', AppTheme.primaryGreen),
                     const SizedBox(height: 8),
                     ..._txFees.take(50).map((tx) => Card(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -246,20 +276,35 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    Icon(Icons.receipt_long, size: 16, color: AppTheme.primaryGreen),
+                                    Icon(Icons.receipt_long,
+                                        size: 16, color: AppTheme.primaryGreen),
                                     const SizedBox(width: 6),
-                                    Text('Order #${(tx['id'] ?? '').toString().substring(0, 8)}',
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                    Text(
+                                        'Fee #${(tx['id'] ?? '').toString().substring(0, 8)}',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.textPrimary)),
                                     const Spacer(),
-                                    Text('ETB ${tx['admin_fee'] ?? 0}',
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.primaryGreen)),
+                                    Text('ETB ${tx['platform_fee'] ?? 0}',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppTheme.primaryGreen)),
                                   ],
                                 ),
                                 const SizedBox(height: 4),
-                                Text('Order total: ETB ${tx['total_amount'] ?? 0}',
-                                    style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
-                                Text(DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(tx['created_at'])),
-                                    style: const TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                                Text(
+                                    'Transaction total: ETB ${tx['gross_amount'] ?? 0}',
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        color: AppTheme.textMuted)),
+                                Text(
+                                    DateFormat('dd/MM/yyyy HH:mm').format(
+                                        DateTime.parse(tx['created_at'])),
+                                    style: const TextStyle(
+                                        fontSize: 10,
+                                        color: AppTheme.textMuted)),
                               ],
                             ),
                           ),
@@ -279,18 +324,30 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    Icon(Icons.calendar_month, size: 16, color: AppTheme.teal),
+                                    Icon(Icons.calendar_month,
+                                        size: 16, color: AppTheme.teal),
                                     const SizedBox(width: 6),
-                                    Text('Subscription #${(sub['id'] ?? '').toString().substring(0, 8)}',
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                    Text(
+                                        'Fee #${(sub['id'] ?? '').toString().substring(0, 8)}',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.textPrimary)),
                                     const Spacer(),
-                                    Text('ETB ${sub['amount'] ?? 0}',
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.teal)),
+                                    Text('ETB ${sub['platform_fee'] ?? 0}',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppTheme.teal)),
                                   ],
                                 ),
                                 const SizedBox(height: 4),
-                                Text(DateFormat('dd/MM/yyyy').format(DateTime.parse(sub['created_at'])),
-                                    style: const TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                                Text(
+                                    DateFormat('dd/MM/yyyy').format(
+                                        DateTime.parse(sub['created_at'])),
+                                    style: const TextStyle(
+                                        fontSize: 10,
+                                        color: AppTheme.textMuted)),
                               ],
                             ),
                           ),
@@ -302,12 +359,16 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                     Center(
                       child: Column(
                         children: [
-                          Icon(Icons.account_balance_wallet, size: 48, color: AppTheme.textMuted.withOpacity(0.3)),
+                          Icon(Icons.account_balance_wallet,
+                              size: 48,
+                              color: AppTheme.textMuted.withOpacity(0.3)),
                           const SizedBox(height: 12),
                           const Text('No income records found',
-                              style: TextStyle(color: AppTheme.textMuted, fontSize: 13)),
+                              style: TextStyle(
+                                  color: AppTheme.textMuted, fontSize: 13)),
                           const Text('Try adjusting your date filters',
-                              style: TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+                              style: TextStyle(
+                                  color: AppTheme.textMuted, fontSize: 11)),
                         ],
                       ),
                     ),
@@ -331,13 +392,15 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(title,
-                      style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                      style: const TextStyle(
+                          fontSize: 11, color: AppTheme.textMuted)),
                 ),
               ],
             ),
             const SizedBox(height: 8),
             Text(value,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w700, color: color)),
           ],
         ),
       ),
@@ -351,18 +414,25 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         side: const BorderSide(color: AppTheme.cardBorder),
       ),
-      child: Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+      child: Text(label,
+          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
     );
   }
 
   Widget _filterChip(String type) {
     final selected = _typeFilter == type;
-    final labels = {'ALL': 'All', 'TRANSACTION_FEE': '1% Fees', 'MONTHLY_FEE': '5birr Fees'};
+    final labels = {
+      'ALL': 'All',
+      'TRANSACTION_FEE': '1% Fees',
+      'SUBSCRIPTION_FEE': '5birr Fees'
+    };
     return Padding(
       padding: const EdgeInsets.only(right: 6),
       child: FilterChip(
         label: Text(labels[type] ?? type,
-            style: TextStyle(fontSize: 11, color: selected ? Colors.white : AppTheme.textPrimary)),
+            style: TextStyle(
+                fontSize: 11,
+                color: selected ? Colors.white : AppTheme.textPrimary)),
         selected: selected,
         onSelected: (_) {
           setState(() => _typeFilter = type);
@@ -377,9 +447,17 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
   Widget _sectionHeader(String title, Color color) {
     return Row(
       children: [
-        Container(width: 3, height: 16, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(2))),
+        Container(
+            width: 3,
+            height: 16,
+            decoration: BoxDecoration(
+                color: color, borderRadius: BorderRadius.circular(2))),
         const SizedBox(width: 8),
-        Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        Text(title,
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary)),
       ],
     );
   }

@@ -20,6 +20,7 @@ class UserActiveRideScreen extends StatefulWidget {
 class _State extends State<UserActiveRideScreen> {
   Map<String, dynamic>? _ride;
   StreamSubscription? _sub;
+  StreamSubscription? _posSub;
   bool _loading = true;
 
   // Live GPS state
@@ -27,6 +28,11 @@ class _State extends State<UserActiveRideScreen> {
   geo.Position? _myPos;
   bool _directionsLaunching = false;
   LocationStatus? _locStatus;
+
+  // Real interactive map: controller lets us keep the camera glued to the
+  // rider's live position; [_followUser] mirrors the dashboards' behavior.
+  final MapController _mapController = MapController();
+  bool _followUser = true;
 
   @override
   void initState() {
@@ -37,6 +43,7 @@ class _State extends State<UserActiveRideScreen> {
   @override
   void dispose() {
     _sub?.cancel();
+    _posSub?.cancel();
     super.dispose();
   }
 
@@ -84,6 +91,29 @@ class _State extends State<UserActiveRideScreen> {
       _locStatus = r.status;
       if (r.success) _myPos = r.position;
     });
+    _moveCameraToMe();
+    // Keep the map live: the rider's own pin used to be a one-shot fix that
+    // never moved, making the screen feel like a static image.
+    if (r.success && _posSub == null) {
+      _posSub = LocationService.instance
+          .getPositionStream(distanceFilter: 15)
+          .listen((pos) {
+        if (!mounted) return;
+        setState(() => _myPos = pos);
+        _moveCameraToMe();
+      });
+    }
+  }
+
+  void _moveCameraToMe() {
+    final me = _myPos;
+    if (me == null || !_followUser) return;
+    try {
+      _mapController.move(
+          LatLng(me.latitude, me.longitude), _mapController.camera.zoom);
+    } catch (_) {
+      // Map not mounted yet — the next fix will carry the position.
+    }
   }
 
   Future<void> _openSettings() async {
@@ -174,7 +204,14 @@ class _State extends State<UserActiveRideScreen> {
     final status = _ride!['status'] ?? '';
     final pickup = _ride!['pickup_text'] ?? 'Pickup';
     final dest = _ride!['destination_text'] ?? 'Destination';
-    final claimed = ['CLAIMED', 'DRIVER_ARRIVING', 'DRIVER_EN_ROUTE', 'ARRIVED', 'TRIP_STARTED', 'STARTED'].contains(status);
+    final claimed = [
+      'CLAIMED',
+      'DRIVER_ARRIVING',
+      'DRIVER_EN_ROUTE',
+      'ARRIVED',
+      'TRIP_STARTED',
+      'STARTED'
+    ].contains(status);
 
     // Live tracking map: driver pin once assigned, my GPS pin when granted.
     final LatLng? driverMarker =
@@ -184,53 +221,130 @@ class _State extends State<UserActiveRideScreen> {
     final points = [driverMarker, myMarker].whereType<LatLng>().toList();
 
     Widget map;
-    if (points.isEmpty) {
-      map = _noLiveLocationWidget(claimed);
-    } else {
-      final center = _initialCenter(points);
-      map = ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: FlutterMap(
-          options: MapOptions(
-            initialCenter: center,
-            initialZoom: points.length == 1 ? 15 : 13.5,
+    // Center on the rider when known, else the driver, else Addis Ababa.
+    final center = myMarker != null
+        ? myMarker
+        : (driverMarker ?? const LatLng(9.03, 38.74));
+    // The map is ALWAYS real and interactive — pan/zoom work before any pin
+    // exists. A static placeholder here previously made the whole feature
+    // "look fake" whenever GPS or driver location was briefly unavailable.
+    map = ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: center,
+              initialZoom: points.length == 1 ? 15 : 13.5,
+              onTap: (_, __) => setState(() => _followUser = false),
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.amistbirr.myapp',
+              ),
+              const RichAttributionWidget(
+                attributions: [
+                  TextSourceAttribution('© OpenStreetMap contributors'),
+                ],
+              ),
+              MarkerLayer(
+                markers: [
+                  if (driverMarker != null)
+                    Marker(
+                      point: driverMarker,
+                      width: 44,
+                      height: 44,
+                      alignment: Alignment.topCenter,
+                      child: const Icon(Icons.local_taxi,
+                          color: AppTheme.teal, size: 44),
+                    ),
+                  if (myMarker != null)
+                    Marker(
+                      point: myMarker,
+                      width: 40,
+                      height: 40,
+                      alignment: Alignment.topCenter,
+                      child: const Icon(Icons.person_pin_circle,
+                          color: AppTheme.primaryGreen, size: 40),
+                    ),
+                  if (points.isEmpty)
+                    Marker(
+                      point: center,
+                      width: 48,
+                      height: 48,
+                      alignment: Alignment.topCenter,
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.location_searching,
+                            color: AppTheme.textMuted, size: 30),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: AppTheme.cardBorder, width: 0.5),
+                          ),
+                          child: Text(
+                            claimed
+                                ? 'Waiting for driver location…'
+                                : 'Searching for a driver…',
+                            style: const TextStyle(
+                                fontSize: 9, color: AppTheme.textMuted),
+                          ),
+                        ),
+                      ]),
+                    ),
+                ],
+              ),
+            ],
           ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.amistbirr.myapp',
-            ),
-            MarkerLayer(
-              markers: [
-                if (driverMarker != null)
-                  Marker(
-                    point: driverMarker,
-                    width: 44,
-                    height: 44,
-                    alignment: Alignment.topCenter,
-                    child: const Icon(Icons.local_taxi,
-                        color: AppTheme.teal, size: 44),
+          if (points.isEmpty)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 30,
+              child: IgnorePointer(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.95),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppTheme.cardBorder, width: 0.5),
                   ),
-                if (myMarker != null)
-                  Marker(
-                    point: myMarker,
-                    width: 40,
-                    height: 40,
-                    alignment: Alignment.topCenter,
-                    child: const Icon(Icons.person_pin_circle,
-                        color: AppTheme.primaryGreen, size: 40),
+                  child: Text(
+                    claimed
+                        ? 'Connected to the live map — the driver pin appears here as soon as their location streams in.'
+                        : 'Searching for a driver — the map is live; your driver pin appears once one claims this ride.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textMuted),
                   ),
-              ],
+                ),
+              ),
             ),
-            const RichAttributionWidget(
-              attributions: [
-                TextSourceAttribution('© OpenStreetMap contributors'),
-              ],
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: FloatingActionButton.small(
+              heroTag: 'followUserRide',
+              onPressed: () {
+                setState(() => _followUser = true);
+                _moveCameraToMe();
+              },
+              backgroundColor:
+                  _followUser ? AppTheme.primaryGreen : AppTheme.surface,
+              foregroundColor:
+                  _followUser ? Colors.white : AppTheme.primaryGreen,
+              child: const Icon(Icons.my_location, size: 20),
             ),
-          ],
-        ),
-      );
-    }
+          ),
+        ],
+      ),
+    );
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -264,8 +378,8 @@ class _State extends State<UserActiveRideScreen> {
                   driverMarker != null
                       ? 'Driver location updates live'
                       : 'Driver will appear on the map once your ride is claimed',
-                  style: const TextStyle(
-                      fontSize: 12, color: AppTheme.textMuted),
+                  style:
+                      const TextStyle(fontSize: 12, color: AppTheme.textMuted),
                 ),
               ),
               if (myMarker == null)
@@ -301,8 +415,7 @@ class _State extends State<UserActiveRideScreen> {
           // Locations
           _locationTile(Icons.circle, AppTheme.success, 'Pickup', pickup),
           const SizedBox(height: 8),
-          _locationTile(
-              Icons.location_on, AppTheme.error, 'Destination', dest),
+          _locationTile(Icons.location_on, AppTheme.error, 'Destination', dest),
           const SizedBox(height: 20),
           // Cancel button (only before trip starts)
           if (['REQUESTED', 'CLAIMED', 'DRIVER_ARRIVING'].contains(status))
@@ -323,49 +436,7 @@ class _State extends State<UserActiveRideScreen> {
     );
   }
 
-  Widget _noLiveLocationWidget(bool claimed) {
-    if (!claimed) {
-      return _mapPlaceholder('Searching for a driver — the map goes live once one claims your ride');
-    }
-    return _mapPlaceholder('Waiting for driver location…');
-  }
-
-  Widget _mapPlaceholder(String text) {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: AppTheme.creamDark,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.map_outlined, size: 44, color: AppTheme.textMuted),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Text(text,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 12, color: AppTheme.textMuted)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  LatLng _initialCenter(List<LatLng> points) {
-    final lat = points.map((p) => p.latitude).reduce((a, b) => a + b) /
-        points.length;
-    final lng = points.map((p) => p.longitude).reduce((a, b) => a + b) /
-        points.length;
-    return LatLng(lat, lng);
-  }
-
-  Widget _locationTile(
-      IconData icon, Color color, String label, String text) {
+  Widget _locationTile(IconData icon, Color color, String label, String text) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -398,27 +469,43 @@ class _State extends State<UserActiveRideScreen> {
 
   Color _statusColor(String status) {
     switch (status) {
-      case 'REQUESTED': return AppTheme.warning;
-      case 'CLAIMED': return AppTheme.info;
-      case 'DRIVER_ARRIVING': return AppTheme.teal;
-      case 'ARRIVED': return AppTheme.primaryGreen;
-      case 'TRIP_STARTED': return AppTheme.primaryGreen;
-      case 'COMPLETED': return AppTheme.success;
-      case 'CANCELLED': return AppTheme.error;
-      default: return AppTheme.textMuted;
+      case 'REQUESTED':
+        return AppTheme.warning;
+      case 'CLAIMED':
+        return AppTheme.info;
+      case 'DRIVER_ARRIVING':
+        return AppTheme.teal;
+      case 'ARRIVED':
+        return AppTheme.primaryGreen;
+      case 'TRIP_STARTED':
+        return AppTheme.primaryGreen;
+      case 'COMPLETED':
+        return AppTheme.success;
+      case 'CANCELLED':
+        return AppTheme.error;
+      default:
+        return AppTheme.textMuted;
     }
   }
 
   String _statusText(String status) {
     switch (status) {
-      case 'REQUESTED': return 'Searching for driver...';
-      case 'CLAIMED': return 'Driver is on the way';
-      case 'DRIVER_ARRIVING': return 'Driver is approaching';
-      case 'ARRIVED': return 'Driver has arrived';
-      case 'TRIP_STARTED': return 'Trip in progress';
-      case 'COMPLETED': return 'Trip completed';
-      case 'CANCELLED': return 'Ride cancelled';
-      default: return status;
+      case 'REQUESTED':
+        return 'Searching for driver...';
+      case 'CLAIMED':
+        return 'Driver is on the way';
+      case 'DRIVER_ARRIVING':
+        return 'Driver is approaching';
+      case 'ARRIVED':
+        return 'Driver has arrived';
+      case 'TRIP_STARTED':
+        return 'Trip in progress';
+      case 'COMPLETED':
+        return 'Trip completed';
+      case 'CANCELLED':
+        return 'Ride cancelled';
+      default:
+        return status;
     }
   }
 }
