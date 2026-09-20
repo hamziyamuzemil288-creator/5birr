@@ -63,16 +63,18 @@ class _WalletScreenState extends State<WalletScreen> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [AppTheme.primaryGreen, AppTheme.primaryGreenDark]),
+                      gradient: const LinearGradient(colors: [
+                        AppTheme.primaryGreen,
+                        AppTheme.primaryGreenDark
+                      ]),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text('Current Balance',
-                            style: TextStyle(
-                                fontSize: 14, color: Colors.white70)),
+                            style:
+                                TextStyle(fontSize: 14, color: Colors.white70)),
                         const SizedBox(height: 8),
                         Text('${balance.toStringAsFixed(2)} ETB',
                             style: const TextStyle(
@@ -114,8 +116,8 @@ class _WalletScreenState extends State<WalletScreen> {
                   const SizedBox(height: 24),
                   // My recharge requests
                   const Text('My Recharge Requests',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w700)),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 12),
                   if (_rechargeRequests.isEmpty)
                     const Padding(
@@ -128,8 +130,8 @@ class _WalletScreenState extends State<WalletScreen> {
                   const SizedBox(height: 24),
                   // Recent transactions
                   const Text('Recent Transactions',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w700)),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 12),
                   if (_transactions.isEmpty)
                     const Padding(
@@ -199,14 +201,14 @@ class _WalletScreenState extends State<WalletScreen> {
                 const SizedBox(height: 2),
                 Text(
                   '${method ?? 'Payment'} · ${date.day}/${date.month}/${date.year}',
-                  style: const TextStyle(
-                      fontSize: 11, color: AppTheme.textMuted),
+                  style:
+                      const TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
                 if (status == 'REJECTED' && r['rejection_reason'] != null) ...[
                   const SizedBox(height: 4),
                   Text('Reason: ${r['rejection_reason']}',
-                      style: const TextStyle(
-                          fontSize: 11, color: AppTheme.error)),
+                      style:
+                          const TextStyle(fontSize: 11, color: AppTheme.error)),
                 ],
               ],
             ),
@@ -221,13 +223,21 @@ class _WalletScreenState extends State<WalletScreen> {
     final gross = (t['gross_amount'] as num?)?.toDouble() ?? 0;
     final net = (t['net_amount'] as num?)?.toDouble() ?? 0;
     final fee = (t['platform_fee'] as num?)?.toDouble() ?? 0;
-    final isCredit = type == 'RECHARGE' || type == 'ADMIN_CASH' ||
-        type == 'ADJUSTMENT' || type == 'REFUND' || type == 'DEPOSIT';
+    final isCredit = type == 'RECHARGE' ||
+        type == 'ADMIN_CASH' ||
+        type == 'ADJUSTMENT' ||
+        type == 'REFUND' ||
+        type == 'DEPOSIT';
     final color = isCredit ? AppTheme.success : AppTheme.error;
     final sign = isCredit ? '+' : '-';
     final date = t['created_at'] != null
         ? DateTime.parse(t['created_at'])
         : DateTime.now();
+    // One-time activation: the registration fee consumed this entire first
+    // recharge (fee == amount, nothing credited). Without this special case
+    // the row reads "Recharge +100.00 / Fee: 100.00" with no explanation and
+    // looks like a crediting bug.
+    final isActivation = type == 'RECHARGE' && fee > 0 && net <= 0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -247,7 +257,9 @@ class _WalletScreenState extends State<WalletScreen> {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              isCredit ? Icons.arrow_downward : Icons.arrow_upward,
+              isActivation
+                  ? Icons.verified_outlined
+                  : (isCredit ? Icons.arrow_downward : Icons.arrow_upward),
               color: color,
               size: 18,
             ),
@@ -257,7 +269,10 @@ class _WalletScreenState extends State<WalletScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(_txnLabel(type),
+                Text(
+                    isActivation
+                        ? 'Registration Fee Activation'
+                        : _txnLabel(type),
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
@@ -265,6 +280,13 @@ class _WalletScreenState extends State<WalletScreen> {
                     '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
                     style: const TextStyle(
                         fontSize: 11, color: AppTheme.textMuted)),
+                if (isActivation) ...[
+                  const SizedBox(height: 2),
+                  const Text(
+                      'One-time registration fee — 0.00 credited. Your next recharge credits in full.',
+                      style:
+                          TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                ],
               ],
             ),
           ),
@@ -273,11 +295,14 @@ class _WalletScreenState extends State<WalletScreen> {
             children: [
               Text('$sign${gross.toStringAsFixed(2)} ETB',
                   style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: color)),
-              if (fee > 0)
-                Text('Fee: ${fee.toStringAsFixed(2)}',
+                      fontSize: 14, fontWeight: FontWeight.w700, color: color)),
+              if (isActivation)
+                Text('0.00 credited',
+                    style: const TextStyle(
+                        fontSize: 10, color: AppTheme.textMuted))
+              else if (fee > 0)
+                Text(
+                    'Fee: ${fee.toStringAsFixed(2)} · Credited: ${net.toStringAsFixed(2)}',
                     style: const TextStyle(
                         fontSize: 10, color: AppTheme.textMuted)),
             ],
@@ -289,15 +314,24 @@ class _WalletScreenState extends State<WalletScreen> {
 
   String _txnLabel(String type) {
     switch (type) {
-      case 'RECHARGE': return 'Recharge';
-      case 'ADMIN_CASH': return 'Cash Recharge';
-      case 'TRANSACTION_FEE': return 'Transaction Fee';
-      case 'SUBSCRIPTION_FEE': return 'Subscription Fee';
-      case 'ADJUSTMENT': return 'Adjustment';
-      case 'REFUND': return 'Refund';
-      case 'DEPOSIT': return 'Deposit';
-      case 'WITHDRAWAL': return 'Withdrawal';
-      default: return type;
+      case 'RECHARGE':
+        return 'Recharge';
+      case 'ADMIN_CASH':
+        return 'Cash Recharge';
+      case 'TRANSACTION_FEE':
+        return 'Transaction Fee';
+      case 'SUBSCRIPTION_FEE':
+        return 'Subscription Fee';
+      case 'ADJUSTMENT':
+        return 'Adjustment';
+      case 'REFUND':
+        return 'Refund';
+      case 'DEPOSIT':
+        return 'Deposit';
+      case 'WITHDRAWAL':
+        return 'Withdrawal';
+      default:
+        return type;
     }
   }
 }
