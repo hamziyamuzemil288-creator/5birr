@@ -43,9 +43,13 @@ class ProductCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Image
-            AspectRatio(
-              aspectRatio: 1,
+            // Image — Expanded (not a fixed 1:1 AspectRatio) so the card
+            // always fills its grid slot: the text block keeps its intrinsic
+            // height and the image absorbs whatever remains. A fixed square
+            // image + fixed text scaled as width + ~80dp while the slot scaled
+            // as width / childAspectRatio, which overflowed by a few pixels on
+            // some device widths (BOTTOM OVERFLOWED BY 4.1 PIXELS).
+            Expanded(
               child: Container(
                 decoration: BoxDecoration(
                   color: AppTheme.creamDark,
@@ -76,6 +80,7 @@ class ProductCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(10),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(product.name,
