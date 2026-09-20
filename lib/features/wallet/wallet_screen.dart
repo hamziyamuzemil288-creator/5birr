@@ -13,6 +13,7 @@ class WalletScreen extends StatefulWidget {
 class _WalletScreenState extends State<WalletScreen> {
   Map<String, dynamic>? _wallet;
   List<Map<String, dynamic>> _transactions = [];
+  List<Map<String, dynamic>> _rechargeRequests = [];
   bool _loading = true;
   double _lowThreshold = 15;
 
@@ -27,11 +28,13 @@ class _WalletScreenState extends State<WalletScreen> {
       final wallet = await WalletService.instance.getMyWallet();
       final txns = await WalletService.instance.getMyTransactions(limit: 30);
       final threshold = await WalletService.instance.getLowBalanceThreshold();
+      final requests = await WalletService.instance.getMyRechargeRequests();
       if (mounted) {
         setState(() {
           _wallet = wallet;
           _transactions = txns;
           _lowThreshold = threshold;
+          _rechargeRequests = requests;
           _loading = false;
         });
       }
@@ -109,6 +112,20 @@ class _WalletScreenState extends State<WalletScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  // My recharge requests
+                  const Text('My Recharge Requests',
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 12),
+                  if (_rechargeRequests.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text('No recharge requests yet',
+                          style: TextStyle(color: AppTheme.textMuted)),
+                    )
+                  else
+                    ..._rechargeRequests.map(_rechargeTile),
+                  const SizedBox(height: 24),
                   // Recent transactions
                   const Text('Recent Transactions',
                       style: TextStyle(
@@ -126,6 +143,76 @@ class _WalletScreenState extends State<WalletScreen> {
                 ],
               ),
             ),
+    );
+  }
+
+  /// Status chip colors for recharge requests.
+  Color _requestColor(String status) {
+    switch (status) {
+      case 'APPROVED':
+        return AppTheme.success;
+      case 'REJECTED':
+        return AppTheme.error;
+      default:
+        return AppTheme.warning; // PENDING
+    }
+  }
+
+  Widget _rechargeTile(Map<String, dynamic> r) {
+    final status = (r['status'] as String?) ?? 'PENDING';
+    final amount = (r['amount'] as num?)?.toDouble() ?? 0;
+    final method =
+        (r['payment_methods'] as Map<String, dynamic>?)?['name'] as String?;
+    final date = r['created_at'] != null
+        ? DateTime.parse(r['created_at'])
+        : DateTime.now();
+    final color = _requestColor(status);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(status,
+                style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${amount.toStringAsFixed(2)} ETB',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
+                Text(
+                  '${method ?? 'Payment'} · ${date.day}/${date.month}/${date.year}',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppTheme.textMuted),
+                ),
+                if (status == 'REJECTED' && r['rejection_reason'] != null) ...[
+                  const SizedBox(height: 4),
+                  Text('Reason: ${r['rejection_reason']}',
+                      style: const TextStyle(
+                          fontSize: 11, color: AppTheme.error)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 

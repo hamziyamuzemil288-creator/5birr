@@ -20,6 +20,7 @@ class _ServiceProviderDashboardState
   int _productCount = 0;
   int _orderCount = 0;
   int _points = 0;
+  double? _walletBalance;
   bool _loading = true;
 
   @override
@@ -55,12 +56,18 @@ class _ServiceProviderDashboardState
           .eq('provider_id', prov['id'])
           .count(CountOption.exact);
       final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
+      final wallet = await client
+          .from('wallets')
+          .select('balance')
+          .eq('provider_id', prov['id'])
+          .maybeSingle();
       if (mounted) {
         setState(() {
           _providerProfile = prov;
           _productCount = prods.count ?? 0;
           _orderCount = orders.count ?? 0;
           _points = points;
+          _walletBalance = (wallet?['balance'] as num?)?.toDouble();
           _loading = false;
         });
       }
@@ -142,6 +149,9 @@ class _ServiceProviderDashboardState
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // Wallet balance strip
+                    _walletCard(),
+                    const SizedBox(height: 20),
                     // Stats
                     Row(
                       children: [
@@ -185,6 +195,57 @@ class _ServiceProviderDashboardState
                 ),
               ),
             ),
+    );
+  }
+
+  /// Compact wallet balance strip: balance at a glance + one-tap recharge.
+  Widget _walletCard() {
+    final balance = _walletBalance ?? 0;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: AppTheme.primaryGreen.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.account_balance_wallet_outlined,
+                color: AppTheme.primaryGreen, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Wallet Balance',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                const SizedBox(height: 2),
+                Text('${balance.toStringAsFixed(2)} ETB',
+                    style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+              ],
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => context.push('/wallet/recharge'),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Recharge',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.teal),
+          ),
+        ],
+      ),
     );
   }
 
