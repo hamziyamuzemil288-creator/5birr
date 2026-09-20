@@ -284,6 +284,11 @@ class _VehicleProviderDashboardState
                         style: TextStyle(
                             fontSize: 16, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 12),
+                    // Buyer mode: vehicle providers can shop from service
+                    // providers using the regular user experience while
+                    // keeping this transport dashboard.
+                    _action(Icons.shopping_bag_outlined, 'Browse & Shop',
+                        () => context.push('/user')),
                     _action(Icons.local_taxi_outlined, 'Ride Requests',
                         () => context.push('/vehicle/ride-requests')),
                     _action(Icons.play_circle_outline, 'Active Trip',

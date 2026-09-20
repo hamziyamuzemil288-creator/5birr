@@ -23,9 +23,19 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
 
   Future<void> _load() async {
     try {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+      // Buyer orders only. The orders RLS also exposes orders sold by the
+      // signed-in user's business (owns_provider_profile) so providers can
+      // manage sales from /provider/orders — without this filter a provider
+      // browsing as a buyer would see their sales mixed into this list.
       final data = await Supabase.instance.client
           .from('orders')
           .select('*, provider_profiles(business_name)')
+          .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(50);
       if (mounted) {

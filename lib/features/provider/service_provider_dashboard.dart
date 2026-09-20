@@ -170,6 +170,11 @@ class _ServiceProviderDashboardState
                         style: TextStyle(
                             fontSize: 16, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 12),
+                    // Buyer mode: providers can shop from other providers
+                    // using the regular user experience (browse, cart,
+                    // checkout, escrow) while keeping this business view.
+                    _action(Icons.shopping_bag_outlined, 'Browse & Shop',
+                        () => context.push('/user')),
                     _action(Icons.storefront_outlined, 'Business Profile',
                         () => context.push('/provider/business')),
                     _action(Icons.inventory_2_outlined, 'My Products',
