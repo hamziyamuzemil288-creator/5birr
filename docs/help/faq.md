@@ -1,7 +1,9 @@
 # Help Center
 
 Welcome! These short guides cover the main things people ask about.
-If you can't find what you need, contact support from your profile page.
+If you can't find what you need, our support team is happy to help:
+reach us on WhatsApp at **0917686990** or by email at
+**muktarbiya329@gmail.com**.
 
 ## Creating an account
 
@@ -97,6 +99,25 @@ price and stock, and publish. Products appear in search right away.
 Every approved provider gets a wallet. Confirmed sales are recorded there,
 minus the small transaction fee, and the monthly subscription is deducted
 automatically when it's due.
+
+**How do I recharge my wallet?**
+Open **Wallet** from your provider dashboard and tap **RECHARGE WALLET**.
+Send the amount to our Telebirr account **0917686990** (Aliob Business) —
+the account details are shown right on the recharge screen. Then enter the
+amount, the transaction reference, and upload your payment screenshot. Once
+our team verifies the payment, your wallet is credited. You can track the
+status of every recharge request on the wallet screen.
+
+**What if my wallet balance is too low?**
+You'll see a low-balance warning on your wallet, and the app notifies you
+when a fee can't be covered. Just recharge and you're back in business —
+recharging is the only action needed on your side.
+
+**Can providers also buy from other sellers?**
+Yes! Tap **Browse & Shop** on your business dashboard to switch into the
+buyer experience. You can browse categories, search, add to cart, and check
+out exactly like a regular user — your purchases and your sales stay
+completely separate.
 
 **How do I earn points?**
 Every successfully completed sale earns points automatically. Buyers earn

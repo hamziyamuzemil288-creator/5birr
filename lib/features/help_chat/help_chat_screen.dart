@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+/// Human-support contact points shown whenever the assistant can't help.
+/// Mirrors the constants in supabase/functions/repo-chat/index.ts.
+const String _kSupportWhatsAppDisplay = '0917686990';
+const String _kSupportWhatsAppUrl = 'https://wa.me/251917686990';
+const String _kSupportEmail = 'muktarbiya329@gmail.com';
 
 class _Msg {
   final String role; // 'user' | 'assistant'
   final String content;
-  const _Msg(this.role, this.content);
+  final bool handoff; // true → render tappable WhatsApp/email actions
+  const _Msg(this.role, this.content, {this.handoff = false});
 }
 
 class HelpChatScreen extends StatefulWidget {
@@ -18,7 +26,11 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final List<_Msg> _messages = [
-    const _Msg('assistant', 'Hi! Ask me anything about how to use the app.'),
+    const _Msg(
+        'assistant',
+        'Hi! 👋 I\'m the Aliob assistant. I can help with registering, buying '
+        'and orders, escrow and payments, wallet recharges, fees, points, '
+        'and rides.\n\nWhat can I help you with today?'),
   ];
   bool _sending = false;
 
@@ -41,6 +53,7 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
     _scrollToEnd();
 
     String reply;
+    bool handoff = false;
     try {
       // Skip the local greeting so history starts with a user turn.
       final history = _messages
@@ -49,8 +62,10 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
           .toList();
       final res = await Supabase.instance.client.functions
           .invoke('repo-chat', body: {'messages': history});
-      reply = (res.data as Map)['reply'] as String? ??
+      final data = res.data as Map?;
+      reply = data?['reply'] as String? ??
           'Sorry, something went wrong. Please try again.';
+      handoff = data?['handoff'] == true;
     } on FunctionException catch (e) {
       reply = e.status == 429
           ? "You've reached today's help limit. Please try again tomorrow."
@@ -61,10 +76,29 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
 
     if (!mounted) return;
     setState(() {
-      _messages.add(_Msg('assistant', reply));
+      _messages.add(_Msg('assistant', reply, handoff: handoff));
       _sending = false;
     });
     _scrollToEnd();
+  }
+
+  Future<void> _launchSupportLink(String raw) async {
+    final uri = Uri.tryParse(raw);
+    if (uri == null) return;
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open $raw — the address is copied in the message above.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open $raw — the address is shown in the message above.')),
+        );
+      }
+    }
   }
 
   void _scrollToEnd() {
@@ -77,6 +111,19 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
         );
       }
     });
+  }
+
+  /// Tappable contact chip rendered under handoff messages.
+  Widget _supportButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return FilledButton.tonalIcon(
+      onPressed: onTap,
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
   }
 
   @override
@@ -123,7 +170,34 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
                           : scheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    child: SelectableText(m.content),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SelectableText(m.content),
+                        if (m.handoff) ...[
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _supportButton(
+                                icon: Icons.chat,
+                                label: 'WhatsApp $_kSupportWhatsAppDisplay',
+                                onTap: () =>
+                                    _launchSupportLink(_kSupportWhatsAppUrl),
+                              ),
+                              _supportButton(
+                                icon: Icons.email_outlined,
+                                label: 'Email us',
+                                onTap: () => _launchSupportLink(
+                                    'mailto:$_kSupportEmail'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 );
               },

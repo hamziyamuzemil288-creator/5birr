@@ -5,9 +5,9 @@
 -- in payment_methods the screen shows "No payment methods available" and
 -- providers cannot submit recharge requests.
 --
--- The account details below are intentionally placeholder values: admins
--- edit them in Admin → Payment Methods (/admin/payment-methods), so the
--- real Telebirr account can be updated later without a code change.
+-- The account details below live in the payment_methods table: admins edit
+-- them in Admin → Payment Methods (/admin/payment-methods), so the Telebirr
+-- account can be updated later without a code deploy.
 --
 -- Idempotent: does nothing if any Telebirr method already exists.
 
@@ -15,7 +15,7 @@ insert into payment_methods (name, account_name, account_number, instructions, i
 select
   'Telebirr',
   'Aliob Business',
-  '090 000 0000',
+  '0917686990',
   'Send the recharge amount to the Telebirr account above via the Telebirr app or USSD, then submit this form with the transaction reference number and a payment screenshot. Your wallet will be credited after admin verification.',
   true,
   0
