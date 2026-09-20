@@ -79,7 +79,14 @@ Deno.serve(async (req: Request) => {
         return json({ error: "Each item requires a product_id" }, 400);
       }
       const qty = Number(raw.quantity);
-      if (!Number.isInteger(qty) || qty <= 0 || qty > MAX_QUANTITY_PER_ITEM) {
+      // Fractional amounts are valid for unit-priced listings (per kg/liter);
+      // the order_items.quantity column is numeric(10,3) (migration 0040).
+      if (
+        !Number.isFinite(qty) ||
+        qty <= 0 ||
+        qty > MAX_QUANTITY_PER_ITEM ||
+        Math.round(qty * 1000) !== qty * 1000
+      ) {
         return json(
           { error: `Invalid quantity for product ${raw.product_id}` },
           400
@@ -157,7 +164,7 @@ Deno.serve(async (req: Request) => {
       if (
         product.stock_quantity !== null &&
         product.stock_quantity !== undefined &&
-        product.stock_quantity < item.quantity
+        product.stock_quantity < Math.ceil(item.quantity)
       ) {
         return json(
           { error: `Insufficient stock for product ${item.product_id}` },

@@ -42,7 +42,9 @@ class WalletService {
         .select()
         .eq('provider_id', providerId);
     if (type != null) q = q.eq('transaction_type', type);
-    final data = await q.order('created_at', ascending: false).range(offset, offset + limit - 1);
+    final data = await q
+        .order('created_at', ascending: false)
+        .range(offset, offset + limit - 1);
     return List<Map<String, dynamic>>.from(data as List);
   }
 
@@ -73,14 +75,18 @@ class WalletService {
     String? paymentReference,
     String? screenshotPath,
   }) async {
-    final data = await _client.from('wallet_recharge_requests').insert({
-      'provider_id': providerId,
-      'wallet_id': walletId,
-      'payment_method_id': paymentMethodId,
-      'amount': amount,
-      'payment_reference': paymentReference,
-      'screenshot_storage_path': screenshotPath,
-    }).select().single();
+    final data = await _client
+        .from('wallet_recharge_requests')
+        .insert({
+          'provider_id': providerId,
+          'wallet_id': walletId,
+          'payment_method_id': paymentMethodId,
+          'amount': amount,
+          'payment_reference': paymentReference,
+          'screenshot_storage_path': screenshotPath,
+        })
+        .select()
+        .single();
     return data;
   }
 
@@ -105,25 +111,30 @@ class WalletService {
 
   /// Upload payment screenshot.
   Future<String> uploadScreenshot(String filePath, String providerId) async {
-    // Path convention MUST start with the caller's auth uid: the storage
-    // INSERT policy on 'payment-screenshots' only allows
-    // name LIKE auth.uid() || '/%' (migration 0033). Uploading under the
-    // provider-profile id caused StorageException 403 (row-level security).
+    // Path convention MUST start with the caller's auth uid, with NO bucket
+    // prefix: storage policies match the object NAME inside the bucket, and
+    // the 'payment-screenshots' INSERT policy (0033) only allows
+    // name LIKE auth.uid() || '/%'. Keeping 'payment-screenshots/' in the
+    // path put the bucket name inside the object name, which failed that
+    // check with StorageException 403 (row-level security).
     final uid = _client.auth.currentUser?.id;
     if (uid == null) {
       throw Exception('Not authenticated — cannot upload payment screenshot');
     }
     final fileName =
         '${providerId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final path = 'payment-screenshots/$uid/$fileName';
-    await _client.storage.from('payment-screenshots').upload(path, File(filePath),
+    final path = '$uid/$fileName';
+    await _client.storage.from('payment-screenshots').upload(
+        path, File(filePath),
         fileOptions: const FileOptions(upsert: true));
     return path;
   }
 
   /// Get signed URL for payment screenshot.
   Future<String> getScreenshotUrl(String path) async {
-    return _client.storage.from('payment-screenshots').createSignedUrl(path, 3600);
+    return _client.storage
+        .from('payment-screenshots')
+        .createSignedUrl(path, 3600);
   }
 
   /// Get low balance threshold from system settings.

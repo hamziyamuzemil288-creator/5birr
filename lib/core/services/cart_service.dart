@@ -10,7 +10,9 @@ class CartItem {
   final String name;
   final double price;
   final String currency;
-  final int quantity;
+  final double
+      quantity; // decimal allowed: unit-priced items are sold per kg/liter
+  final String? unit; // 'KG' | 'LTR' | null (fixed-price listing)
   final String? imagePath; // primary listing image storage path
   final DateTime addedAt;
 
@@ -23,11 +25,19 @@ class CartItem {
     required this.price,
     this.currency = 'ETB',
     required this.quantity,
+    this.unit,
     this.imagePath,
     required this.addedAt,
   });
 
   double get lineTotal => price * quantity;
+
+  /// Human unit for quantity steppers and totals: 'kg', 'liter', or 'pc'.
+  String get unitLabel => unit == 'KG'
+      ? 'kg'
+      : unit == 'LTR'
+          ? 'liter'
+          : 'pc';
 }
 
 /// Persistent cart backed by the `cart_items` table (migration 0005).
@@ -40,7 +50,7 @@ class CartService {
   /// Add a product to the current user's cart, increasing quantity if present.
   Future<void> addToCart({
     required String productId,
-    required int quantity,
+    required double quantity,
   }) async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) throw Exception('Not authenticated');
@@ -54,7 +64,7 @@ class CartService {
 
     if (existing != null) {
       await _client.from('cart_items').update({
-        'quantity': (existing['quantity'] as int) + quantity,
+        'quantity': (existing['quantity'] as num).toDouble() + quantity,
       }).eq('id', existing['id']);
     } else {
       await _client.from('cart_items').insert({
@@ -73,7 +83,7 @@ class CartService {
     final data = await _client
         .from('cart_items')
         .select(
-            'id, quantity, added_at, products(id, provider_id, name, price, currency, product_images(*), provider_profiles(business_name))')
+            'id, quantity, added_at, products(id, provider_id, name, price, currency, unit, product_images(*), provider_profiles(business_name))')
         .eq('user_id', userId)
         .order('added_at');
 
@@ -81,8 +91,7 @@ class CartService {
     for (final row in data as List) {
       final product = (row['products'] as Map<String, dynamic>?) ?? const {};
       final provider =
-          (product['provider_profiles'] as Map<String, dynamic>?) ??
-              const {};
+          (product['provider_profiles'] as Map<String, dynamic>?) ?? const {};
       items.add(CartItem(
         id: row['id'] as String,
         productId: product['id'] as String,
@@ -91,7 +100,8 @@ class CartService {
         name: product['name'] as String? ?? '',
         price: (product['price'] as num?)?.toDouble() ?? 0,
         currency: product['currency'] as String? ?? 'ETB',
-        quantity: row['quantity'] as int,
+        quantity: (row['quantity'] as num?)?.toDouble() ?? 1,
+        unit: product['unit'] as String?,
         imagePath: _primaryImagePath(product),
         addedAt: DateTime.parse(row['added_at'] as String),
       ));
@@ -102,7 +112,7 @@ class CartService {
   /// Update a cart line's quantity; quantity <= 0 removes the line.
   Future<void> updateQuantity({
     required String productId,
-    required int quantity,
+    required double quantity,
   }) async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) return;

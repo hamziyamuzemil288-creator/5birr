@@ -9,6 +9,7 @@ import '../../core/widgets/retry_widget.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/models/product.dart';
 import '../../core/models/category.dart';
+import '../../core/services/ride_service.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -19,6 +20,7 @@ class UserHomeScreen extends StatefulWidget {
 class _UserHomeScreenState extends State<UserHomeScreen> {
   List<AppCategory> _categories = [];
   List<Product> _products = [];
+  Map<String, dynamic>? _activeRide; // set when the rider has an active ride
   bool _loading = true;
   String? _error;
 
@@ -54,9 +56,8 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             .isFilter('parent_id', null)
             .order('sort_order')
             .limit(12);
-        categories = (catData as List)
-            .map((j) => AppCategory.fromJson(j))
-            .toList();
+        categories =
+            (catData as List).map((j) => AppCategory.fromJson(j)).toList();
         _cachedCategories = categories;
         _categoriesFetchedAt = DateTime.now();
       }
@@ -66,9 +67,18 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           .eq('is_active', true)
           .order('created_at', ascending: false)
           .limit(20);
+      // Active ride? Surface a live-tracking entry on Home (GPS dashboard).
+      Map<String, dynamic>? activeRide;
+      try {
+        final ride = await RideService.instance.getMyActiveRide();
+        if (ride != null && mounted) {
+          activeRide = Map<String, dynamic>.from(ride);
+        }
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _categories = categories;
+          _activeRide = activeRide;
           _products = (prodData as List).map((j) {
             final imgs = (j['product_images'] as List?)
                     ?.map((i) => ListingImage.fromJson(i))
@@ -97,10 +107,12 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() {
-        _loading = false;
-        _error = 'Could not load content. Check your connection and try again.';
-      });
+      if (mounted)
+        setState(() {
+          _loading = false;
+          _error =
+              'Could not load content. Check your connection and try again.';
+        });
     }
   }
 
@@ -115,296 +127,325 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       );
     }
     return RefreshIndicator(
-            onRefresh: _load,
-            color: AppTheme.primaryGreen,
-            child: CustomScrollView(
-              slivers: [
-                // Header
-                SliverToBoxAdapter(
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
+      onRefresh: _load,
+      color: AppTheme.primaryGreen,
+      child: CustomScrollView(
+        slivers: [
+          // Header
+          SliverToBoxAdapter(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Greeting + logo row
+                  Row(
+                    children: [
+                      Image.asset(
+                        'assets/images/aliob_logo_mark.png',
+                        width: 36,
+                        height: 36,
+                      ),
+                      const SizedBox(width: 10),
+                      const Text('Aliob',
+                          style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                              letterSpacing: 1.5)),
+                      const Spacer(),
+                      const CartIconButton(iconColor: Colors.white),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _greeting(),
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.white.withOpacity(0.7),
+                        fontWeight: FontWeight.w400),
+                  ),
+                  const SizedBox(height: 16),
+                  // Search bar
+                  GestureDetector(
+                    onTap: () => context.push('/user/search'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 13),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border:
+                            Border.all(color: Colors.white.withOpacity(0.1)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.search,
+                              color: Colors.white.withOpacity(0.7), size: 20),
+                          const SizedBox(width: 10),
+                          Text('Search products, services...',
+                              style: TextStyle(
+                                  color: Colors.white.withOpacity(0.6),
+                                  fontSize: 14)),
+                        ],
                       ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Greeting + logo row
-                        Row(
+                  ),
+                  // Live ride banner: tap to open the GPS tracking map.
+                  if (_activeRide != null) ...[
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: () => context.push('/user/ride-active'),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border:
+                              Border.all(color: Colors.white.withOpacity(0.25)),
+                        ),
+                        child: Row(
                           children: [
-                            Image.asset(
-                              'assets/images/aliob_logo_mark.png',
-                              width: 36,
-                              height: 36,
-                            ),
+                            const Icon(Icons.near_me,
+                                color: Colors.white, size: 18),
                             const SizedBox(width: 10),
-                            const Text('Aliob',
-                                style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
-                                    letterSpacing: 1.5)),
-                            const Spacer(),
-                            const CartIconButton(iconColor: Colors.white),
+                            const Expanded(
+                              child: Text(
+                                  'Ride in progress — track your driver',
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                            Icon(Icons.chevron_right,
+                                color: Colors.white.withOpacity(0.7), size: 20),
                           ],
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _greeting(),
-                          style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.white.withOpacity(0.7),
-                              fontWeight: FontWeight.w400),
-                        ),
-                        const SizedBox(height: 16),
-                        // Search bar
-                        GestureDetector(
-                          onTap: () => context.push('/user/search'),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  // Quick actions row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => context.push('/user/ride-request'),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 13),
+                                horizontal: 14, vertical: 12),
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.15),
+                              color: AppTheme.teal.withOpacity(0.3),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                  color: Colors.white.withOpacity(0.1)),
+                                  color: AppTheme.teal.withOpacity(0.3)),
                             ),
-                            child: Row(
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.search,
-                                    color: Colors.white.withOpacity(0.7),
-                                    size: 20),
-                                const SizedBox(width: 10),
-                                Text('Search products, services...',
+                                Icon(Icons.local_taxi,
+                                    color: Colors.white, size: 18),
+                                SizedBox(width: 8),
+                                Text('Ride',
                                     style: TextStyle(
-                                        color: Colors.white.withOpacity(0.6),
-                                        fontSize: 14)),
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600)),
                               ],
                             ),
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        // Quick actions row
-                        Row(
-                          children: [
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => context.push('/user/ride-request'),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 14, vertical: 12),
-                                  decoration: BoxDecoration(
-                                    color: AppTheme.teal.withOpacity(0.3),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                        color: AppTheme.teal.withOpacity(0.3)),
-                                  ),
-                                  child: const Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.local_taxi,
-                                          color: Colors.white, size: 18),
-                                      SizedBox(width: 8),
-                                      Text('Ride',
-                                          style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600)),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => context.push('/user/search'),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: AppTheme.gold.withOpacity(0.25),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: AppTheme.gold.withOpacity(0.3)),
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => context.push('/user/search'),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 14, vertical: 12),
-                                  decoration: BoxDecoration(
-                                    color: AppTheme.gold.withOpacity(0.25),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                        color: AppTheme.gold.withOpacity(0.3)),
-                                  ),
-                                  child: const Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.storefront_outlined,
-                                          color: Colors.white, size: 18),
-                                      SizedBox(width: 8),
-                                      Text('Shops',
-                                          style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600)),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                            child: const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.storefront_outlined,
+                                    color: Colors.white, size: 18),
+                                SizedBox(width: 8),
+                                Text('Shops',
+                                    style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600)),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                ],
+              ),
+            ),
+          ),
+          // Categories
+          if (_categories.isNotEmpty) ...[
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
+                child: Text('Browse Categories',
+                    style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: 96,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  itemCount: _categories.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 16),
+                  itemBuilder: (_, i) {
+                    final c = _categories[i];
+                    return CategoryCard(
+                      name: c.name,
+                      icon: _catIcon(c.slug),
+                      onTap: () => context.push('/user/category/${c.id}'),
+                    );
+                  },
                 ),
-                // Categories
-                if (_categories.isNotEmpty) ...[
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
-                      child: Text('Browse Categories',
+              ),
+            ),
+          ],
+          // Products header
+          SliverToBoxAdapter(
+            child: FadeInWidget(
+              delay: const Duration(milliseconds: 400),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 4),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text('Fresh Finds',
                           style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w700,
                               color: AppTheme.textPrimary)),
                     ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 96,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        itemCount: _categories.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 16),
-                        itemBuilder: (_, i) {
-                          final c = _categories[i];
-                          return CategoryCard(
-                            name: c.name,
-                            icon: _catIcon(c.slug),
-                            onTap: () =>
-                                context.push('/user/category/${c.id}'),
-                          );
-                        },
+                    if (_products.isNotEmpty)
+                      GestureDetector(
+                        onTap: () => context.push('/user/search'),
+                        child: const Text('See all',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.teal)),
                       ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 12)),
+          // Products
+          if (_products.isEmpty)
+            SliverToBoxAdapter(
+              child: FadeInWidget(
+                delay: const Duration(milliseconds: 500),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(32),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface,
+                      borderRadius: BorderRadius.circular(16),
+                      border:
+                          Border.all(color: AppTheme.cardBorder, width: 0.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.03),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-                // Products header
-                SliverToBoxAdapter(
-                  child: FadeInWidget(
-                    delay: const Duration(milliseconds: 400),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 4),
-                      child: Row(
-                        children: [
-                          const Expanded(
-                            child: Text('Fresh Finds',
-                                style: TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.textPrimary)),
-                          ),
-                          if (_products.isNotEmpty)
-                            GestureDetector(
-                              onTap: () => context.push('/user/search'),
-                              child: const Text('See all',
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppTheme.teal)),
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 72,
+                          height: 72,
+                          decoration: BoxDecoration(
+                            color: AppTheme.gold.withOpacity(0.1),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: AppTheme.gold.withOpacity(0.15),
+                              width: 1.5,
                             ),
-                        ],
-                      ),
+                          ),
+                          child: const Icon(Icons.storefront_outlined,
+                              color: AppTheme.gold, size: 32),
+                        ),
+                        const SizedBox(height: 18),
+                        const Text('No products yet',
+                            style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary)),
+                        const SizedBox(height: 8),
+                        Text(
+                            'Products will appear here once\nproviders start adding them',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                fontSize: 13,
+                                height: 1.5,
+                                color: AppTheme.textMuted.withOpacity(0.8))),
+                      ],
                     ),
                   ),
                 ),
-                const SliverToBoxAdapter(child: SizedBox(height: 12)),
-                // Products
-                if (_products.isEmpty)
-                  SliverToBoxAdapter(
-                    child: FadeInWidget(
-                      delay: const Duration(milliseconds: 500),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 40),
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(32),
-                          decoration: BoxDecoration(
-                            color: AppTheme.surface,
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                                color: AppTheme.cardBorder, width: 0.5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.03),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            children: [
-                              Container(
-                                width: 72,
-                                height: 72,
-                                decoration: BoxDecoration(
-                                  color: AppTheme.gold.withOpacity(0.1),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: AppTheme.gold.withOpacity(0.15),
-                                    width: 1.5,
-                                  ),
-                                ),
-                                child: const Icon(
-                                    Icons.storefront_outlined,
-                                    color: AppTheme.gold,
-                                    size: 32),
-                              ),
-                              const SizedBox(height: 18),
-                              const Text('No products yet',
-                                  style: TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppTheme.textPrimary)),
-                              const SizedBox(height: 8),
-                              Text(
-                                  'Products will appear here once\nproviders start adding them',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                      fontSize: 13,
-                                      height: 1.5,
-                                      color: AppTheme.textMuted.withOpacity(0.8))),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    sliver: SliverGrid(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        childAspectRatio: 0.72,
-                      ),
-                      delegate: SliverChildBuilderDelegate(
-                        (_, i) => ProductCard(
-                          product: _products[i],
-                          onTap: () =>
-                              context.push('/user/product/${_products[i].id}'),
-                        ),
-                        childCount: _products.length,
-                      ),
-                    ),
+              ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: 0.72,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (_, i) => ProductCard(
+                    product: _products[i],
+                    onTap: () =>
+                        context.push('/user/product/${_products[i].id}'),
                   ),
-                const SliverToBoxAdapter(child: SizedBox(height: 24)),
-              ],
+                  childCount: _products.length,
+                ),
+              ),
             ),
-          );
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ],
+      ),
+    );
   }
 
   Widget _buildLoadingSkeleton() {
@@ -435,16 +476,16 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
               children: List.generate(
                   4,
                   (i) => Padding(
-                    padding: const EdgeInsets.only(right: 16),
-                    child: FadeInWidget(
-                      delay: Duration(milliseconds: 100 * i),
-                      child: const SkeletonBox(
-                        width: 56,
-                        height: 56,
-                        borderRadius: 14,
-                      ),
-                    ),
-                  )),
+                        padding: const EdgeInsets.only(right: 16),
+                        child: FadeInWidget(
+                          delay: Duration(milliseconds: 100 * i),
+                          child: const SkeletonBox(
+                            width: 56,
+                            height: 56,
+                            borderRadius: 14,
+                          ),
+                        ),
+                      )),
             ),
           ),
           const SizedBox(height: 24),
@@ -465,18 +506,18 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
               children: List.generate(
                   2,
                   (i) => Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.only(right: i == 0 ? 12 : 0),
-                      child: FadeInWidget(
-                        delay: Duration(milliseconds: 200 + (150 * i)),
-                        child: SkeletonBox(
-                          width: double.infinity,
-                          height: 220,
-                          borderRadius: 14,
+                        child: Padding(
+                          padding: EdgeInsets.only(right: i == 0 ? 12 : 0),
+                          child: FadeInWidget(
+                            delay: Duration(milliseconds: 200 + (150 * i)),
+                            child: SkeletonBox(
+                              width: double.infinity,
+                              height: 220,
+                              borderRadius: 14,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  )),
+                      )),
             ),
           ),
         ],

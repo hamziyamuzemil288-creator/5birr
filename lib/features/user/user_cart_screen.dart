@@ -44,7 +44,7 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
     }
   }
 
-  Future<void> _updateQuantity(CartItem item, int newQuantity) async {
+  Future<void> _updateQuantity(CartItem item, double newQuantity) async {
     try {
       await CartService.instance
           .updateQuantity(productId: item.productId, quantity: newQuantity);
@@ -52,11 +52,49 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
       await _load();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Could not update quantity')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not update quantity')));
       }
     }
   }
+
+  /// Decimal amount prompt for unit-priced items (kg / liter).
+  Future<double?> _promptQuantity(CartItem item) async {
+    final ctrl = TextEditingController(text: _fmtQty(item.quantity));
+    return showDialog<double>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text('Amount (${item.unitLabel})'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: 'How many ${item.unitLabel}?',
+            hintText: 'e.g. 0.5, 1, 2.25',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () {
+              final v = double.tryParse(ctrl.text.trim().replaceAll(',', '.'));
+              if (v == null || v <= 0) return;
+              Navigator.pop(dialogCtx, v);
+            },
+            child: const Text('SAVE'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtQty(double v) => v == v.roundToDouble()
+      ? v.toStringAsFixed(0)
+      : v.toStringAsFixed(v * 10 == v.roundToDouble() ? 1 : 2);
 
   Future<void> _remove(CartItem item) async {
     try {
@@ -159,8 +197,7 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.store_outlined,
-                  size: 18, color: AppTheme.teal),
+              const Icon(Icons.store_outlined, size: 18, color: AppTheme.teal),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -252,13 +289,17 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
                     style: const TextStyle(
                         fontSize: 14, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
-                Text('${item.price.toStringAsFixed(2)} ${item.currency}',
+                Text(
+                    item.unit != null
+                        ? '${_fmtQty(item.price)} ${item.currency}/${item.unitLabel}'
+                        : '${item.price.toStringAsFixed(2)} ${item.currency}',
                     style: const TextStyle(
                         fontSize: 12,
                         color: AppTheme.primaryGreen,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
-                Text('Line total: ${item.lineTotal.toStringAsFixed(2)}',
+                Text(
+                    'Line total: ${item.lineTotal.toStringAsFixed(2)} ${item.currency}',
                     style: const TextStyle(
                         fontSize: 12, color: AppTheme.textSecondary)),
               ],
@@ -268,7 +309,11 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               InkWell(
-                onTap: () => _updateQuantity(item, item.quantity + 1),
+                onTap: () => _updateQuantity(
+                    item,
+                    item.unit != null
+                        ? item.quantity + 0.5
+                        : item.quantity + 1),
                 borderRadius: BorderRadius.circular(6),
                 child: Container(
                   padding:
@@ -277,17 +322,34 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
                     color: AppTheme.primaryGreen.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Icon(Icons.add, size: 16, color: AppTheme.primaryGreen),
+                  child: const Icon(Icons.add,
+                      size: 16, color: AppTheme.primaryGreen),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Text('${item.quantity}',
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600)),
+              GestureDetector(
+                // Unit-priced amounts are free-typed (0.25 kg, 1.5 L…).
+                onTap: item.unit != null
+                    ? () async {
+                        final v = await _promptQuantity(item);
+                        if (v != null) await _updateQuantity(item, v);
+                      }
+                    : null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                      item.unit != null
+                          ? '${_fmtQty(item.quantity)} ${item.unitLabel}'
+                          : '${_fmtQty(item.quantity)}',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
               ),
               InkWell(
-                onTap: () => _updateQuantity(item, item.quantity - 1),
+                onTap: () => _updateQuantity(
+                    item,
+                    item.unit != null
+                        ? item.quantity - 0.5
+                        : item.quantity - 1),
                 borderRadius: BorderRadius.circular(6),
                 child: Container(
                   padding:
@@ -296,7 +358,8 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
                     color: AppTheme.creamDark,
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Icon(Icons.remove, size: 16, color: AppTheme.textMuted),
+                  child: const Icon(Icons.remove,
+                      size: 16, color: AppTheme.textMuted),
                 ),
               ),
             ],

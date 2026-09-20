@@ -10,6 +10,8 @@ class Product {
   final String currency;
   final String listingType; // PRODUCT, FOOD, SERVICE, ROOM, OTHER
   final int? quantity;
+  final double pricePerUnit; // >0 for unit-priced listings (per kg/liter)
+  final String? unit; // 'KG' | 'LTR' | null (fixed-price listing)
   final int? stockQuantity;
   final int? lowStockThreshold;
   final String listingStatus; // ACTIVE, DRAFT, SOLD_OUT, ARCHIVED
@@ -33,6 +35,8 @@ class Product {
     this.currency = 'ETB',
     this.listingType = 'PRODUCT',
     this.quantity,
+    this.pricePerUnit = 0,
+    this.unit,
     this.stockQuantity,
     this.lowStockThreshold,
     this.listingStatus = 'ACTIVE',
@@ -58,6 +62,8 @@ class Product {
       currency: json['currency'] as String? ?? 'ETB',
       listingType: json['listing_type'] as String? ?? 'PRODUCT',
       quantity: json['quantity'] as int?,
+      pricePerUnit: (json['price_per_unit'] as num?)?.toDouble() ?? 0,
+      unit: json['unit'] as String?,
       stockQuantity: json['stock_quantity'] as int?,
       lowStockThreshold: json['low_stock_threshold'] as int?,
       listingStatus: json['listing_status'] as String? ?? 'ACTIVE',
@@ -74,8 +80,20 @@ class Product {
 
   String get formattedPrice => '$price $currency';
 
-  bool get inStock =>
-      stockQuantity == null || (stockQuantity ?? 0) > 0;
+  /// True when the listing is sold by unit (kg / liter).
+  bool get isUnitPriced => unit == 'KG' || unit == 'LTR';
+
+  /// Display price: "50 ETB/kg" for unit-priced items, "50 ETB" otherwise.
+  String get formattedDisplayPrice {
+    if (!isUnitPriced) return formattedPrice;
+    final unitWord = unit == 'KG' ? 'kg' : 'liter';
+    return '${_fmt(price)} $currency/$unitWord';
+  }
+
+  static String _fmt(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+  bool get inStock => stockQuantity == null || (stockQuantity ?? 0) > 0;
 
   bool get isLowStock =>
       stockQuantity != null &&
@@ -108,7 +126,8 @@ class ListingImage {
   factory ListingImage.fromJson(Map<String, dynamic> json) {
     return ListingImage(
       id: json['id'] as String,
-      listingId: json['listing_id'] as String? ?? json['product_id'] as String? ?? '',
+      listingId:
+          json['listing_id'] as String? ?? json['product_id'] as String? ?? '',
       storagePath: json['storage_path'] as String,
       altText: json['alt_text'] as String?,
       isPrimary: json['is_primary'] as bool? ?? false,

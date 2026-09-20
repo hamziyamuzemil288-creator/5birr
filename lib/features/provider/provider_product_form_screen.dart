@@ -22,6 +22,11 @@ class _State extends State<ProviderProductFormScreen> {
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
   final _qtyCtrl = TextEditingController();
+  // Listing pricing mode: fixed price (default) or per-unit (kg / liter).
+  // Unit mode keeps the existing full listing (images optional) and stores
+  // the per-unit price in `price` AND `price_per_unit`, plus `unit`.
+  bool _unitMode = false;
+  String _unit = 'KG'; // 'KG' | 'LTR'
   String? _categoryId;
   bool _isAvailable = true;
   List<Map<String, dynamic>> _categories = [];
@@ -117,6 +122,13 @@ class _State extends State<ProviderProductFormScreen> {
         _qtyCtrl.text = '${prod['quantity'] ?? ''}';
         _categoryId = prod['category_id'];
         _isAvailable = prod['is_available'] ?? true;
+        final unit = prod['unit'] as String?;
+        _unitMode = unit != null;
+        if (unit == 'LTR') _unit = 'LTR';
+        if (_unitMode) {
+          final ppu = (prod['price_per_unit'] as num?)?.toDouble();
+          if (ppu != null && ppu > 0) _priceCtrl.text = _fmt(ppu);
+        }
         final prodLoc = GeoPoint.parse(prod['location']);
         if (prodLoc != null) {
           _lat = prodLoc.lat;
@@ -157,23 +169,27 @@ class _State extends State<ProviderProductFormScreen> {
       final client = Supabase.instance.client;
       final price = double.tryParse(_priceCtrl.text) ?? 0;
       final qty = int.tryParse(_qtyCtrl.text);
+      // Unit-priced listings carry the per-unit price in both `price` (so all
+      // existing totals/fee math work) and `price_per_unit`, plus the unit.
+      final unitValue = _unitMode ? _unit : null;
+      final perUnitPrice = _unitMode ? price : 0.0;
 
       String productId;
       // Real listing GPS: geography point from the captured device position
       // (falls back to the business profile location).
       final lat = _lat;
       final lng = _lng;
-      final locationValue = (lat != null && lng != null)
-          ? 'SRID=4326;POINT($lng $lat)'
-          : null;
+      final locationValue =
+          (lat != null && lng != null) ? 'SRID=4326;POINT($lng $lat)' : null;
 
       if (_isEdit) {
         await client.from('products').update({
           'name': _nameCtrl.text.trim(),
-          'description': _descCtrl.text.trim().isNotEmpty
-              ? _descCtrl.text.trim()
-              : null,
+          'description':
+              _descCtrl.text.trim().isNotEmpty ? _descCtrl.text.trim() : null,
           'price': price,
+          'price_per_unit': perUnitPrice,
+          'unit': unitValue,
           'quantity': qty,
           'category_id': _categoryId,
           'is_available': _isAvailable,
@@ -190,6 +206,8 @@ class _State extends State<ProviderProductFormScreen> {
                   ? _descCtrl.text.trim()
                   : null,
               'price': price,
+              'price_per_unit': perUnitPrice,
+              'unit': unitValue,
               'quantity': qty,
               'category_id': _categoryId,
               'is_available': _isAvailable,
@@ -206,8 +224,9 @@ class _State extends State<ProviderProductFormScreen> {
         final fileName =
             '${productId}_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
         final path = 'product-images/$productId/$fileName';
-        await client.storage.from('product-images').upload(path, file,
-            fileOptions: const FileOptions(upsert: true));
+        await client.storage
+            .from('product-images')
+            .upload(path, file, fileOptions: const FileOptions(upsert: true));
         await client.from('product_images').insert({
           'product_id': productId,
           'storage_path': path,
@@ -247,11 +266,13 @@ class _State extends State<ProviderProductFormScreen> {
     }
   }
 
+  static String _fmt(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-          title: Text(_isEdit ? 'Edit Product' : 'Add Product')),
+      appBar: AppBar(title: Text(_isEdit ? 'Edit Product' : 'Add Product')),
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
@@ -274,19 +295,66 @@ class _State extends State<ProviderProductFormScreen> {
                       maxLines: 3,
                     ),
                     const SizedBox(height: 16),
+                    // Pricing mode: fixed price OR price per unit (kg/liter).
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Fixed price'),
+                            selected: !_unitMode,
+                            onSelected: (_) =>
+                                setState(() => _unitMode = false),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Price per unit'),
+                            selected: _unitMode,
+                            onSelected: (_) => setState(() => _unitMode = true),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (_unitMode)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ChoiceChip(
+                              label: const Text('per kilogram'),
+                              selected: _unit == 'KG',
+                              onSelected: (_) => setState(() => _unit = 'KG'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: ChoiceChip(
+                              label: const Text('per liter'),
+                              selected: _unit == 'LTR',
+                              onSelected: (_) => setState(() => _unit = 'LTR'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    const SizedBox(height: 8),
                     BirrTextField(
-                      label: 'Price (ETB)',
+                      label: _unitMode
+                          ? 'Price per ${_unit == 'KG' ? 'kg' : 'liter'} (ETB)'
+                          : 'Price (ETB)',
                       controller: _priceCtrl,
-                      keyboardType: TextInputType.number,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                       validator: (v) =>
                           v == null || v.trim().isEmpty ? 'Required' : null,
                     ),
                     const SizedBox(height: 16),
-                    BirrTextField(
-                      label: 'Quantity (optional)',
-                      controller: _qtyCtrl,
-                      keyboardType: TextInputType.number,
-                    ),
+                    if (!_unitMode)
+                      BirrTextField(
+                        label: 'Quantity (optional)',
+                        controller: _qtyCtrl,
+                        keyboardType: TextInputType.number,
+                      ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
                       value: _categoryId,
@@ -321,7 +389,8 @@ class _State extends State<ProviderProductFormScreen> {
                             ),
                           ),
                           TextButton.icon(
-                            onPressed: _capturingGps ? null : _useCurrentLocation,
+                            onPressed:
+                                _capturingGps ? null : _useCurrentLocation,
                             icon: _capturingGps
                                 ? const SizedBox(
                                     width: 14,
@@ -402,8 +471,7 @@ class _State extends State<ProviderProductFormScreen> {
                         ),
                         child: Text(_activationMessage,
                             style: const TextStyle(
-                                fontSize: 13,
-                                color: AppTheme.textSecondary)),
+                                fontSize: 13, color: AppTheme.textSecondary)),
                       ),
                     ],
                     SizedBox(
