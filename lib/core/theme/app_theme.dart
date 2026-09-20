@@ -34,7 +34,23 @@ class AppTheme {
   static const Color background = cream;
   static const Color cardBorder = Color(0xFFE0D8C8);
 
-  // ── Reusable Text Styles ──────────────────────────────────────
+  // ── Typography scale ─────────────────────────────────────────
+  //
+  // One place defines every text style in the app so headings, body,
+  // captions and buttons stay consistent from login through every screen.
+  // UI text should reference these (or the small set of inline styles that
+  // match them) instead of ad-hoc sizes.
+
+  /// Page titles on auth/onboarding headers (Login, Registration).
+  static const TextStyle display = TextStyle(
+    fontSize: 28,
+    fontWeight: FontWeight.w700,
+    color: textPrimary,
+    height: 1.2,
+    letterSpacing: -0.5,
+  );
+
+  /// Screen titles and major section titles.
   static const TextStyle headingLarge = TextStyle(
     fontSize: 24,
     fontWeight: FontWeight.w700,
@@ -42,6 +58,15 @@ class AppTheme {
     height: 1.3,
   );
 
+  /// Card titles and sub-section headings.
+  static const TextStyle heading = TextStyle(
+    fontSize: 18,
+    fontWeight: FontWeight.w700,
+    color: textPrimary,
+    height: 1.3,
+  );
+
+  /// In-form group headings (e.g. "Personal Information").
   static const TextStyle sectionHeader = TextStyle(
     fontSize: 16,
     fontWeight: FontWeight.w700,
@@ -49,6 +74,15 @@ class AppTheme {
     letterSpacing: 0.2,
   );
 
+  /// Emphasised body text (list titles, detail values).
+  static const TextStyle bodyStrong = TextStyle(
+    fontSize: 15,
+    fontWeight: FontWeight.w600,
+    color: textPrimary,
+    height: 1.45,
+  );
+
+  /// Default body text.
   static const TextStyle bodyLarge = TextStyle(
     fontSize: 15,
     fontWeight: FontWeight.w400,
@@ -56,11 +90,36 @@ class AppTheme {
     height: 1.5,
   );
 
+  /// Secondary body text (slightly smaller, softer).
+  static const TextStyle bodyMedium = TextStyle(
+    fontSize: 14,
+    fontWeight: FontWeight.w400,
+    color: textSecondary,
+    height: 1.5,
+  );
+
+  /// Small helper text under labels/fields.
   static const TextStyle caption = TextStyle(
     fontSize: 12,
     fontWeight: FontWeight.w400,
     color: textMuted,
     height: 1.4,
+  );
+
+  /// Tiny meta text (timestamps, footnotes).
+  static const TextStyle micro = TextStyle(
+    fontSize: 11,
+    fontWeight: FontWeight.w400,
+    color: textMuted,
+    height: 1.4,
+  );
+
+  /// Numeric emphasis (prices, balances) — tabular feel via letterSpacing.
+  static const TextStyle price = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.w700,
+    color: textPrimary,
+    letterSpacing: 0.2,
   );
 
   // ── Light Theme ───────────────────────────────────────────────
@@ -86,10 +145,23 @@ class AppTheme {
         centerTitle: true,
         titleTextStyle: TextStyle(
           fontSize: 18,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w700,
           color: textOnPrimary,
-          letterSpacing: 0.5,
+          letterSpacing: 0.3,
         ),
+      ),
+      textTheme: const TextTheme(
+        // Theme-level defaults: any Text widget without an explicit style
+        // inherits a coherent size/weight/height from here.
+        displayLarge: display,
+        headlineMedium: headingLarge,
+        titleLarge: heading,
+        titleMedium: sectionHeader,
+        titleSmall: bodyStrong,
+        bodyLarge: bodyLarge,
+        bodyMedium: bodyMedium,
+        bodySmall: caption,
+        labelSmall: micro,
       ),
       cardTheme: CardThemeData(
         color: surface,

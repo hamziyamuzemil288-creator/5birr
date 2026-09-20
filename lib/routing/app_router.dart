@@ -7,6 +7,7 @@ import '../features/auth/login_screen.dart';
 import '../features/auth/signup_screen.dart' show SignupScreen, SignupRole;
 import '../features/auth/role_selection_screen.dart';
 import '../features/auth/admin_login_screen.dart';
+import '../features/auth/terms_policy_screen.dart';
 import '../features/user/user_dashboard.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
@@ -15,6 +16,7 @@ import '../features/user/user_favorites_screen.dart';
 import '../features/user/user_cart_screen.dart';
 import '../features/user/user_checkout_screen.dart';
 import '../features/user/user_order_detail_screen.dart';
+import '../features/user/provider_order_waiting_screen.dart';
 import '../features/user/user_search_screen.dart';
 import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
@@ -39,6 +41,7 @@ import '../features/admin/admin_registration_history_screen.dart';
 import '../features/admin/admin_income_summary_screen.dart';
 import '../features/admin/admin_expense_screen.dart';
 import '../features/admin/admin_reports_screen.dart';
+import '../features/admin/admin_support_tickets_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
@@ -109,7 +112,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final loc = state.matchedLocation;
       final isAuthRoute = loc == '/login' ||
           loc == '/role-select' ||
-          loc == '/admin-login';
+          loc == '/admin-login' ||
+          loc == '/terms';
       final isSignupRoute = loc.startsWith('/signup/');
       final isApprovalRoute = _isApprovalRoute(loc);
 
@@ -180,6 +184,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(path: '/admin-login', builder: (_, __) => const AdminLoginScreen()),
+      GoRoute(
+        path: '/terms',
+        builder: (_, s) => TermsPolicyScreen(returnToSignup: s.extra == true),
+      ),
       GoRoute(path: '/pending-approval', builder: (_, __) => const PendingApprovalScreen()),
       GoRoute(path: '/rejected', builder: (_, __) => const RejectedScreen()),
 
@@ -191,6 +199,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/user/favorites', builder: (_, __) => const UserFavoritesScreen()),
       GoRoute(path: '/user/cart', builder: (_, __) => const UserCartScreen()),
       GoRoute(path: '/user/checkout', builder: (_, s) => UserCheckoutScreen(providerId: s.extra as String)),
+      GoRoute(
+        path: '/user/order-waiting',
+        builder: (_, s) {
+          final args = (s.extra as Map?) ?? const {};
+          return ProviderOrderWaitingScreen(
+            providerId: args['providerId'] as String? ?? '',
+            providerName: args['providerName'] as String? ?? 'The provider',
+            providerNotActivated: (args['providerNotActivated'] as bool?) ?? false,
+          );
+        },
+      ),
       GoRoute(path: '/user/orders/:id', builder: (_, s) => UserOrderDetailScreen(orderId: s.pathParameters['id']!, viewerRole: s.extra as String? ?? 'user')),
       GoRoute(
         path: '/review/new',
@@ -254,6 +273,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/income', builder: (_, __) => const AdminIncomeSummaryScreen()),
       GoRoute(path: '/admin/expenses', builder: (_, __) => const AdminExpenseScreen()),
       GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
+      GoRoute(path: '/admin/support-tickets', builder: (_, __) => const AdminSupportTicketsScreen()),
       GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
 
       // ── Help (signed-in users) ──

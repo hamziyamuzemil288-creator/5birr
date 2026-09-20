@@ -63,12 +63,17 @@ class _PendingApprovalViewState extends ConsumerState<_PendingApprovalView> {
                       style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.w700,
+                          letterSpacing: -0.2,
+                          height: 1.25,
                           color: Colors.white)),
                   const SizedBox(height: 8),
                   Text(
                     'Thank you for applying to join Aliob',
                     style: TextStyle(
-                        fontSize: 14, color: Colors.white.withOpacity(0.8)),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w400,
+                        height: 1.4,
+                        color: Colors.white.withOpacity(0.85)),
                   ),
                   const SizedBox(height: 32),
                   // Info card

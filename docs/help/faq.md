@@ -53,8 +53,14 @@ approved — there are no hidden charges.
 
 **What does "escrow" mean for my order?**
 Your payment is held safely until the order is confirmed. The seller's
-contact and location details are only shared with you after your payment is
-confirmed — this protects both sides of every deal.
+contact and live location details are only shared with you after your
+payment is confirmed — this protects both sides of every deal.
+
+**How do order numbers work?**
+Every order gets a unique number based on its category — **Vh** for
+vehicles, **Ht** for household goods, **Fd** for food, and so on (for
+example Vh00012). Quote this number whenever you contact support about an
+order, and have it ready if you need to report a problem.
 
 ## Contacting and meeting sellers
 
@@ -108,6 +114,19 @@ amount, the transaction reference, and upload your payment screenshot. Once
 our team verifies the payment, your wallet is credited. You can track the
 status of every recharge request on the wallet screen.
 
+**What is the one-time registration fee?**
+After your provider account is approved, one step remains: pay a one-time
+**100 birr registration fee** with your first wallet recharge. Until then
+you can't upload listings or receive orders. Your first recharge must be
+**at least 100 birr** — the fee activates your account and anything above
+it is credited to your wallet. Later recharges are credited in full.
+
+**Why can't I upload a listing or accept orders?**
+Almost always because the one-time registration fee hasn't been paid yet —
+see the recharge section above. Orders also pause whenever your wallet
+balance is 0, because fees are deducted from the wallet. Recharge and
+you're fully back.
+
 **What if my wallet balance is too low?**
 You'll see a low-balance warning on your wallet, and the app notifies you
 when a fee can't be covered. Just recharge and you're back in business —
@@ -138,6 +157,27 @@ average shown on the seller's profile, so it reflects real experiences.
 
 **How do I change my password or details?**
 Open your profile from the bottom menu and use the settings options there.
+
+**What are the Terms & Privacy Policy?**
+The rules every member agrees to at registration: keep contact after escrow
+respectful, never move payments off the app, represent listings honestly,
+and what happens if the rules are broken (warnings up to suspension). It
+also explains exactly how your phone number, ID, and location data are
+used. You can read the full text any time from the link on the registration
+screen or in the app.
+
+**The other party isn't responding — what do I do?**
+Open **Help & Support** from your profile and tell the assistant about the
+problem. It will collect the details (the provider's name, their city, your
+phone number, and the order number if you have it) and submit a ticket to
+our support team, who will contact you. Providers can reach support
+directly at **0917686990**.
+
+**Nobody responded to my ticket — what now?**
+If your submitted issue hasn't been answered within about 10 hours, the
+assistant will proactively share our direct contact details — phone
+**0917686990** and email **muktarbiya329@gmail.com** — so you can reach us
+directly. You can also use them at any time.
 
 **How do I delete my account?**
 Account deletion is described in the account section of your profile. If

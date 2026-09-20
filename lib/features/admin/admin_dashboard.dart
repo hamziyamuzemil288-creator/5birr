@@ -334,6 +334,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                         children: [
                           _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
                           _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
+                          _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
                         ],
                       ),
                     ),
