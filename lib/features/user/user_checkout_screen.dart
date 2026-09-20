@@ -38,6 +38,45 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   /// NATIONAL_ID document exists in user_documents, no upload is needed.
   bool _needsNationalId = true;
 
+  /// Provider readiness (Fix: orders are blocked when the provider's wallet is
+  /// 0 — they cannot cover the transaction fee — or when the provider has not
+  /// yet paid the one-time registration fee).
+  bool _providerActivated = true;
+  bool _providerHasBalance = true;
+  String _providerName = 'The provider';
+
+  /// Re-fetches the provider's activation/wallet state. Called on load and
+  /// again after returning from the waiting screen, so a provider who has just
+  /// recharged does not bounce the buyer straight back to waiting.
+  Future<void> _refreshProviderReadiness() async {
+    try {
+      final prov = await Supabase.instance.client
+          .from('provider_profiles')
+          .select('business_name, registration_fee_paid, status')
+          .eq('id', widget.providerId)
+          .maybeSingle();
+      if (prov != null) {
+        _providerName =
+            (prov['business_name'] as String?)?.isNotEmpty == true
+                ? prov['business_name'] as String
+                : _providerName;
+        _providerActivated =
+            (prov['registration_fee_paid'] as bool?) == true &&
+                prov['status'] == 'APPROVED';
+        final wallet = await Supabase.instance.client
+            .from('wallets')
+            .select('balance')
+            .eq('provider_id', widget.providerId)
+            .maybeSingle();
+        _providerHasBalance =
+            ((wallet?['balance'] as num?)?.toDouble() ?? 0) > 0;
+      }
+    } catch (_) {
+      // Non-fatal: if it fails, the server-side gate in create_order_secure
+      // still blocks and the error is surfaced after submission.
+    }
+  }
+
   /// Transaction fee percentage, read live from system_settings so the
   /// summary always reflects the current configuration. The fee itself is
   /// still charged server-side by deduct_transaction_fee() — this display
@@ -89,6 +128,9 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
           if (existing != null) _needsNationalId = false;
         }
       } catch (_) {}
+      // Provider readiness check.
+      await _refreshProviderReadiness();
+
       if (mounted) {
         setState(() {
           _items = items;
@@ -141,6 +183,28 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       setState(() =>
           _error = 'Please upload a photo of your National ID to place an order');
       return;
+    }
+
+    // Provider readiness: a not-yet-activated provider (one-time registration
+    // fee unpaid) or a 0-balance wallet cannot accept the order — the
+    // server-side gate in create_order_secure would reject it. Re-check at
+    // submission time (a provider may have just recharged), then show the
+    // waiting screen instead of submitting an order that would fail; it
+    // re-checks the provider and sends the buyer back to browse on timeout.
+    await _refreshProviderReadiness();
+    if (mounted) setState(() {});
+    if (!_providerActivated || !_providerHasBalance) {
+      await context.push('/user/order-waiting', extra: {
+        'providerId': widget.providerId,
+        'providerName': _providerName,
+        'providerNotActivated': !_providerActivated,
+      });
+      if (!mounted) return;
+      // Back from waiting: re-check — if the provider is ready now, fall
+      // through and place the order; otherwise the user can retry or cancel.
+      await _refreshProviderReadiness();
+      if (!mounted) return;
+      if (!_providerActivated || !_providerHasBalance) return;
     }
     setState(() {
       _submitting = true;

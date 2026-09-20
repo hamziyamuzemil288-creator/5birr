@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import '../services/supabase_service.dart';
+import '../services/provider_presence_service.dart';
 import '../utils/phone_formatter.dart';
 
 /// Application roles matching the Supabase `app_role` enum.
@@ -153,6 +154,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         isLoading: false,
         error: null,
       );
+
+      // Presence heartbeat: while a provider is signed in and the app is
+      // running, periodically touch last_active_at for online/last-seen.
+      if (primaryRole == AppUserRole.serviceProvider ||
+          primaryRole == AppUserRole.vehicleProvider) {
+        ProviderPresence.instance.startHeartbeat();
+      } else {
+        ProviderPresence.instance.stopHeartbeat();
+      }
     } catch (e) {
       // Only apply error state if no newer load has taken over.
       if (seq != _profileLoadSeq) return;
@@ -309,6 +319,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   /// Sign out.
   Future<void> signOut() async {
+    ProviderPresence.instance.stopHeartbeat();
     await _svc.client.auth.signOut();
     state = const AuthState(isLoading: false);
   }
@@ -323,6 +334,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   @override
   void dispose() {
     _authSub?.cancel();
+    ProviderPresence.instance.stopHeartbeat();
     super.dispose();
   }
 }
