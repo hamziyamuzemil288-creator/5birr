@@ -184,6 +184,27 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy subscription-process
 
+      # Order + ride flow functions. order-create is the server-authoritative
+      # checkout endpoint (validates fractional unit-priced quantities); the
+      # transition/claim functions drive the ride state machine. These were
+      # missing from this workflow since it was written, so merged changes to
+      # them never reached the live project without a manual deploy.
+      - name: Deploy function order-create
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy order-create
+
+      - name: Deploy function order-transition
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy order-transition
+
+      - name: Deploy function ride-claim
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy ride-claim
+
+      - name: Deploy function ride-transition
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy ride-transition
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |
