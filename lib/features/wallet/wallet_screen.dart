@@ -237,7 +237,9 @@ class _WalletScreenState extends State<WalletScreen> {
     // recharge (fee == amount, nothing credited). Without this special case
     // the row reads "Recharge +100.00 / Fee: 100.00" with no explanation and
     // looks like a crediting bug.
-    final isActivation = type == 'RECHARGE' && fee > 0 && net <= 0;
+    // (net == 0 exactly: the activation branch writes credit = amount - fee,
+    // which is 0 only when the fee consumed the entire recharge.)
+    final isActivation = type == 'RECHARGE' && fee > 0 && net == 0;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
