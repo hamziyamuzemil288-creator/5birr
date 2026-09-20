@@ -11,6 +11,7 @@ import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/document_upload_card.dart';
+import 'terms_policy_screen.dart';
 
 enum SignupRole { user, vehicleProvider, serviceProvider }
 
@@ -35,6 +36,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   bool _obscureConfirm = true;
   bool _isLoading = false;
   String? _error;
+
+  // Terms & Privacy agreement (Behavior 5): required before the submit
+  // button enables. Acceptance is stored on the profile (0039) right after
+  // the account exists, with the version the user actually saw.
+  bool _agreedToTerms = false;
 
   File? _nationalIdImage;
   File? _licenseImage;
@@ -191,8 +197,24 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     return error.toString();
   }
 
+  /// Records the user's terms acceptance on their profile. Best-effort:
+  /// a failure here never blocks the account that was just created, but it
+  /// is surfaced so consent can be re-confirmed on next launch.
+  Future<void> _recordTermsAcceptance() async {
+    try {
+      await _supabase.rpc('accept_terms', params: {'p_version': kTermsVersion});
+    } catch (_) {
+      // Non-fatal: the account itself was already created successfully.
+    }
+  }
+
   Future<void> _handleSignup() async {
     if (!_formKey.currentState!.validate()) return;
+    if (!_agreedToTerms) {
+      setState(() => _error =
+          'Please read and accept the Terms & Privacy Policy to continue.');
+      return;
+    }
 
     // Captured before any await: used to report failures even if navigation
     // has disposed this screen by the time an upload/insert fails.
@@ -319,6 +341,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         return;
       }
 
+      // Record the user's terms acceptance (version + timestamp) on the
+      // profile now that a session exists. Best-effort, never blocks.
+      await _recordTermsAcceptance();
+
       context.go('/pending-approval');
     } catch (e) {
       if (mounted) {
@@ -396,7 +422,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                           fontSize: 24,
                           fontWeight: FontWeight.w700,
                           color: Colors.white,
-                          height: 1.2,
+                          height: 1.25,
+                          letterSpacing: -0.2,
                         ),
                       ),
                       const SizedBox(height: 6),
@@ -406,7 +433,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                             : 'Create your account to get started',
                         style: TextStyle(
                           fontSize: 14,
-                          color: Colors.white.withOpacity(0.8),
+                          fontWeight: FontWeight.w400,
+                          height: 1.4,
+                          color: Colors.white.withOpacity(0.85),
                         ),
                       ),
                     ],
@@ -461,6 +490,46 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                           ),
                         ],
                         const SizedBox(height: 24),
+                        // Terms & Privacy agreement (final step, every flow).
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: Checkbox(
+                                value: _agreedToTerms,
+                                activeColor: AppTheme.primaryGreen,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onChanged: (v) => setState(
+                                    () => _agreedToTerms = v ?? false),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Wrap(
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  const Text('I agree to the ',
+                                      style: AppTheme.bodyMedium),
+                                  GestureDetector(
+                                    onTap: () => context.push('/terms', extra: true),
+                                    child: const Text('Terms & Privacy Policy',
+                                        style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppTheme.teal,
+                                            decoration:
+                                                TextDecoration.underline,
+                                            decorationColor: AppTheme.teal)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
                           child: PrimaryButton(
@@ -468,7 +537,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                                 ? 'SUBMIT APPLICATION'
                                 : 'CREATE ACCOUNT',
                             isLoading: _isLoading,
-                            onPressed: _handleSignup,
+                            onPressed:
+                                _agreedToTerms ? _handleSignup : null,
                           ),
                         ),
                         const SizedBox(height: 16),

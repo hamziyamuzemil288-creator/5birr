@@ -4,15 +4,21 @@ import 'package:url_launcher/url_launcher.dart';
 
 /// Human-support contact points shown whenever the assistant can't help.
 /// Mirrors the constants in supabase/functions/repo-chat/index.ts.
-const String _kSupportWhatsAppDisplay = '0917686990';
+const String _kSupportPhoneDisplay = '0917686990';
 const String _kSupportWhatsAppUrl = 'https://wa.me/251917686990';
 const String _kSupportEmail = 'muktarbiya329@gmail.com';
 
 class _Msg {
   final String role; // 'user' | 'assistant'
   final String content;
-  final bool handoff; // true → render tappable WhatsApp/email actions
-  const _Msg(this.role, this.content, {this.handoff = false});
+  final bool handoff; // true → render tappable phone/WhatsApp/email actions
+  final List<String> options; // tappable quick replies (ticket flow)
+  const _Msg(
+    this.role,
+    this.content, {
+    this.handoff = false,
+    this.options = const [],
+  });
 }
 
 class HelpChatScreen extends StatefulWidget {
@@ -30,7 +36,8 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
         'assistant',
         'Hi! 👋 I\'m the Aliob assistant. I can help with registering, buying '
         'and orders, escrow and payments, wallet recharges, fees, points, '
-        'and rides.\n\nWhat can I help you with today?'),
+        'and rides.\n\nWhat can I help you with today?',
+        options: ['How do I recharge my wallet?', 'I want to report an issue']),
   ];
   bool _sending = false;
 
@@ -44,11 +51,26 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
   Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _sending) return;
+    _controller.clear();
+    await _sendUserMessage(text);
+  }
 
+  /// Sends one of the assistant's suggested options as a user message.
+  Future<void> _sendOption(String text) async {
+    if (_sending) return;
+    await _sendUserMessage(text);
+  }
+
+  Future<void> _sendUserMessage(String text) async {
     setState(() {
       _messages.add(_Msg('user', text));
       _sending = true;
-      _controller.clear();
+      // Quick-reply options are one-shot: they disappear once used.
+      final idx = _messages.indexWhere((m) => m.options.isNotEmpty);
+      if (idx >= 0) {
+        _messages[idx] = _Msg(_messages[idx].role, _messages[idx].content,
+            handoff: _messages[idx].handoff);
+      }
     });
     _scrollToEnd();
 
@@ -126,6 +148,14 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
     );
   }
 
+  /// Tappable quick-reply chip shown under the latest assistant message.
+  Widget _optionChip(String label) {
+    return ActionChip(
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+      onPressed: _sending ? null : () => _sendOption(label),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -154,51 +184,76 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
                 }
                 final m = _messages[i];
                 final isUser = m.role == 'user';
-                return Align(
-                  alignment:
-                      isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width * 0.8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isUser
-                          ? scheme.primaryContainer
-                          : scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SelectableText(m.content),
-                        if (m.handoff) ...[
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              _supportButton(
-                                icon: Icons.chat,
-                                label: 'WhatsApp $_kSupportWhatsAppDisplay',
-                                onTap: () =>
-                                    _launchSupportLink(_kSupportWhatsAppUrl),
-                              ),
-                              _supportButton(
-                                icon: Icons.email_outlined,
-                                label: 'Email us',
-                                onTap: () => _launchSupportLink(
-                                    'mailto:$_kSupportEmail'),
+                final isLast = i == _messages.length - 1;
+                return Column(
+                  crossAxisAlignment: isUser
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start,
+                  children: [
+                    Align(
+                      alignment:
+                          isUser ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        constraints: BoxConstraints(
+                          maxWidth: MediaQuery.of(context).size.width * 0.8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isUser
+                              ? scheme.primaryContainer
+                              : scheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SelectableText(m.content),
+                            if (m.handoff) ...[
+                              const SizedBox(height: 10),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  _supportButton(
+                                    icon: Icons.call,
+                                    label: 'Call $_kSupportPhoneDisplay',
+                                    onTap: () => _launchSupportLink(
+                                        'tel:$_kSupportPhoneDisplay'),
+                                  ),
+                                  _supportButton(
+                                    icon: Icons.chat,
+                                    label: 'WhatsApp $_kSupportPhoneDisplay',
+                                    onTap: () =>
+                                        _launchSupportLink(_kSupportWhatsAppUrl),
+                                  ),
+                                  _supportButton(
+                                    icon: Icons.email_outlined,
+                                    label: 'Email us',
+                                    onTap: () => _launchSupportLink(
+                                        'mailto:$_kSupportEmail'),
+                                  ),
+                                ],
                               ),
                             ],
-                          ),
-                        ],
-                      ],
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                    // Quick replies render under the latest assistant message
+                    // so the conversation can't be derailed from old bubbles.
+                    if (!isUser && isLast && m.options.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children:
+                            m.options.map((o) => _optionChip(o)).toList(),
+                      ),
+                    ],
+                  ],
                 );
               },
             ),

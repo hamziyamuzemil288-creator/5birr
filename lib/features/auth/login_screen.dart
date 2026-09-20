@@ -97,16 +97,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 const SizedBox(height: 14),
                 const Text('Aliob',
                     style: TextStyle(
-                        fontSize: 28,
+                        fontSize: 30,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
-                        letterSpacing: 3)),
-                const SizedBox(height: 6),
+                        letterSpacing: 4,
+                        height: 1.1)),
+                const SizedBox(height: 8),
                 Text('All in one',
                     style: TextStyle(
                         fontSize: 13,
-                        color: Colors.white.withOpacity(0.7),
-                        letterSpacing: 0.5)),
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white.withOpacity(0.75),
+                        letterSpacing: 2)),
                 const SizedBox(height: 36),
                 // Login card
                 Container(
@@ -130,9 +132,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       children: [
                         const Text('Welcome Back',
                             style: AppTheme.headingLarge),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 6),
                         const Text('Sign in to your account',
-                            style: AppTheme.caption),
+                            style: AppTheme.bodyMedium),
                         const SizedBox(height: 24),
                         BirrTextField(
                           label: 'Email',

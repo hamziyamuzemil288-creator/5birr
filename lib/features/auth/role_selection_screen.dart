@@ -37,13 +37,16 @@ class RoleSelectionScreen extends StatelessWidget {
                         fontSize: 24,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
-                        height: 1.2)),
+                        height: 1.25,
+                        letterSpacing: -0.2)),
                 const SizedBox(height: 8),
                 Text(
                   'Select how you want to use Aliob',
                   style: TextStyle(
                       fontSize: 14,
-                      color: Colors.white.withOpacity(0.8),
+                      fontWeight: FontWeight.w400,
+                      height: 1.4,
+                      color: Colors.white.withOpacity(0.85),
                       letterSpacing: 0.3),
                 ),
                 const SizedBox(height: 32),
