@@ -206,7 +206,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
         data: {
           'full_name': fullName,
           'phone': e164 ?? phone,
-          'national_id': nationalId,
         },
       );
 
