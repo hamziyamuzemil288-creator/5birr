@@ -199,13 +199,14 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     final router = GoRouter.of(context);
     final messenger = ScaffoldMessenger.of(context);
 
-    // National ID image is required for ALL users (not just providers)
-    if (_nationalIdImage == null) {
-      setState(() => _uploadError = 'National ID image is required');
-      return;
-    }
-
+    // Regular users sign up with contact details only — no ID is collected
+    // here. Browsing, cart, and checkout never require one; a National ID
+    // is only requested at booking time for booking-type orders.
     if (_isProvider) {
+      if (_nationalIdImage == null) {
+        setState(() => _uploadError = 'National ID image is required');
+        return;
+      }
       if (_licenseImage == null) {
         setState(() => _uploadError = _roleName == 'Vehicle Provider'
             ? 'Driving license image is required'
@@ -289,34 +290,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               phone: _phoneController.text.trim(),
               password: _passwordController.text,
               fullName: _nameController.text.trim(),
-              nationalId: _nationalIdController.text.trim(),
               role: AppUserRole.user,
             );
 
-        // Upload National ID document for regular users. Failures are
-        // surfaced for the same reason: the admin cannot verify without it.
-        final userId = _supabase.auth.currentUser?.id;
-        if (_nationalIdImage == null) {
-          // Nothing to do.
-        } else if (userId == null) {
-          setState(() => _uploadError =
-              'Account created. Please sign in once approved to upload your '
-              'verification documents.');
-        } else {
-          setState(() => _uploadingDocs = true);
-
-          try {
-            await DocumentUploadService.instance.uploadAndRecord(
-              file: _nationalIdImage!,
-              userId: userId,
-              documentType: 'NATIONAL_ID',
-            );
-          } catch (docError) {
-            await _showDocumentUploadError(docError, router, messenger);
-          } finally {
-            if (mounted) setState(() => _uploadingDocs = false);
-          }
-        }
+        // No documents are collected for regular users at signup — the
+        // admin approves the account from the submitted details alone.
       }
 
       // Admin approval is the account gate (email confirmation is
@@ -444,8 +422,12 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildDocumentSection(),
-                        const SizedBox(height: 24),
+                        // Document uploads are provider-only; regular users
+                        // sign up with contact details alone.
+                        if (_isProvider) ...[
+                          _buildDocumentSection(),
+                          const SizedBox(height: 24),
+                        ],
                         _buildFormFields(),
                         const SizedBox(height: 12),
                         if (_uploadError != null)
@@ -587,14 +569,16 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        // National ID is required for ALL users
-        DocumentUploadCard(
-          title: 'National ID',
-          subtitle: 'Clear photo of front side',
-          file: _nationalIdImage,
-          onPick: () => _showImagePicker(true),
-          onRemove: () => setState(() => _nationalIdImage = null),
-        ),
+        // National ID image: providers only (verified upfront). Regular
+        // users browse and buy without ever providing an ID here.
+        if (_isProvider)
+          DocumentUploadCard(
+            title: 'National ID',
+            subtitle: 'Clear photo of front side',
+            file: _nationalIdImage,
+            onPick: () => _showImagePicker(true),
+            onRemove: () => setState(() => _nationalIdImage = null),
+          ),
         // License is only required for providers
         if (_isProvider) ...[
           const SizedBox(height: 12),
@@ -676,19 +660,24 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ),
         ),
         const SizedBox(height: 16),
-        BirrTextField(
-          label: 'National ID Number',
-          controller: _nationalIdController,
-          textInputAction: TextInputAction.next,
-          validator: (v) {
-            if (v == null || v.trim().isEmpty) {
-              return 'National ID is required';
-            }
-            if (v.trim().length < 4) return 'Invalid national ID';
-            return null;
-          },
-        ),
-        const SizedBox(height: 16),
+        // National ID is only collected from providers (verified upfront).
+        // Regular users sign up without it and provide ID later at booking
+        // time if the order type requires one.
+        if (_isProvider) ...[
+          BirrTextField(
+            label: 'National ID Number',
+            controller: _nationalIdController,
+            textInputAction: TextInputAction.next,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) {
+                return 'National ID is required';
+              }
+              if (v.trim().length < 4) return 'Invalid national ID';
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+        ],
         BirrTextField(
           label: 'Password',
           controller: _passwordController,

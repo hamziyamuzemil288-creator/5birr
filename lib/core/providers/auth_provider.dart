@@ -177,8 +177,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Sign up with email + password.
+  /// Sign up a regular user with email + password.
   /// Phone number is stored in the profile but NOT used for auth.
+  /// No national ID is collected at user signup — ID is requested later at
+  /// booking time for booking-type orders.
   ///
   /// IMPORTANT: all profile data is passed via signUp(data: ...) metadata —
   /// the SECURITY DEFINER handle_new_user() trigger creates the profile
@@ -191,7 +193,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String phone,
     required String password,
     required String fullName,
-    required String nationalId,
     required AppUserRole role,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
