@@ -73,6 +73,10 @@ jobs:
           name: debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
+          # 14-day retention: full builds here duplicate the dedicated
+          # Build Release AAB / Build Debug APK workflows and filled Actions
+          # storage at the 90-day default. See docs/SIGNING.md history.
+          retention-days: 14
 
       # === Release Bundle Build ===
       # Keystore is stored base64-encoded in the KEYSTORE_BASE64 Actions secret
@@ -109,4 +113,5 @@ jobs:
           name: release-aab
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+          retention-days: 14
 

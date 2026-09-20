@@ -65,3 +65,4 @@ jobs:
           name: release-aab
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+          retention-days: 14
