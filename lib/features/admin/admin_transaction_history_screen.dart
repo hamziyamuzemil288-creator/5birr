@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
+import '../../core/utils/order_number_format.dart';
 
 class AdminTransactionHistoryScreen extends StatefulWidget {
   const AdminTransactionHistoryScreen({super.key});
@@ -28,7 +29,8 @@ class _State extends State<AdminTransactionHistoryScreen> {
     try {
       var query = Supabase.instance.client
           .from('wallet_transactions')
-          .select('*, provider_profiles(business_name, user_id, profiles(full_name, phone))');
+          .select(
+              '*, provider_profiles(business_name, user_id, profiles(full_name, phone)), orders(order_number)');
       
       if (_startDate != null) {
         query = query.gte('created_at', _startDate!.toIso8601String());
@@ -89,11 +91,13 @@ class _State extends State<AdminTransactionHistoryScreen> {
     final rows = _transactions.map((t) {
       final provider = t['provider_profiles'] as Map<String, dynamic>?;
       final profile = provider?['profiles'] as Map<String, dynamic>?;
+      final order = t['orders'] as Map<String, dynamic>?;
       final dt = DateTime.parse(t['created_at']);
       return {
         'Date': CsvExport.formatDate(dt),
         'Provider': provider?['business_name'] ?? profile?['full_name'] ?? '',
         'Type': t['transaction_type'] ?? '',
+        'Order Number': order?['order_number'] ?? '',
         'Gross Amount': t['gross_amount'] ?? 0,
         'Fee': t['platform_fee'] ?? 0,
         'Net Amount': t['net_amount'] ?? 0,
@@ -251,11 +255,13 @@ class _State extends State<AdminTransactionHistoryScreen> {
   Widget _transactionCard(Map<String, dynamic> t) {
     final provider = t['provider_profiles'] as Map<String, dynamic>?;
     final profile = provider?['profiles'] as Map<String, dynamic>?;
+    final order = t['orders'] as Map<String, dynamic>?;
     final gross = (t['gross_amount'] as num?)?.toDouble() ?? 0;
     final fee = (t['platform_fee'] as num?)?.toDouble() ?? 0;
     final type = t['transaction_type'] ?? '';
     final dt = DateTime.parse(t['created_at']);
     final isCredit = type == 'RECHARGE' || type == 'ADMIN_CASH';
+    final orderNumber = formatOrderNumber(order?['order_number']);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -289,7 +295,8 @@ class _State extends State<AdminTransactionHistoryScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${type.replaceAll('_', ' ')} · ${DateFormat('dd/MM/yyyy').format(dt)}',
+                    '${type.replaceAll('_', ' ')} · ${DateFormat('dd/MM/yyyy').format(dt)}'
+                    '${orderNumber != null ? ' · $orderNumber' : ''}',
                     style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
                   ),
                 ],

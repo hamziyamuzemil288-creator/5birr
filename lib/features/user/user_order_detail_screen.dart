@@ -9,6 +9,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/review_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/order_chat_service.dart';
+import '../../core/utils/order_number_format.dart';
 
 /// Statuses from which CANCELLED is a legal transition
 /// (see transition_order_status whitelist in 0003_functions.sql).
@@ -877,7 +878,7 @@ class _UserOrderDetailScreenState
           Row(
             children: [
               Expanded(
-                child: Text('Order #${(o['id'] as String).substring(0, 8)}',
+                child: Text('Order ${orderLabel(o)}',
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.w700)),
               ),

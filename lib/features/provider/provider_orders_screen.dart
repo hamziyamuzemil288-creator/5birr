@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/order_number_format.dart';
 import '../user/user_order_detail_screen.dart' show orderStatusColor;
 
 class ProviderOrdersScreen extends ConsumerStatefulWidget {
@@ -197,7 +198,7 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
     final currency = o['currency'] as String? ?? 'ETB';
     final itemCount = _itemCount(o);
     final userName = _userNames[o['user_id']] ?? '';
-    final shortId = (o['id'] as String).substring(0, 8);
+    final shortId = orderLabel(o);
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
@@ -208,7 +209,7 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
         title: Row(
           children: [
             Expanded(
-              child: Text('#$shortId',
+              child: Text(shortId,
                   style: const TextStyle(
                       fontSize: 14, fontWeight: FontWeight.w600)),
             ),

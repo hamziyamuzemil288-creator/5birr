@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/retry_widget.dart';
+import '../../core/utils/order_number_format.dart';
 
 class UserOrdersScreen extends StatefulWidget {
   const UserOrdersScreen({super.key});
@@ -148,6 +149,7 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
                                                     FontWeight.w600)),
                                         const SizedBox(height: 3),
                                         Text(
+                                            '${orderLabel(o)} · '
                                             '${o['total_amount']} ${o['currency'] ?? 'ETB'}',
                                             style: const TextStyle(
                                                 fontSize: 12,

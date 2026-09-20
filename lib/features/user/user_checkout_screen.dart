@@ -9,6 +9,8 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/cart_service.dart';
+import '../../core/services/document_upload_service.dart';
+import '../../core/utils/order_number_format.dart' as onf;
 
 class UserCheckoutScreen extends ConsumerStatefulWidget {
   final String providerId;
@@ -27,7 +29,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   final _addressCtrl = TextEditingController();
   final _refCtrl = TextEditingController();
   File? _screenshot;
+  File? _nationalId;
   final _picker = ImagePicker();
+
+  /// Whether this buyer still needs to provide a National ID. Users sign up
+  /// with only email/phone/password, so the ID is verified at booking time —
+  /// attached alongside the payment proof on their first order. Once a
+  /// NATIONAL_ID document exists in user_documents, no upload is needed.
+  bool _needsNationalId = true;
 
   /// Transaction fee percentage, read live from system_settings so the
   /// summary always reflects the current configuration. The fee itself is
@@ -64,6 +73,22 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         final v = (setting?['value'] as num?)?.toDouble();
         if (v != null && v > 0) feePercent = v;
       } catch (_) {}
+      // Skip the ID upload for buyers who already verified one at signup
+      // (older accounts / re-installed app). Best-effort: on failure the
+      // checkout keeps asking for the ID, which is always safe.
+      try {
+        final uid = Supabase.instance.client.auth.currentUser?.id;
+        if (uid != null) {
+          final existing = await Supabase.instance.client
+              .from('user_documents')
+              .select('id')
+              .eq('user_id', uid)
+              .eq('document_type', 'NATIONAL_ID')
+              .limit(1)
+              .maybeSingle();
+          if (existing != null) _needsNationalId = false;
+        }
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _items = items;
@@ -92,6 +117,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     }
   }
 
+  Future<void> _pickNationalId() async {
+    final picked = await _picker.pickImage(
+        source: ImageSource.gallery, imageQuality: 85);
+    if (picked != null) {
+      setState(() => _nationalId = File(picked.path));
+    }
+  }
+
   Future<void> _placeOrder() async {
     // Duplicate-tap guard: prevent double-submission within 3 seconds.
     final now = DateTime.now();
@@ -102,6 +135,11 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
 
     if (_items.isEmpty) {
       setState(() => _error = 'Your cart is empty for this provider');
+      return;
+    }
+    if (_needsNationalId && _nationalId == null) {
+      setState(() =>
+          _error = 'Please upload a photo of your National ID to place an order');
       return;
     }
     setState(() {
@@ -128,6 +166,27 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final data = Map<String, dynamic>.from(result.data as Map);
       final order = data['order'] as Map<String, dynamic>?;
       final orderId = order?['id'] as String?;
+      final orderNumber = onf.formatOrderNumber(order?['order_number'] as String?);
+
+      // ID on file → upload it with the same retry as signup (user_documents).
+      // Follows the screenshot pattern: the order is already placed, so a
+      // failed upload surfaces a message instead of blocking or duplicating
+      // the order. The user can retry from their profile / support.
+      String? idIssue;
+      if (_needsNationalId && _nationalId != null) {
+        try {
+          await DocumentUploadService.instance.uploadAndRecord(
+            file: _nationalId!,
+            userId: client.auth.currentUser!.id,
+            documentType: 'NATIONAL_ID',
+          );
+        } catch (_) {
+          idIssue =
+              'Your order was placed, but the National ID photo could not be '
+                  'uploaded. Please contact support so your identity can be '
+                  'verified (WhatsApp 0917686990).';
+        }
+      }
 
       // Optional payment screenshot → existing 'payment-proofs' bucket,
       // linked to the order in payment_proofs (user-insert RLS allows this).
@@ -157,16 +216,26 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
 
       if (!mounted) return;
       setState(() => _submitting = false);
+      final dialogMessage = idIssue ??
+          screenshotIssue ??
+          (orderNumber != null
+              ? 'Order $orderNumber has been placed successfully. '
+                  'You can track it in My Orders.'
+              : 'Your order has been placed successfully. You can track it in My Orders.');
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (dialogCtx) => AlertDialog(
-          icon: const Icon(Icons.check_circle,
-              color: AppTheme.success, size: 44),
+          icon: Icon(
+              (idIssue != null || screenshotIssue != null)
+                  ? Icons.warning_amber_rounded
+                  : Icons.check_circle,
+              color: (idIssue != null || screenshotIssue != null)
+                  ? AppTheme.warning
+                  : AppTheme.success,
+              size: 44),
           title: const Text('Order placed'),
-          content: Text(
-              screenshotIssue ??
-                  'Your order has been placed successfully. You can track it in My Orders.'),
+          content: Text(dialogMessage),
           actions: [
             TextButton(
               onPressed: () {
@@ -367,6 +436,73 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                 ),
                         ),
                       ),
+                      if (_needsNationalId) ...[
+                        const SizedBox(height: 20),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text('National ID (required)',
+                                  style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: AppTheme.gold.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text('VERIFICATION',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.gold)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                            'First-time verification: we need a photo of your '
+                            'National ID to confirm your identity. It is stored '
+                            'securely and only visible to our admin team.',
+                            style: TextStyle(
+                                fontSize: 12, color: AppTheme.textMuted)),
+                        const SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: _pickNationalId,
+                          child: Container(
+                            width: double.infinity,
+                            height: _nationalId != null ? 160 : 110,
+                            decoration: BoxDecoration(
+                              color: AppTheme.creamDark,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: _nationalId != null
+                                      ? AppTheme.primaryGreen
+                                      : AppTheme.cardBorder),
+                            ),
+                            child: _nationalId != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.file(_nationalId!,
+                                        fit: BoxFit.cover),
+                                  )
+                                : const Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.badge_outlined,
+                                          size: 32, color: AppTheme.textMuted),
+                                      SizedBox(height: 8),
+                                      Text('Tap to upload your National ID',
+                                          style: TextStyle(
+                                              fontSize: 13,
+                                              color: AppTheme.textMuted)),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 24),
                       SizedBox(
                         width: double.infinity,

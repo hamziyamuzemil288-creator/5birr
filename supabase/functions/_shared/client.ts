@@ -77,6 +77,8 @@ export function sanitizeError(msg: string): string {
     // Provider/profile approval flow (see 0029/0030/0033/0034 server-path fixes)
     "PROFILE_STATUS_CANNOT_BE_SELF_MODIFIED", "STATUS_CANNOT_BE_SELF_MODIFIED",
     "CANNOT_APPROVE_OWN_ACCOUNT", "ONLY_ADMINISTRATORS",
+    // Category-coded order numbers are allocated server-side only (0037)
+    "ORDER_NUMBERS_ARE_SERVER_ALLOCATED",
   ];
   for (const code of safeCodes) {
     if (msg.includes(code)) return msg;
