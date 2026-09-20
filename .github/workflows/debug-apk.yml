@@ -1,0 +1,75 @@
+name: Build Debug APK
+
+# Debug-signed universal APK for direct sideloading and on-device testing.
+# Deliberately a separate workflow: the Play-ready artifact remains the AAB
+# from "Build Release AAB", which is untouched by this file.
+#
+# No signing secrets needed: a debug build is signed automatically with a
+# throwaway debug keystore generated on the runner. NOTE: its signature
+# differs from the release keystore, so it cannot install OVER an existing
+# release-signed install — uninstall the old app first.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The app reads these at compile time (--dart-define). Without them the
+      # build succeeds but cannot reach the backend, so fail loudly instead.
+      - name: Fail loudly if required secrets are missing
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          missing=0
+          for v in SUPABASE_URL SUPABASE_ANON_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Required secret $v is empty or missing"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter info
+        run: flutter doctor -v
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: |
+          flutter build apk \
+            --debug \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
