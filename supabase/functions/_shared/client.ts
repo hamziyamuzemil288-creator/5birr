@@ -79,6 +79,9 @@ export function sanitizeError(msg: string): string {
     "CANNOT_APPROVE_OWN_ACCOUNT", "ONLY_ADMINISTRATORS",
     // Category-coded order numbers are allocated server-side only (0037)
     "ORDER_NUMBERS_ARE_SERVER_ALLOCATED",
+    // One-time activation / zero-balance wallet gates (see 0038) — buyers get
+    // the specific reason so the app can route them to the waiting screen.
+    "PROVIDER_NOT_ACTIVATED", "PROVIDER_WALLET_EMPTY", "REGISTRATION_FEE_REQUIRED",
   ];
   for (const code of safeCodes) {
     if (msg.includes(code)) return msg;
