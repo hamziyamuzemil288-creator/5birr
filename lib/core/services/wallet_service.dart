@@ -105,9 +105,17 @@ class WalletService {
 
   /// Upload payment screenshot.
   Future<String> uploadScreenshot(String filePath, String providerId) async {
+    // Path convention MUST start with the caller's auth uid: the storage
+    // INSERT policy on 'payment-screenshots' only allows
+    // name LIKE auth.uid() || '/%' (migration 0033). Uploading under the
+    // provider-profile id caused StorageException 403 (row-level security).
+    final uid = _client.auth.currentUser?.id;
+    if (uid == null) {
+      throw Exception('Not authenticated — cannot upload payment screenshot');
+    }
     final fileName =
         '${providerId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final path = 'payment-screenshots/$providerId/$fileName';
+    final path = 'payment-screenshots/$uid/$fileName';
     await _client.storage.from('payment-screenshots').upload(path, File(filePath),
         fileOptions: const FileOptions(upsert: true));
     return path;

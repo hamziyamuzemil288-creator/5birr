@@ -40,13 +40,11 @@ class _AdminSupportTicketsScreenState extends State<AdminSupportTicketsScreen> {
       // (0001) — there is no FK support_tickets→profiles, so a PostgREST
       // embed like profiles(...) fails with PGRST200. Fetch profiles
       // separately and join in Dart instead.
-      var query = client
-          .from('support_tickets')
-          .select('*')
-          .order('created_at', ascending: false)
-          .limit(200);
+      // Filters must come before transformers (.order/.limit) — the filter
+      // builder type does not expose them afterwards.
+      var query = client.from('support_tickets').select('*');
       if (_filter != 'ALL') query = query.eq('status', _filter);
-      final rows = await query;
+      final rows = await query.order('created_at', ascending: false).limit(200);
       final tickets = (rows as List)
           .map((r) => Map<String, dynamic>.from(r as Map))
           .toList();

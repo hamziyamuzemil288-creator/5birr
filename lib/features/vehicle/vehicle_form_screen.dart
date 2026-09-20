@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/services/provider_activation_service.dart';
 
 class VehicleFormScreen extends StatefulWidget {
   final String? vehicleId;
@@ -24,6 +25,10 @@ class _State extends State<VehicleFormScreen> {
   String? _providerId;
   bool _loading = true;
   bool _saving = false;
+  // One-time activation gate: the registration fee must be paid (via the
+  // first wallet recharge) before uploading vehicles/listings.
+  bool _registrationFeePaid = true;
+  String _activationMessage = '';
   bool get _isEdit => widget.vehicleId != null;
 
   @override
@@ -48,6 +53,14 @@ class _State extends State<VehicleFormScreen> {
         return;
       }
       _providerId = prov['id'];
+      // Activation gate (non-fatal: form stays usable if the check fails).
+      try {
+        final activation = await ProviderActivation.load();
+        if (activation != null && !activation.isActivated) {
+          _registrationFeePaid = false;
+          _activationMessage = activation.blockingMessage;
+        }
+      } catch (_) {}
       final cats = await client
           .from('categories')
           .select('id,name')
@@ -78,6 +91,15 @@ class _State extends State<VehicleFormScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_providerId == null) return;
+    // Block uploads until the one-time registration fee is paid.
+    if (!_registrationFeePaid) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_activationMessage),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
     setState(() => _saving = true);
     try {
       final client = Supabase.instance.client;
@@ -165,6 +187,23 @@ class _State extends State<VehicleFormScreen> {
                       onChanged: (v) => setState(() => _categoryId = v),
                     ),
                     const SizedBox(height: 24),
+                    if (!_registrationFeePaid) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: AppTheme.gold.withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: AppTheme.gold.withOpacity(0.45)),
+                        ),
+                        child: Text(_activationMessage,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: AppTheme.textSecondary)),
+                      ),
+                    ],
                     SizedBox(
                       width: double.infinity,
                       child: PrimaryButton(

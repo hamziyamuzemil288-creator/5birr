@@ -7,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/provider_activation_service.dart';
 
 class ProviderProductFormScreen extends StatefulWidget {
   final String? productId;
@@ -28,6 +29,10 @@ class _State extends State<ProviderProductFormScreen> {
   List<Map<String, dynamic>> _existingImages = [];
   String? _providerId;
   bool _loading = true;
+  // One-time activation gate: providers must pay the registration fee via
+  // their first wallet recharge before uploading listings.
+  bool _registrationFeePaid = true;
+  String _activationMessage = '';
   bool _saving = false;
   final _picker = ImagePicker();
 
@@ -49,6 +54,18 @@ class _State extends State<ProviderProductFormScreen> {
       final client = Supabase.instance.client;
       final userId = client.auth.currentUser?.id;
       if (userId == null) return;
+      // Activation gate (non-fatal: form stays usable if the check fails).
+      try {
+        final activation = await ProviderActivation.load();
+        if (activation != null && !activation.isActivated) {
+          if (mounted) {
+            setState(() {
+              _registrationFeePaid = false;
+              _activationMessage = activation.blockingMessage;
+            });
+          }
+        }
+      } catch (_) {}
       final prov = await client
           .from('provider_profiles')
           .select('id')
@@ -126,6 +143,15 @@ class _State extends State<ProviderProductFormScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_providerId == null) return;
+    // Block uploads until the one-time registration fee is paid.
+    if (!_registrationFeePaid) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_activationMessage),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
     setState(() => _saving = true);
     try {
       final client = Supabase.instance.client;
@@ -363,6 +389,23 @@ class _State extends State<ProviderProductFormScreen> {
                         ),
                       ),
                     const SizedBox(height: 24),
+                    if (!_registrationFeePaid) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: AppTheme.gold.withOpacity(0.10),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: AppTheme.gold.withOpacity(0.45)),
+                        ),
+                        child: Text(_activationMessage,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: AppTheme.textSecondary)),
+                      ),
+                    ],
                     SizedBox(
                       width: double.infinity,
                       child: PrimaryButton(

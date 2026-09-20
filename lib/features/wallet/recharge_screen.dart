@@ -25,6 +25,10 @@ class _RechargeScreenState extends State<RechargeScreen> {
   String? _error;
   String? _success;
   final _picker = ImagePicker();
+  // One-time activation: until the first recharge is approved (which withholds
+  // the registration fee), providers see what the fee is before paying.
+  bool _registrationFeePaid = true;
+  double _registrationFee = 100;
 
   @override
   void initState() {
@@ -35,6 +39,29 @@ class _RechargeScreenState extends State<RechargeScreen> {
   Future<void> _load() async {
     try {
       final methods = await PaymentMethodsService.instance.getActiveMethods();
+      // Load activation status + fee amount (non-fatal if unavailable).
+      try {
+        final client = Supabase.instance.client;
+        final uid = client.auth.currentUser?.id;
+        if (uid != null) {
+          final prov = await client
+              .from('provider_profiles')
+              .select('registration_fee_paid')
+              .eq('user_id', uid)
+              .maybeSingle();
+          if (prov != null) {
+            _registrationFeePaid =
+                (prov['registration_fee_paid'] as bool?) ?? false;
+          }
+        }
+        final feeSetting = await client
+            .from('system_settings')
+            .select('value')
+            .eq('key', 'provider_registration_fee')
+            .maybeSingle();
+        final v = (feeSetting?['value'] as num?)?.toDouble();
+        if (v != null && v > 0) _registrationFee = v;
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _methods = methods;
@@ -62,6 +89,11 @@ class _RechargeScreenState extends State<RechargeScreen> {
     final amount = double.tryParse(_amountCtrl.text);
     if (amount == null || amount <= 0) {
       setState(() => _error = 'Enter a valid amount');
+      return;
+    }
+    if (!_registrationFeePaid && amount < _registrationFee) {
+      setState(() => _error =
+          'Your first recharge must be at least ${_registrationFee.toStringAsFixed(0)} birr: it includes the one-time $_registrationFee birr registration fee (the rest is credited to your wallet).');
       return;
     }
     setState(() {
@@ -157,6 +189,28 @@ class _RechargeScreenState extends State<RechargeScreen> {
                       child: Text(_error!,
                           style: const TextStyle(
                               fontSize: 13, color: AppTheme.error)),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  if (!_registrationFeePaid) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppTheme.gold.withOpacity(0.10),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: AppTheme.gold.withOpacity(0.45)),
+                      ),
+                      child: Text(
+                        'One-time registration fee: your first recharge '
+                        'includes the $_registrationFee birr account '
+                        'activation fee. Enter $_registrationFee or more — '
+                        'the amount above the fee is credited to your '
+                        'wallet. Later recharges are credited in full.',
+                        style: const TextStyle(
+                            fontSize: 13, color: AppTheme.textSecondary),
+                      ),
                     ),
                     const SizedBox(height: 16),
                   ],
