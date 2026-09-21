@@ -71,6 +71,9 @@ flutter test tools/integration_test/connectivity_test.dart \
 ```
 
 CI runs it automatically on every push/PR (`.github/workflows/connectivity-ci.yml`),
-with the local `flutter test` suite additionally gating Flutter CI. The
-assertion RPCs are read-only booleans granted to `anon` — the suite never
-writes app data and never needs a service key.
+and again automatically after every successful **Deploy Supabase** — the
+assertion RPCs are created by migrations (20260922000007), so a push can
+transiently fail until the DB catches up on the next deploy. The local
+`flutter test` suite additionally gates Flutter CI. The assertion RPCs are
+read-only booleans granted to `anon` — the suite never writes app data and
+never needs a service key.

@@ -4,20 +4,40 @@ name: Connectivity CI
 # Phase 3 of the money-flow / connections command: run the integration
 # verification suite on every push/PR so a broken connection is caught in
 # CI, not discovered later on the live admin dashboard.
+#
+# ALSO runs automatically after every successful Deploy Supabase. That
+# ordering matters: the suite's assertion RPCs are created by migrations
+# (20260922000007), and migrations only reach the live DB via Deploy
+# Supabase — so a push can transiently fail until the next deploy. This
+# workflow_run trigger re-verifies the moment the DB catches up.
 on:
   push:
     branches: [main, 'feat/**', 'fix/**']
   pull_request:
+  workflow_run:
+    workflows: ["Deploy Supabase"]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   connectivity:
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      # workflow_run always checks out the default branch — which is the
+      # state the deploy actually produced, so the assertion set matches.
+      - name: Checkout the deployed commit on workflow_run
+        if: github.event_name == 'workflow_run'
+        run: |
+          git fetch origin ${{ github.event.workflow_run.head_sha }}
+          git checkout ${{ github.event.workflow_run.head_sha }}
 
       - uses: subosito/flutter-action@v2
         with:
