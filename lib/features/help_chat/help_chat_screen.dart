@@ -126,7 +126,9 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
       _sending = false;
     });
     _scrollToEnd();
-    _logTurn(text, reply, links.isNotEmpty ? 'link' : null, logId);
+    // Intent is tagged server-side on the assistant row; the client-mirrored
+    // user row stays untagged so the feedback summary groups cleanly.
+    _logTurn(text, reply, null, logId);
   }
 
   /// Best-effort local mirror of the conversation into chat_logs. The Edge
