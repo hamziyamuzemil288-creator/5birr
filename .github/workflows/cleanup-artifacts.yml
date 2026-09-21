@@ -34,12 +34,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Delete all but the newest 3 artifacts
+      - name: Delete stale artifacts (age cap) and keep only the newest 3
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           KEEP_NEWEST=3
+          # Anything older than 24 h is deleted regardless of position. A
+          # plain "newest N" policy can deadlock the 500 MB quota: the kept
+          # set itself fills storage while the quota meter (recalculated
+          # every 6-12 h) blocks every new upload, so nothing newer ever
+          # exists to displace the old artifacts. Release assets now serve
+          # as the durable copy, so artifacts only need to cover the last
+          # few hours.
+          MAX_AGE_HOURS=24
+          CUTOFF=$(date -u -d "-${MAX_AGE_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
 
           gh api --paginate 'repos/${{ github.repository }}/actions/artifacts?per_page=100' \
             --jq '.artifacts[] | [.id, .name, .created_at, (.size_in_bytes|tostring), (.expired|tostring)] | @tsv' \
@@ -50,11 +59,13 @@ jobs:
             echo "No artifacts — nothing to clean."
             exit 0
           fi
-          echo "Found $TOTAL artifacts; keeping the newest $KEEP_NEWEST."
+          echo "Found $TOTAL artifacts; deleting anything older than ${MAX_AGE_HOURS}h, then keeping the newest $KEEP_NEWEST."
 
-          # Newest first (ISO timestamps sort correctly), then skip the
-          # keep-set. Everything else goes, expired or not.
+          # Newest first (ISO timestamps sort correctly). Drop artifacts
+          # older than the cutoff, then keep only the newest KEEP_NEWEST of
+          # whatever remains.
           sort -t$'\t' -k3,3r /tmp/all.tsv \
+            | awk -F'\t' -v cutoff="$CUTOFF" '$3 >= cutoff' \
             | tail -n +$((KEEP_NEWEST + 1)) > /tmp/del.tsv
 
           COUNT=$(wc -l < /tmp/del.tsv | tr -d ' ')
