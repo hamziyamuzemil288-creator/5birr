@@ -47,7 +47,7 @@ CREATE POLICY chat_logs_rate_own ON chat_logs
 -- already see in the app, so exposing it back to them is safe.
 CREATE OR REPLACE FUNCTION public.user_chat_context()
 RETURNS jsonb
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 STABLE
