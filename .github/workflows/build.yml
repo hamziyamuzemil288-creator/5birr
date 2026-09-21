@@ -9,6 +9,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Needed only by the quota-fallback step that attaches the AAB to a
+    # GitHub Release; every other step is read-only.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -60,9 +64,46 @@ jobs:
             --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
 
       - name: Upload AAB artifact
+        # continue-on-error: when Actions artifact storage is over quota (the
+        # meter lags cleanup by 6-12 h), the upload fails but the fallback
+        # step below still delivers the AAB via a Release asset and the run
+        # stays green — the build itself succeeded.
+        id: upload-aab
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: release-aab
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
+
+      - name: Attach AAB to a GitHub Release (quota fallback)
+        # Release assets are NOT part of the Actions artifact-storage quota,
+        # so this lands the AAB even while the quota meter is still lagging.
+        if: steps.upload-aab.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="release-build-$(date -u +%Y%m%d)"
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)"
+          COMMIT="${GITHUB_SHA::7}"
+          NAME="5birr-release-${VERSION}-${COMMIT}.aab"
+          AAB="build/app/outputs/bundle/release/app-release.aab"
+          REPO="${{ github.repository }}"
+
+          NOTES="Automated release AAB from commit ${COMMIT} (built $(date -u '+%Y-%m-%d %H:%M UTC')). Attached here because Actions artifact storage was over quota. This is the release-signed bundle for Play Console."
+
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$REPO" "$AAB#$NAME" --clobber
+            echo "AAB attached to existing release $TAG as $NAME"
+          else
+            gh release create "$TAG" -R "$REPO" \
+              --target "$GITHUB_SHA" \
+              --title "Release build ${VERSION} (${TAG})" \
+              --notes "$NOTES" \
+              "$AAB#$NAME"
+            echo "AAB attached to new release $TAG as $NAME"
+          fi
+
+          echo "::notice::AAB available at https://github.com/${REPO}/releases/tag/${TAG} (asset: ${NAME})"

@@ -8,6 +8,13 @@ name: Build Debug APK
 # throwaway debug keystore generated on the runner. NOTE: its signature
 # differs from the release keystore, so it cannot install OVER an existing
 # release-signed install — uninstall the old app first.
+#
+# Delivery: the Actions artifact is the primary download, but Actions
+# artifact storage has a small quota whose meter lags 6-12 h behind the
+# cleanup workflow. When the upload is quota-blocked, the APK is attached
+# to a GitHub Release instead (Release assets do not count against that
+# quota) and the run is marked green — the build self-heals instead of
+# red-failing for hours on an already-successful build.
 on:
   workflow_dispatch:
   push:
@@ -72,9 +79,13 @@ jobs:
 
       - name: Upload debug APK artifact
         # If the artifact-storage quota was just hit (GitHub recalculates it
-        # every 6-12 h), retry once after 10 min — the cleanup workflow may
+        # every 6-12 h), retry at 10-min intervals — the cleanup workflow may
         # be freeing space concurrently. The build itself takes ~30-40 min,
         # so the wait rarely triggers. The build step is NOT retried.
+        # continue-on-error: a quota-blocked upload must not fail the job;
+        # the fallback step below still delivers the APK via a Release asset.
+        id: upload-apk
+        continue-on-error: true
         uses: Wandalen/wretry.action@v3
         with:
           action: actions/upload-artifact@v4
@@ -90,8 +101,10 @@ jobs:
         # Release assets are NOT part of the Actions artifact-storage quota,
         # so this lands the APK even while the quota meter is still lagging.
         # Runs only when the upload step above failed; the commit SHA in the
-        # asset name makes the file unique per build.
-        if: failure()
+        # asset name makes the file unique per build. With continue-on-error
+        # on the upload, failure() would also fire on earlier steps — gate on
+        # the upload outcome instead so the fallback is precise.
+        if: steps.upload-apk.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
