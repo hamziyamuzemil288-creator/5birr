@@ -68,6 +68,11 @@ jobs:
             --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
 
       - name: Upload debug APK artifact
+        # Best-effort only: Actions artifact storage has a small quota whose
+        # meter lags cleanup by 6-12 h, and a quota block here must not fail
+        # the whole pipeline — the dedicated Build Debug APK / Build Release
+        # AAB workflows deliver the artifacts (with Release fallback).
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
@@ -108,6 +113,7 @@ jobs:
             --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
 
       - name: Upload release AAB artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: release-aab

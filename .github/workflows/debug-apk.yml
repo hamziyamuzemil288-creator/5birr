@@ -8,13 +8,22 @@ name: Build Debug APK
 # throwaway debug keystore generated on the runner. NOTE: its signature
 # differs from the release keystore, so it cannot install OVER an existing
 # release-signed install — uninstall the old app first.
+#
+# Delivery: the Actions artifact is the primary download, but Actions
+# artifact storage has a small quota whose meter lags 6-12 h behind the
+# cleanup workflow. When the upload is quota-blocked, the APK is attached
+# to a GitHub Release instead (Release assets do not count against that
+# quota) and the run is marked green — the build self-heals instead of
+# red-failing for hours on an already-successful build.
 on:
   workflow_dispatch:
   push:
     branches: [main]
 
 permissions:
-  contents: read
+  # Job-level: the quota-fallback step attaches the APK to a GitHub Release.
+  # Everything else in this workflow only reads.
+  contents: write
 
 jobs:
   build:
@@ -70,9 +79,13 @@ jobs:
 
       - name: Upload debug APK artifact
         # If the artifact-storage quota was just hit (GitHub recalculates it
-        # every 6-12 h), retry once after 10 min — the cleanup workflow may
+        # every 6-12 h), retry at 10-min intervals — the cleanup workflow may
         # be freeing space concurrently. The build itself takes ~30-40 min,
         # so the wait rarely triggers. The build step is NOT retried.
+        # continue-on-error: a quota-blocked upload must not fail the job;
+        # the fallback step below still delivers the APK via a Release asset.
+        id: upload-apk
+        continue-on-error: true
         uses: Wandalen/wretry.action@v3
         with:
           action: actions/upload-artifact@v4
@@ -83,3 +96,38 @@ jobs:
             if-no-files-found: error
           attempt_limit: 3
           attempt_delay: 600000
+
+      - name: Attach APK to a GitHub Release (quota fallback)
+        # Release assets are NOT part of the Actions artifact-storage quota,
+        # so this lands the APK even while the quota meter is still lagging.
+        # Runs only when the upload step above failed; the commit SHA in the
+        # asset name makes the file unique per build. With continue-on-error
+        # on the upload, failure() would also fire on earlier steps — gate on
+        # the upload outcome instead so the fallback is precise.
+        if: steps.upload-apk.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="debug-build-$(date -u +%Y%m%d)"
+          VERSION="$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)"
+          COMMIT="${GITHUB_SHA::7}"
+          NAME="aliob-debug-${VERSION}-${COMMIT}.apk"
+          APK="build/app/outputs/flutter-apk/app-debug.apk"
+          REPO="${{ github.repository }}"
+
+          NOTES="Automated debug APK from commit ${COMMIT} (built $(date -u '+%Y-%m-%d %H:%M UTC')). Attached here because Actions artifact storage was over quota. Uninstall any older install first: this is debug-signed, so it cannot install over a release-signed build."
+
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$REPO" "$APK#$NAME" --clobber
+            echo "APK attached to existing release $TAG as $NAME"
+          else
+            gh release create "$TAG" -R "$REPO" \
+              --target "$GITHUB_SHA" \
+              --title "Debug build ${VERSION} (${TAG})" \
+              --notes "$NOTES" \
+              "$APK#$NAME"
+            echo "APK attached to new release $TAG as $NAME"
+          fi
+
+          echo "::notice::APK available at https://github.com/${REPO}/releases/tag/${TAG} (asset: ${NAME})"
