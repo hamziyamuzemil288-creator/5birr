@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/city_service.dart';
 import '../../core/services/points_service.dart';
 
 class UserProfileScreen extends ConsumerWidget {
@@ -119,6 +120,9 @@ class UserProfileScreen extends ConsumerWidget {
                   _menuTile(Icons.person_outline, 'Edit Profile',
                       AppTheme.primaryGreen),
                   _divider(),
+                  _menuTile(Icons.location_city_outlined, 'My City',
+                      AppTheme.teal, onTap: () => _changeCity(context, ref)),
+                  _divider(),
                   _menuTile(
                       Icons.location_on_outlined, 'Addresses', AppTheme.teal),
                   _divider(),
@@ -166,6 +170,47 @@ class UserProfileScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Phase 1: edit the saved city (profiles.city). Browsing follows the
+  /// saved city unless travel mode is on.
+  Future<void> _changeCity(BuildContext context, WidgetRef ref) async {
+    final cityService = ref.read(cityProvider);
+    final saved = cityService.savedCity ?? CityService.fallbackCity;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('My City'),
+        children: [
+          for (final c in CityService.knownCities)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(dialogContext).pop(c),
+              child: Row(
+                children: [
+                  Icon(
+                    c == saved
+                        ? Icons.check_circle
+                        : Icons.location_city_outlined,
+                    size: 18,
+                    color: c == saved ? AppTheme.primaryGreen : AppTheme.textMuted,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(c),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || picked == saved) return;
+    final ok = await ref.read(cityProvider).updateSavedCity(picked);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok
+            ? 'City updated to $picked'
+            : 'Could not update the city — try again'),
+      ));
+    }
   }
 
   Widget _menuTile(IconData icon, String label, Color iconColor,

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../services/city_service.dart';
 import '../models/models.dart';
 import '../services/supabase_service.dart';
 import '../services/provider_presence_service.dart';
@@ -204,6 +206,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String password,
     required String fullName,
     required AppUserRole role,
+    String? city,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -216,6 +219,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         data: {
           'full_name': fullName,
           'phone': e164 ?? phone,
+          if (city != null && city.isNotEmpty) 'city': city,
         },
       );
 
@@ -258,6 +262,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String businessName,
     required String ownerNationalId,
     required String providerType,
+    String? city,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -273,6 +278,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'national_id': ownerNationalId,
           'provider_type': providerType,
           'business_name': businessName,
+          if (city != null && city.isNotEmpty) 'city': city,
         },
       );
 
@@ -340,6 +346,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
 }
 
 /// Provider instance.
+/// Phase 1: multi-city state (saved city + travel-mode browsing).
+/// Recreated on auth changes so a sign-out never leaks the previous
+/// user's saved city.
+final cityProvider =
+    Provider<CityService>((ref) => CityService(Supabase.instance.client));
+
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
   return AuthNotifier(SupabaseService.instance);
 });

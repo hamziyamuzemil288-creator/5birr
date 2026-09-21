@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/providers/auth_provider.dart' show cityProvider;
+import '../../core/services/city_service.dart';
+import 'city_switcher_sheet.dart';
 import '../../core/widgets/product_card.dart';
 import '../../core/widgets/category_card.dart';
 import '../../core/widgets/shimmer_effect.dart';
@@ -11,13 +15,13 @@ import '../../core/models/product.dart';
 import '../../core/models/category.dart';
 import '../../core/services/ride_service.dart';
 
-class UserHomeScreen extends StatefulWidget {
+class UserHomeScreen extends ConsumerStatefulWidget {
   const UserHomeScreen({super.key});
   @override
-  State<UserHomeScreen> createState() => _UserHomeScreenState();
+  ConsumerState<UserHomeScreen> createState() => _UserHomeScreenState();
 }
 
-class _UserHomeScreenState extends State<UserHomeScreen> {
+class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   List<AppCategory> _categories = [];
   List<Product> _products = [];
   Map<String, dynamic>? _activeRide; // set when the rider has an active ride
@@ -39,6 +43,13 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   Future<void> _load() async {
     try {
       final client = Supabase.instance.client;
+      // Phase 1: ensure the saved city is loaded before scoping queries.
+      final cityService = ref.read(cityProvider);
+      if (!cityService.isLoaded) await cityService.loadSavedCity();
+      // Phase 1: scope the feed to the user's active city (travel city in
+      // travel mode, saved city otherwise). Listings with no city stay
+      // visible everywhere (isFilter city null OR match).
+      final city = cityService.activeCity;
 
       // Use cached categories if fresh enough.
       List<AppCategory> categories;
@@ -61,10 +72,13 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
         _cachedCategories = categories;
         _categoriesFetchedAt = DateTime.now();
       }
+      // Phase 4: ranked image feed — popularity first, within the city.
       final prodData = await client
           .from('products')
           .select('*, product_images(*)')
           .eq('is_active', true)
+          .or('city.eq.$city,city.is.null')
+          .order('sales_count', ascending: false, nullsFirst: false)
           .order('created_at', ascending: false)
           .limit(20);
       // Active ride? Surface a live-tracking entry on Home (GPS dashboard).
@@ -146,13 +160,18 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Greeting + logo row
+                  // Greeting + logo row. The logo opens the quick menu
+                  // (Phase 4): settings, categories management entry and
+                  // profile.
                   Row(
                     children: [
-                      Image.asset(
-                        'assets/images/aliob_logo_mark.png',
-                        width: 36,
-                        height: 36,
+                      GestureDetector(
+                        onTap: _showLogoMenu,
+                        child: Image.asset(
+                          'assets/images/aliob_logo_mark.png',
+                          width: 36,
+                          height: 36,
+                        ),
                       ),
                       const SizedBox(width: 10),
                       const Text('Aliob',
@@ -163,6 +182,31 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                               letterSpacing: 1.5)),
                       const Spacer(),
                       const CartIconButton(iconColor: Colors.white),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  // City chip + Shop / Service toggle (Phases 1 & 4).
+                  Row(
+                    children: [
+                      Flexible(
+                        child: _CityChip(
+                          onOpen: () async {
+                            final changed = await showModalBottomSheet<bool>(
+                              context: context,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.vertical(
+                                    top: Radius.circular(20)),
+                              ),
+                              builder: (_) => const CitySwitcherSheet(),
+                            );
+                            if (changed == true && mounted) _load();
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: _ShopServiceToggle(onChanged: (_) => _load()),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -532,6 +576,65 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     return 'Good evening \uD83C\uDF19';
   }
 
+  /// Phase 4: tappable logo menu (Settings, Categories, Profile, Help).
+  void _showLogoMenu() {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('Settings'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                // Profile/Settings is dashboard tab 4 (no standalone route).
+                context.go('/user?tab=4');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.search_outlined),
+              title: const Text('Search & explore'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                context.go('/user?tab=1');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.receipt_long_outlined),
+              title: const Text('My orders'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                context.go('/user?tab=2');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.support_agent_outlined),
+              title: const Text('Help & chat'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                context.push('/help');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_bubble_outline),
+              title: const Text('Chatbot'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                context.push('/help');
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   IconData _catIcon(String slug) {
     if (slug.contains('hotel')) return Icons.hotel_outlined;
     if (slug.contains('food') || slug.contains('restaurant'))
@@ -548,5 +651,99 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     if (slug.contains('fitness')) return Icons.fitness_center;
     if (slug.contains('real-estate')) return Icons.apartment;
     return Icons.category_outlined;
+  }
+}
+
+/// Phase 1: city chip showing the active city (travel mode highlighted).
+class _CityChip extends ConsumerWidget {
+  const _CityChip({required this.onOpen});
+
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final city = ref.watch(cityProvider);
+    final label = city.isTravelMode ? '✈ ${city.activeCity}' : city.activeCity;
+    return Material(
+      color: Colors.white.withOpacity(0.15),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.location_on_outlined,
+                  size: 16, color: Colors.white),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+              const Icon(Icons.keyboard_arrow_down, size: 16, color: Colors.white),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Phase 4: Shop / Ride-Service feed toggle on the dashboard header.
+class _ShopServiceToggle extends StatefulWidget {
+  const _ShopServiceToggle({required this.onChanged});
+
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_ShopServiceToggle> createState() => _ShopServiceToggleState();
+}
+
+class _ShopServiceToggleState extends State<_ShopServiceToggle> {
+  int _index = 0; // 0 = Shop, 1 = Service
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 34,
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(17),
+      ),
+      child: ToggleButtons(
+        isSelected: [_index == 0, _index == 1],
+        onPressed: (i) {
+          if (i == _index) return;
+          setState(() => _index = i);
+          widget.onChanged(i);
+        },
+        borderRadius: BorderRadius.circular(17),
+        selectedColor: AppTheme.primaryGreenDark,
+        fillColor: Colors.white,
+        color: Colors.white,
+        renderBorder: false,
+        constraints: const BoxConstraints(minHeight: 30, minWidth: 64),
+        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+        children: const [
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 10),
+            child: Text('Shop'),
+          ),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 10),
+            child: Text('Ride / Service'),
+          ),
+        ],
+      ),
+    );
   }
 }

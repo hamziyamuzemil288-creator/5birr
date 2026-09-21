@@ -1,0 +1,127 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/providers/auth_provider.dart' show cityProvider;
+import '../../core/services/city_service.dart';
+import '../../core/theme/app_theme.dart';
+
+/// Phase 1: city switcher / "travel mode" picker.
+///
+/// Pick a different city to browse without changing the saved default.
+/// "Back to <saved city>" leaves travel mode. Pops `true` when the active
+/// city changed so callers can reload their queries.
+class CitySwitcherSheet extends ConsumerStatefulWidget {
+  const CitySwitcherSheet({super.key});
+
+  @override
+  ConsumerState<CitySwitcherSheet> createState() => _CitySwitcherSheetState();
+}
+
+class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
+  String _query = '';
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final cityService = ref.read(cityProvider);
+    final saved = cityService.savedCity;
+    final active = cityService.activeCity;
+    final all = {...CityService.knownCities, if (saved != null) saved}.toList()
+      ..sort();
+    final matches = _query.trim().isEmpty
+        ? all
+        : all
+            .where((c) =>
+                c.toLowerCase().contains(_query.trim().toLowerCase()) ||
+                // Allow selecting a city typed in search that is not in the
+                // known list yet (Phase 5 autocomplete will extend this).
+                c.toLowerCase() == _query.trim().toLowerCase())
+            .toList();
+    final showTyped =
+        _query.trim().length >= 3 && !all.contains(_query.trim());
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Choose a city', style: AppTheme.sectionHeader),
+                ),
+                if (cityService.isTravelMode && saved != null)
+                  TextButton(
+                    onPressed:
+                        _busy ? null : () => _apply(cityService, saved, saved),
+                    child: const Text('Back to my city'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              saved == null
+                  ? 'Browsing the default city'
+                  : 'My city: $saved',
+              style: AppTheme.caption,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(
+                hintText: 'Search city…',
+                prefixIcon: Icon(Icons.search),
+              ),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+            const SizedBox(height: 8),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  if (showTyped)
+                    ListTile(
+                      leading: const Icon(Icons.add_location_alt_outlined),
+                      title: Text('Use "${_query.trim()}"'),
+                      subtitle: const Text('City not in the list yet'),
+                      onTap: _busy
+                          ? null
+                          : () => _apply(
+                              cityService, _query.trim(), saved ?? active),
+                    ),
+                  ...matches.map((c) {
+                    final isActive = c == active && !showTyped;
+                    return ListTile(
+                      leading: Icon(
+                        isActive
+                            ? Icons.check_circle
+                            : Icons.location_city_outlined,
+                        color: isActive ? AppTheme.primaryGreen : null,
+                      ),
+                      title: Text(c),
+                      subtitle: c == saved ? const Text('My city') : null,
+                      onTap:
+                          _busy ? null : () => _apply(cityService, c, saved),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _apply(
+      CityService cityService, String city, String? saved) async {
+    setState(() => _busy = true);
+    if (saved != null && city == saved) {
+      cityService.setTravelMode(false);
+    } else {
+      cityService.setTravelCity(city);
+    }
+    if (mounted) Navigator.of(context).pop(true);
+  }
+}

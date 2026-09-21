@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/city_service.dart';
 import '../../core/services/document_upload_service.dart';
 import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
@@ -31,6 +32,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _nationalIdController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+
+  // Phase 1: required city — persisted on the profile and used to scope
+  // home/browse queries. Defaults to the service fallback city.
+  String? _selectedCity;
 
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
@@ -252,6 +257,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               businessName: _nameController.text.trim(),
               ownerNationalId: _nationalIdController.text.trim(),
               providerType: _providerType,
+              city: _selectedCity,
             );
 
         // Upload documents after account is created. Failures are surfaced:
@@ -313,6 +319,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               password: _passwordController.text,
               fullName: _nameController.text.trim(),
               role: AppUserRole.user,
+              city: _selectedCity,
             );
 
         // No documents are collected for regular users at signup — the
@@ -689,6 +696,21 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             if (v.trim().length < 2) return 'Name is too short';
             return null;
           },
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          value: _selectedCity,
+          decoration: const InputDecoration(
+            labelText: 'City *',
+            hintText: 'Select your city',
+            prefixIcon: Icon(Icons.location_city_outlined),
+          ),
+          items: CityService.knownCities
+              .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+              .toList(),
+          validator: (v) =>
+              (v == null || v.isEmpty) ? 'City is required' : null,
+          onChanged: (v) => setState(() => _selectedCity = v),
         ),
         const SizedBox(height: 16),
         BirrTextField(
