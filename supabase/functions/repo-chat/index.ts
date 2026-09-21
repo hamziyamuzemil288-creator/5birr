@@ -237,6 +237,213 @@ const json = (body: unknown, status = 200) =>
     headers: { ...cors, "Content-Type": "application/json" },
   });
 
+// ── Deep links: intent → in-app routes ───────────────────────────────────
+// Every route here must exist in lib/features/help_chat/chat_deep_links.dart
+// (the app validates/renders them as tappable chips under the reply).
+const INTENT_ROUTES: Record<string, { label: string; route: string }[]> = {
+  wallet_recharge: [
+    { label: "Recharge my wallet", route: "/wallet/recharge" },
+    { label: "Open my Wallet", route: "/wallet" },
+  ],
+  buying: [
+    { label: "Browse & shop", route: "/user" },
+    { label: "Open my cart", route: "/user/cart" },
+  ],
+  escrow: [],
+  fees: [{ label: "Open my Wallet", route: "/wallet" }],
+  rides: [{ label: "Book a ride", route: "/user/ride-request" }],
+  provider_mode: [{ label: "Provider dashboard", route: "/provider" }],
+  activation: [{ label: "Recharge my wallet", route: "/wallet/recharge" }],
+  signup: [],
+  points: [],
+  ratings: [],
+  support: [{ label: "My orders", route: "/user/orders" }],
+  ticket: [],
+  balance: [
+    { label: "Open my Wallet", route: "/wallet" },
+    { label: "Recharge my wallet", route: "/wallet/recharge" },
+  ],
+  orders: [{ label: "My orders", route: "/user/orders" }],
+  ride_status: [{ label: "Book a ride", route: "/user/ride-request" }],
+  subscription: [{ label: "Open my Wallet", route: "/wallet" }],
+  greeting: [],
+};
+
+// Log the assistant turn server-side and return the response payload with
+// deep links + the log id the app can attach thumbs feedback to.
+async function respond(
+  userId: string,
+  reply: string,
+  opts: { handoff?: boolean; intent?: string | null } = {},
+): Promise<Response> {
+  let logId = "";
+  try {
+    const { data } = await admin
+      .from("chat_logs")
+      .insert({
+        user_id: userId,
+        role: "assistant",
+        content: reply,
+        intent: opts.intent ?? null,
+      })
+      .select("id")
+      .single();
+    logId = (data as { id: string } | null)?.id ?? "";
+  } catch (e) {
+    console.error("chat_logs insert failed:", (e as Error).message);
+  }
+  return json({
+    reply,
+    handoff: opts.handoff === true,
+    links: (opts.intent && INTENT_ROUTES[opts.intent]) || [],
+    log_id: logId,
+  });
+}
+
+// ── Data-aware fast paths (the caller's live account status) ─────────────
+// Reads go through the SECURITY DEFINER user_chat_context() RPC executed
+// with the caller's JWT (auth.uid()), scoped strictly to that user.
+interface ChatContext {
+  is_provider: boolean;
+  provider_status: string | null;
+  wallet_balance: number | null;
+  subscription: { status: string; next_due_date: string } | null;
+  recent_orders: { status: string; total_amount: number }[] | null;
+  active_ride: { status: string; created_at: string } | null;
+}
+
+async function loadChatContext(
+  userClient: ReturnType<typeof createClient>,
+): Promise<ChatContext | null> {
+  try {
+    const { data, error } = await userClient.rpc("user_chat_context");
+    if (error) throw new Error(error.message);
+    return (data ?? null) as ChatContext | null;
+  } catch (e) {
+    console.error("user_chat_context failed:", (e as Error).message);
+    return null;
+  }
+}
+
+const fmt = (n: number | null) =>
+  n == null ? "unknown" : `${Number(n).toFixed(2)} ETB`;
+
+const STATUS_WORDS: Record<string, string> = {
+  CREATED: "created — waiting for payment verification",
+  PENDING_PAYMENT: "waiting for payment verification",
+  PAYMENT_VERIFIED: "payment verified — being prepared",
+  CONFIRMED: "confirmed",
+  SHIPPED: "on the way",
+  DELIVERED: "delivered",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+  REJECTED: "rejected",
+  REQUESTED: "requested — looking for a driver",
+  ACCEPTED: "accepted — your driver is on the way",
+  IN_PROGRESS: "in progress",
+  ARRIVED: "your driver has arrived",
+};
+
+const word = (s: string | null | undefined) =>
+  s ? (STATUS_WORDS[s] ?? s.toLowerCase().replace(/_/g, " ")) : "unknown";
+
+function dataReply(
+  kind: string,
+  ctx: ChatContext,
+): { reply: string; intent: string } {
+  switch (kind) {
+    case "balance": {
+      if (!ctx.is_provider) {
+        return {
+          reply:
+            "Wallets belong to provider accounts — as a buyer you don't need one: each order is paid directly and held safely until delivery is confirmed. Is there anything else I can help you with?",
+          intent: "balance",
+        };
+      }
+      const low = ctx.wallet_balance != null && Number(ctx.wallet_balance) < 5;
+      return {
+        reply:
+          `Your wallet balance is ${fmt(ctx.wallet_balance)}.` +
+          (low
+            ? " It's running low — recharge it so fees and your subscription never block your orders."
+            : ""),
+        intent: "balance",
+      };
+    }
+    case "orders": {
+      const orders = ctx.recent_orders ?? [];
+      if (!orders.length) {
+        return {
+          reply:
+            "You don't have any orders yet. Once you place one, ask me about its status any time and I'll tell you exactly where it stands.",
+          intent: "orders",
+        };
+      }
+      return {
+        reply:
+          "Your most recent orders:\n\n" +
+          orders
+            .map(
+              (o, i) =>
+                `${i + 1}. ${word(o.status)} — ${fmt(o.total_amount)}`,
+            )
+            .join("\n"),
+        intent: "orders",
+      };
+    }
+    case "ride": {
+      if (!ctx.active_ride) {
+        return {
+          reply: "You have no active ride right now.",
+          intent: "ride_status",
+        };
+      }
+      return {
+        reply: `Your current ride is ${word(ctx.active_ride.status)}. You can watch your driver move on the live map in the ride screen.`,
+        intent: "ride_status",
+      };
+    }
+    case "subscription": {
+      const s = ctx.subscription;
+      if (!s) {
+        return {
+          reply:
+            "No subscription record yet — after your provider account is approved, the 5 Birr monthly subscription is deducted from your wallet automatically when it's due.",
+          intent: "subscription",
+        };
+      }
+      const due = s.next_due_date
+        ? new Date(s.next_due_date).toISOString().slice(0, 10)
+        : "unknown";
+      return {
+        reply: `Your monthly subscription is ${word(s.status)}; next payment due ${due}. It's deducted from your wallet automatically — keep a small balance so it never lapses.`,
+        intent: "subscription",
+      };
+    }
+    default:
+      return { reply: "", intent: "" };
+  }
+}
+
+// Status questions are answered from live data; phrased so how-to questions
+// ("how do I recharge…?") still reach the canned guidance below.
+const DATA_QUERY_RES: Record<string, RegExp> = {
+  balance:
+    /\b(balance|how\s+much\s+(money\s+)?(is\s+(in\s+)?my\s+wallet|do\s+i\s+have)|credit\s+left)\b/i,
+  orders:
+    /\b(order|parcel|delivery|purchase)\b.{0,20}\b(status|track|progress|update)\b|\b(track|status\s+of)\b.{0,20}\b(order|parcel|delivery|purchase)\b/i,
+  ride:
+    /\b(ride|trip|driver|taxi)\b.{0,20}\b(status|track|progress|arriving|on\s+the\s+way)\b|\b(track)\b.{0,20}\b(ride|driver|taxi)\b/i,
+  subscription: /\b(subscription|monthly\s+(fee|payment|charge))\b/i,
+};
+
+function detectDataQuery(text: string): string | null {
+  for (const [kind, re] of Object.entries(DATA_QUERY_RES)) {
+    if (re.test(text)) return kind;
+  }
+  return null;
+}
+
 // ── Fast-path helpers ─────────────────────────────────────────────────────
 const GREETING_RE =
   /^(hi|hii+|hello+|hay|hey+|hy|hallo|hiya|yo|selam|selamta|ሰላም|salam|hola|howdy|greetings|good\s+(morning|afternoon|evening|day)|whats\s*up|what's\s*up|sup|how\s+are\s+you|how\s+are\s+you\s+doing|how\s+is\s+it\s+going|hows\s+it\s+going|nice\s+to\s+meet\s+you|good\s+to\s+see\s+you)[\s!.,?]*$/i;
@@ -359,6 +566,28 @@ function cannedReply(text: string): string | null {
   return null;
 }
 
+// Intent keys for chat_logs, aligned by index with CANNED_TOPICS above.
+// Keep both arrays in the same order.
+const CANNED_NAMES = [
+  "signup",
+  "buying",
+  "escrow",
+  "wallet_recharge",
+  "points",
+  "fees",
+  "rides",
+  "provider_mode",
+  "activation",
+  "ratings",
+];
+
+function cannedIntent(text: string): string | null {
+  for (let i = 0; i < CANNED_TOPICS.length; i++) {
+    if (CANNED_TOPICS[i].patterns.test(text)) return CANNED_NAMES[i] ?? null;
+  }
+  return null;
+}
+
 // ── Human handoff (returned whenever the agent can't help) ───────────────
 function handoffReply(): string {
   return (
@@ -443,7 +672,17 @@ Deno.serve(async (req) => {
 
     // 4a. Fast path: greetings and small talk.
     if (isGreeting(question)) {
-      return json({ reply: GREETING_REPLY });
+      return respond(user.id, GREETING_REPLY, { intent: "greeting" });
+    }
+
+    // 4a-bis. Live-data questions answered from the caller's own account
+    // (wallet balance, order/ride status, subscription) — read-only, scoped
+    // to auth.uid() via user_chat_context().
+    const dataKind = detectDataQuery(question);
+    const chatCtx = dataKind ? await loadChatContext(userClient) : null;
+    if (dataKind && chatCtx) {
+      const { reply, intent } = dataReply(dataKind, chatCtx);
+      return respond(user.id, reply, { intent });
     }
 
     // 4b. Guided ticket flow takes over once an order/payment issue is
@@ -455,7 +694,11 @@ Deno.serve(async (req) => {
 
     if (providerCtx.isProvider) {
       clearSession(user.id);
-      if (issueDetected) return json({ reply: PROVIDER_DIRECT_REPLY, handoff: true });
+      if (issueDetected)
+        return respond(user.id, PROVIDER_DIRECT_REPLY, {
+          handoff: true,
+          intent: "support",
+        });
     } else {
       if (session) {
         const draft: TicketDraft = session;
@@ -496,26 +739,33 @@ Deno.serve(async (req) => {
           draft: draft as TicketInput["draft"],
         });
         clearSession(user.id);
-        return json(ok ? { reply: ticketThankYou(draft) } : {
-          reply: "I couldn't submit your issue just now. Please reach our support " +
-            `team directly: ${SUPPORT_PHONE} (phone / WhatsApp) or ${SUPPORT_EMAIL}.`,
-          handoff: true,
-        });
+        return ok
+          ? respond(user.id, ticketThankYou(draft), { intent: "ticket" })
+          : respond(
+              user.id,
+              "I couldn't submit your issue just now. Please reach our support " +
+                `team directly: ${SUPPORT_PHONE} (phone / WhatsApp) or ${SUPPORT_EMAIL}.`,
+              { handoff: true, intent: "ticket" },
+            );
       }
 
       if (issueDetected) {
         setSession(user.id, { step: 0 });
-        return json({ reply: TICKET_QUESTIONS[0] });
+        return respond(user.id, TICKET_QUESTIONS[0], { intent: "ticket" });
       }
     }
 
     // 4c. 10-hour no-response fallback (users only — Behavior 4).
     const fallback = await maybeGiveFallback(user.id);
-    if (fallback) return json({ reply: fallback, handoff: true });
+    if (fallback) return respond(user.id, fallback, { handoff: true });
 
     // 4d. Fast path: canned answers for the app's core flows.
     const canned = cannedReply(question);
-    if (canned) return json({ reply: canned });
+    if (canned) {
+      return respond(user.id, canned, {
+        intent: cannedIntent(question),
+      });
+    }
 
     // 4e. Retrieval over indexed docs/UI text.
     const hints = msgs.filter((m: { role: string }) => m.role === "user").map((m: { content: string }) => m.content);
@@ -524,7 +774,11 @@ Deno.serve(async (req) => {
       hits = await search(hints.slice(-3).join(" "), 6);
     }
     const answer = buildAnswer(question, hits);
-    return json(answer);
+    return respond(
+      user.id,
+      answer.reply,
+      { handoff: answer.handoff, intent: answer.handoff ? "support" : null },
+    );
   } catch (e) {
     console.error("repo-chat failed:", e);
     return json({ reply: handoffReply(), handoff: true });
