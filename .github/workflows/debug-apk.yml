@@ -67,9 +67,17 @@ jobs:
             --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
 
       - name: Upload debug APK artifact
-        uses: actions/upload-artifact@v4
+        # If the artifact-storage quota was just hit (GitHub recalculates it
+        # every 6-12 h), retry once after 10 min — the cleanup workflow may
+        # be freeing space concurrently. The build itself takes ~30-40 min,
+        # so the wait rarely triggers. The build step is NOT retried.
+        uses: Wandalen/wretry.action@v3
         with:
-          name: debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
-          retention-days: 7
-          if-no-files-found: error
+          action: actions/upload-artifact@v4
+          with: |
+            name: debug-apk
+            path: build/app/outputs/flutter-apk/app-debug.apk
+            retention-days: 7
+            if-no-files-found: error
+          attempt_limit: 3
+          attempt_delay: 600000
