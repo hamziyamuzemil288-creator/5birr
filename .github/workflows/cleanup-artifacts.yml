@@ -92,14 +92,20 @@ jobs:
             exit 0
           fi
 
-          LAST=$(gh api 'repos/${{ github.repository }}/actions/workflows/debug-apk.yml/runs?per_page=1' \
+          LAST=$(gh api -R "${{ github.repository }}" 'actions/workflows/debug-apk.yml/runs?per_page=1' \
             --jq '.workflow_runs[0] | [.id, .conclusion] | @tsv')
           RUN_ID="${LAST%%$'\t'*}"; CONCLUSION="${LAST#*$'\t'}"
           echo "Latest Build Debug APK run $RUN_ID: $CONCLUSION"
 
-          if [ "$CONCLUSION" = "failure" ]; then
-            echo "Storage was just freed and the last debug-APK build failed — re-dispatching it on main."
-            gh workflow run debug-apk.yml --ref main
-          else
-            echo "Last debug-APK build did not fail — no re-run needed."
-          fi
+          # failure = upload hit the quota; cancelled = the 30-min job timeout
+          # killed it while waiting in the upload retry loop. Both mean the
+          # build itself succeeded and only needs a re-shot at uploading.
+          case "$CONCLUSION" in
+            failure|cancelled)
+              echo "Storage was just freed and the last debug-APK run did not upload ($CONCLUSION) — re-dispatching on main."
+              gh workflow run -R "${{ github.repository }}" debug-apk.yml --ref main
+              ;;
+            *)
+              echo "Last debug-APK run concluded $CONCLUSION — no re-run needed."
+              ;;
+          esac
