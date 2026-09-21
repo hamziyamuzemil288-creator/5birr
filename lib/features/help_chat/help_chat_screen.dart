@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import 'chat_deep_links.dart';
 
 /// Human-support contact points shown whenever the assistant can't help.
 /// Mirrors the constants in supabase/functions/repo-chat/index.ts.
@@ -13,11 +16,16 @@ class _Msg {
   final String content;
   final bool handoff; // true → render tappable phone/WhatsApp/email actions
   final List<String> options; // tappable quick replies (ticket flow)
+  final List<({String label, String route})>
+      links; // tappable in-app deep links
+  final String logId; // chat_logs row for this assistant reply
   const _Msg(
     this.role,
     this.content, {
     this.handoff = false,
     this.options = const [],
+    this.links = const [],
+    this.logId = '',
   });
 }
 
@@ -40,6 +48,7 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
         options: ['How do I recharge my wallet?', 'I want to report an issue']),
   ];
   bool _sending = false;
+  final Set<String> _rated = {}; // chat_logs ids already given feedback
 
   @override
   void dispose() {
@@ -72,10 +81,10 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
             handoff: _messages[idx].handoff);
       }
     });
-    _scrollToEnd();
-
-    String reply;
+    _scrollToEnd();    String reply;
     bool handoff = false;
+    String logId = '';
+    var links = const <({String label, String route})>[];
     try {
       // Skip the local greeting so history starts with a user turn.
       final history = _messages
@@ -88,6 +97,20 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
       reply = data?['reply'] as String? ??
           'Sorry, something went wrong. Please try again.';
       handoff = data?['handoff'] == true;
+      logId = data?['log_id'] as String? ?? '';
+      final rawLinks = data?['links'];
+      final knownRoutes = kKnownRoutes.map((k) => k.route).toSet();
+      if (rawLinks is List) {
+        links = rawLinks
+            .whereType<Map>()
+            .map((m) => (
+                  label: m['label'] as String? ?? '',
+                  route: m['route'] as String? ?? '',
+                ))
+            .where((l) =>
+                l.label.isNotEmpty && knownRoutes.contains(l.route))
+            .toList();
+      }
     } on FunctionException catch (e) {
       reply = e.status == 429
           ? "You've reached today's help limit. Please try again tomorrow."
@@ -98,10 +121,58 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
 
     if (!mounted) return;
     setState(() {
-      _messages.add(_Msg('assistant', reply, handoff: handoff));
+      _messages.add(_Msg('assistant', reply,
+          handoff: handoff, links: links, logId: logId));
       _sending = false;
     });
     _scrollToEnd();
+    // Intent is tagged server-side on the assistant row; the client-mirrored
+    // user row stays untagged so the feedback summary groups cleanly.
+    _logTurn(text, reply, null, logId);
+  }
+
+  /// Best-effort local mirror of the conversation into chat_logs. The Edge
+  /// Function logs the assistant row server-side (returning its id so this
+  /// screen can attach feedback to the exact reply); the user's question is
+  /// logged client-side so late client failures never lose the question.
+  Future<void> _logTurn(
+      String question, String answer, String? intent, String answerLogId) async {
+    try {
+      final client = Supabase.instance.client;
+      final uid = client.auth.currentUser?.id;
+      if (uid == null) return;
+      await client.from('chat_logs').insert({
+        'user_id': uid,
+        'role': 'user',
+        'content': question,
+        'intent': intent,
+      });
+      if (answerLogId.isNotEmpty) {
+        // Server already logged the answer; nothing more to write.
+        return;
+      }
+      await client.from('chat_logs').insert({
+        'user_id': uid,
+        'role': 'assistant',
+        'content': answer,
+        'intent': intent,
+      });
+    } catch (_) {
+      // Logging must never break the chat flow.
+    }
+  }
+
+  /// Thumbs up/down on an assistant reply → chat_logs.helpful.
+  Future<void> _rate(String logId, bool helpful) async {
+    if (logId.isEmpty) return;
+    try {
+      await Supabase.instance.client
+          .from('chat_logs')
+          .update({'helpful': helpful})
+          .eq('id', logId);
+    } catch (_) {
+      // Non-fatal.
+    }
   }
 
   Future<void> _launchSupportLink(String raw) async {
@@ -211,6 +282,21 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             SelectableText(m.content),
+                            if (m.links.isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: m.links
+                                    .map((l) => ActionChip(
+                                          label: Text(l.label,
+                                              style: const TextStyle(
+                                                  fontSize: 13)),
+                                          onPressed: () =>
+                                              GoRouter.of(context).push(l.route),
+                                        ))
+                                    .toList()),
+                            ],
                             if (m.handoff) ...[
                               const SizedBox(height: 10),
                               Wrap(
@@ -251,6 +337,44 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
                         runSpacing: 8,
                         children:
                             m.options.map((o) => _optionChip(o)).toList(),
+                      ),
+                    ],
+                    // Feedback thumbs on the latest assistant reply (feeds
+                    // the chat_logs self-improvement loop). Hidden once used.
+                    if (!isUser &&
+                        isLast &&
+                        m.logId.isNotEmpty &&
+                        !_rated.contains(m.logId)) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Helpful?',
+                              style: TextStyle(fontSize: 12)),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Yes',
+                            onPressed: () {
+                              _rated.add(m.logId);
+                              _rate(m.logId, true);
+                              setState(() {});
+                            },
+                            icon: const Icon(Icons.thumb_up_alt_outlined,
+                                size: 18),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'No',
+                            onPressed: () {
+                              _rated.add(m.logId);
+                              _rate(m.logId, false);
+                              setState(() {});
+                            },
+                            icon: const Icon(Icons.thumb_down_alt_outlined,
+                                size: 18),
+                          ),
+                        ],
                       ),
                     ],
                   ],
