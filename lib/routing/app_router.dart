@@ -31,6 +31,8 @@ import '../features/wallet/wallet_screen.dart';
 import '../features/wallet/recharge_screen.dart';
 import '../features/admin/admin_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
+import '../features/admin/admin_history_screen.dart';
+import '../features/admin/admin_staff_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
 import '../features/admin/admin_payment_methods_screen.dart';
 import '../features/admin/admin_payment_verification_screen.dart';
@@ -274,6 +276,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/expenses', builder: (_, __) => const AdminExpenseScreen()),
       GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
       GoRoute(path: '/admin/support-tickets', builder: (_, __) => const AdminSupportTicketsScreen()),
+      GoRoute(path: '/admin/history', builder: (_, __) => const AdminHistoryScreen()),
+      GoRoute(path: '/admin/staff', builder: (_, __) => const AdminStaffScreen()),
       GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
 
       // ── Help (signed-in users) ──

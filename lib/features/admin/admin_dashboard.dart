@@ -335,6 +335,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
                           _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
                           _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
+                          _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
+                          // Phase 2: staff management (server-side RBAC; the
+                          // screen itself also self-hides without permission).
+                          _menuCard(Icons.group_outlined, 'Staff / Sub-admins', 'Permissions & targets', () => context.push('/admin/staff')),
                         ],
                       ),
                     ),
