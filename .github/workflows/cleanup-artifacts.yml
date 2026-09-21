@@ -1,0 +1,105 @@
+name: Cleanup Actions Artifacts
+
+# Private repos get only 500 MB of Actions artifact storage. Build outputs
+# (AABs/APKs) at the old 90-day default piled up ~12 GB until the quota
+# blocked every artifact upload. The Freebuff GitHub App integration can
+# neither delete artifacts nor dispatch workflows from outside, so this
+# workflow performs the deletion from inside Actions, where GITHUB_TOKEN
+# has actions: write.
+#
+# Policy: always keep the NEWEST 3 artifacts repo-wide (the useful ones),
+# delete everything else, plus anything already expired. Runs hourly, which
+# is nearly free and keeps usage far below the 500 MB quota at current
+# build volume.
+#
+# After a sweep that actually freed space, it re-dispatches "Build Debug
+# APK" on main if the previous debug-APK run failed on the storage quota —
+# so a quota-blocked build self-heals without anyone clicking anything.
+on:
+  schedule:
+    - cron: '25 * * * *'
+  push:
+    paths: ['.github/workflows/cleanup-artifacts.yml']
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cleanup-artifacts
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete all but the newest 3 artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          KEEP_NEWEST=3
+
+          gh api --paginate 'repos/${{ github.repository }}/actions/artifacts?per_page=100' \
+            --jq '.artifacts[] | [.id, .name, .created_at, (.size_in_bytes|tostring), (.expired|tostring)] | @tsv' \
+            > /tmp/all.tsv
+
+          TOTAL=$(wc -l < /tmp/all.tsv | tr -d ' ')
+          if [ "${TOTAL:-0}" -eq 0 ]; then
+            echo "No artifacts — nothing to clean."
+            exit 0
+          fi
+          echo "Found $TOTAL artifacts; keeping the newest $KEEP_NEWEST."
+
+          # Newest first (ISO timestamps sort correctly), then skip the
+          # keep-set. Everything else goes, expired or not.
+          sort -t$'\t' -k3,3r /tmp/all.tsv \
+            | tail -n +$((KEEP_NEWEST + 1)) > /tmp/del.tsv
+
+          COUNT=$(wc -l < /tmp/del.tsv | tr -d ' ')
+          if [ "${COUNT:-0}" -eq 0 ]; then
+            echo "Nothing to delete (only the newest $KEEP_NEWEST exist)."
+            exit 0
+          fi
+          echo "Deleting $COUNT artifacts..."
+
+          DELETED=0; FAILED=0; FREED=0
+          while IFS=$'\t' read -r ID NAME CREATED SIZE EXPIRED; do
+            if gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ID" >/dev/null 2>&1; then
+              DELETED=$((DELETED + 1)); FREED=$((FREED + SIZE))
+              printf '  deleted %-16s %s %s MB%s\n' "$NAME" "$CREATED" "$((SIZE / 1048576))" "$([ "$EXPIRED" = "true" ] && echo ' (expired)')"
+            else
+              FAILED=$((FAILED + 1))
+              printf '::warning::delete failed for artifact %s (%s)\n' "$ID" "$NAME"
+            fi
+            sleep 0.3
+          done < /tmp/del.tsv
+
+          echo "Deleted $DELETED/$COUNT artifacts ($FAILED failed), freed ~$((FREED / 1048576)) MB."
+
+          if [ "$FREED" -gt 0 ]; then
+            echo "FREED_BYTES=$FREED" >> "$GITHUB_ENV"
+          fi
+
+      - name: Re-run Build Debug APK if it failed on the storage quota
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FREED_BYTES:-}" ]; then
+            echo "Nothing was freed — no need to re-run the debug build."
+            exit 0
+          fi
+
+          LAST=$(gh api 'repos/${{ github.repository }}/actions/workflows/debug-apk.yml/runs?per_page=1' \
+            --jq '.workflow_runs[0] | [.id, .conclusion] | @tsv')
+          RUN_ID="${LAST%%$'\t'*}"; CONCLUSION="${LAST#*$'\t'}"
+          echo "Latest Build Debug APK run $RUN_ID: $CONCLUSION"
+
+          if [ "$CONCLUSION" = "failure" ]; then
+            echo "Storage was just freed and the last debug-APK build failed — re-dispatching it on main."
+            gh workflow run debug-apk.yml --ref main
+          else
+            echo "Last debug-APK build did not fail — no re-run needed."
+          fi
