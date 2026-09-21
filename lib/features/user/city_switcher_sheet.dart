@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/services/city_service.dart';
+import '../../core/services/geocoding_service.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Phase 1: city switcher / "travel mode" picker.
@@ -20,6 +23,39 @@ class CitySwitcherSheet extends ConsumerStatefulWidget {
 class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
   String _query = '';
   bool _busy = false;
+
+  // Phase 5: live place suggestions via the geocoding module (Photon with
+  // Nominatim fallback), debounced to respect the free-tier rate limits.
+  List<PlaceResult> _suggestions = [];
+  Timer? _debounce;
+  bool _searching = false;
+
+  void _onQueryChanged(String v) {
+    setState(() => _query = v);
+    _debounce?.cancel();
+    if (v.trim().length < 3) {
+      setState(() => _suggestions = []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 500), () async {
+      setState(() => _searching = true);
+      final active = ref.read(cityProvider).activeCity;
+      final places = await GeocodingService.instance
+          .searchPlaces(v.trim(), biasCity: active, limit: 5);
+      if (mounted) {
+        setState(() {
+          _suggestions = places;
+          _searching = false;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,17 +106,26 @@ class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
             const SizedBox(height: 12),
             TextField(
               decoration: const InputDecoration(
-                hintText: 'Search city…',
+                hintText: 'Search city or place…',
                 prefixIcon: Icon(Icons.search),
               ),
-              onChanged: (v) => setState(() => _query = v),
+              onChanged: _onQueryChanged,
             ),
             const SizedBox(height: 8),
             Flexible(
               child: ListView(
                 shrinkWrap: true,
                 children: [
-                  if (showTyped)
+                  if (_searching)
+                    const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Center(
+                          child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))),
+                    ),
+                  if (showTyped && _suggestions.isEmpty && !_searching)
                     ListTile(
                       leading: const Icon(Icons.add_location_alt_outlined),
                       title: Text('Use "${_query.trim()}"'),
@@ -90,6 +135,24 @@ class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
                           : () => _apply(
                               cityService, _query.trim(), saved ?? active),
                     ),
+                  if (_suggestions.isNotEmpty) ...[
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: Text('Places', style: AppTheme.caption),
+                    ),
+                    ..._suggestions.map((p) => ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.place_outlined),
+                          title: Text(p.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                          subtitle: p.city.isEmpty ? null : Text(p.city),
+                          onTap: _busy
+                              ? null
+                              : () => _apply(cityService,
+                                  p.city.isNotEmpty ? p.city : p.label, saved),
+                        )),
+                  ],
                   ...matches.map((c) {
                     final isActive = c == active && !showTyped;
                     return ListTile(
