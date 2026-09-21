@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart' show cityProvider;
-import '../../core/services/city_service.dart';
 import 'city_switcher_sheet.dart';
 import '../../core/widgets/product_card.dart';
 import '../../core/widgets/category_card.dart';
