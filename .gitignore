@@ -15,3 +15,5 @@ node_modules/
 # Android signing keystores are never committed (see docs/SIGNING.md)
 *.p12
 **/*.p12
+release-keystore.b64.txt
+*.b64.txt
