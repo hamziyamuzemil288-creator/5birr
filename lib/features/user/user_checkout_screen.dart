@@ -27,6 +27,11 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   DateTime? _lastOrderTime;
   final _addressCtrl = TextEditingController();
   final _refCtrl = TextEditingController();
+
+  // Phase 4: shared selection flow — Delivery or Self-pickup. Self-pickup
+  // pays the product price only (no delivery), delivery shows the address
+  // step. Both paths share the same payment step below.
+  String _fulfillmentMode = 'DELIVERY';
   File? _screenshot;
   File? _nationalId;
   final _picker = ImagePicker();
@@ -214,7 +219,9 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       // Quantity stays a double: unit-priced lines (kg/liter) are fractional
       // (order_items.quantity is numeric(10,3)); fixed-price lines are whole.
       final noteParts = <String>[
-        if (_addressCtrl.text.trim().isNotEmpty)
+        if (_fulfillmentMode == 'SELF_PICKUP') 'Fulfillment: self-pickup',
+        if (_fulfillmentMode == 'DELIVERY' &&
+            _addressCtrl.text.trim().isNotEmpty)
           'Delivery: ${_addressCtrl.text.trim()}',
         if (_refCtrl.text.trim().isNotEmpty)
           'Payment ref: ${_refCtrl.text.trim()}',
@@ -225,6 +232,9 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
             .map((i) => {'product_id': i.productId, 'quantity': i.quantity})
             .toList(),
         if (noteParts.isNotEmpty) 'note': noteParts.join(' | '),
+        'fulfillment_mode': _fulfillmentMode,
+        if (_fulfillmentMode == 'DELIVERY')
+          'delivery_address': _addressCtrl.text.trim(),
       });
       final data = Map<String, dynamic>.from(result.data as Map);
       final order = data['order'] as Map<String, dynamic>?;
@@ -446,17 +456,70 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
-                      const Text('Delivery Details',
+                      // Phase 4: fulfillment selection (shared flow).
+                      const Text('How do you want to get it?',
                           style: TextStyle(
                               fontSize: 15, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 12),
-                      BirrTextField(
-                        label: 'Delivery Address',
-                        controller: _addressCtrl,
-                        maxLines: 2,
-                        hint: 'Street, area, city',
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _FulfillmentCard(
+                              icon: Icons.local_shipping_outlined,
+                              title: 'Delivery',
+                              subtitle: 'Brought to your address',
+                              selected: _fulfillmentMode == 'DELIVERY',
+                              onTap: () =>
+                                  setState(() => _fulfillmentMode = 'DELIVERY'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _FulfillmentCard(
+                              icon: Icons.store_outlined,
+                              title: 'Self-pickup',
+                              subtitle: 'Pay product price only',
+                              selected: _fulfillmentMode == 'SELF_PICKUP',
+                              onTap: () => setState(
+                                  () => _fulfillmentMode = 'SELF_PICKUP'),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
+                      if (_fulfillmentMode == 'DELIVERY') ...[
+                        const Text('Delivery Details',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 12),
+                        BirrTextField(
+                          label: 'Delivery Address',
+                          controller: _addressCtrl,
+                          maxLines: 2,
+                          hint: 'Street, area, city',
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      if (_fulfillmentMode == 'SELF_PICKUP') ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryGreen.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color:
+                                    AppTheme.primaryGreen.withOpacity(0.25)),
+                          ),
+                          child: const Text(
+                            'Self-pickup: pay the product price only and collect '
+                            'it from the provider. Their contact details become '
+                            'available after payment approval.',
+                            style: TextStyle(fontSize: 12.5, height: 1.4),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       BirrTextField(
                         label: 'Payment Reference (optional)',
                         controller: _refCtrl,
@@ -576,6 +639,68 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                     ],
                   ),
                 ),
+    );
+  }
+}
+
+/// Phase 4: delivery vs self-pickup selection card (shared across the
+/// product/service flow).
+class _FulfillmentCard extends StatelessWidget {
+  const _FulfillmentCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? AppTheme.primaryGreen.withOpacity(0.08)
+          : AppTheme.surface,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? AppTheme.primaryGreen : AppTheme.cardBorder,
+              width: selected ? 1.4 : 0.5,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon,
+                  size: 20,
+                  color:
+                      selected ? AppTheme.primaryGreen : AppTheme.textMuted),
+              const SizedBox(height: 6),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: selected
+                          ? AppTheme.primaryGreen
+                          : AppTheme.textPrimary)),
+              Text(subtitle,
+                  style: const TextStyle(
+                      fontSize: 11, color: AppTheme.textMuted)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

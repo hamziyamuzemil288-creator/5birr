@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/city_service.dart';
 
 class UserSearchScreen extends StatefulWidget {
   const UserSearchScreen({super.key});
@@ -64,11 +65,15 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       // makes the server compute real distance_km per result and lets the
       // user sort by distance; without permission it still works (no distance).
       final pos = _myPos;
+      // Phase 1: scope search to the active city (travel city in travel
+      // mode). City-less listings stay visible everywhere.
       final data =
           await Supabase.instance.client.rpc('search_products', params: {
         'p_query': q.trim(),
         'p_limit': 30,
         'p_offset': 0,
+        'p_city': CityService.instance.activeCity,
+        'p_include_global': true,
         if (pos != null) ...{
           'p_lat': pos.latitude,
           'p_lng': pos.longitude,

@@ -38,6 +38,9 @@ interface OrderCreateBody {
   provider_id: string;
   items: OrderItemInput[];
   note?: string;
+  // Phase 4: fulfillment selection (additive, optional).
+  fulfillment_mode?: "DELIVERY" | "SELF_PICKUP";
+  delivery_address?: string;
 }
 
 const MAX_ITEMS_PER_ORDER = 50;
@@ -194,6 +197,14 @@ Deno.serve(async (req: Request) => {
       unit_price: productById.get(item.product_id)!.price, // server value
     }));
 
+    // Phase 4: fulfillment mode (defaults to DELIVERY for old clients).
+    const fulfillmentMode =
+      body.fulfillment_mode === "SELF_PICKUP" ? "SELF_PICKUP" : "DELIVERY";
+    if (fulfillmentMode === "DELIVERY" &&
+        !(body.delivery_address ?? "").trim()) {
+      return json({ error: "Delivery requires an address" }, 400);
+    }
+
     const { data: created, error: rpcError } = await admin.rpc(
       "create_order_secure",
       {
@@ -203,6 +214,9 @@ Deno.serve(async (req: Request) => {
         p_total_amount: total,
         p_currency: currency,
         p_note: body.note ?? null,
+        p_fulfillment_mode: fulfillmentMode,
+        p_delivery_address: body.delivery_address ?? null,
+        p_city: null,
       }
     );
 

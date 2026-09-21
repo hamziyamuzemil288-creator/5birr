@@ -11,6 +11,15 @@ class CityService {
 
   final SupabaseClient _client;
 
+  /// Shared instance for screens that don't use Riverpod refs. Created on
+  /// first access — always after Supabase.initialize() (main awaits it),
+  /// and the provider exposes this same instance.
+  static CityService? _instance;
+  static CityService get instance {
+    _instance ??= CityService(Supabase.instance.client);
+    return _instance!;
+  }
+
   static const String fallbackCity = 'Addis Ababa';
 
   /// Ethiopian cities offered in the city picker. Add cities here as
@@ -90,6 +99,13 @@ class CityService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Mark the saved city locally right after signup (the profile row was
+  /// just created via trigger; avoids an extra read).
+  void seedSavedCity(String city) {
+    _savedCity = city;
+    _loaded = true;
   }
 
   /// Travel mode: browse [city] without changing the saved default.

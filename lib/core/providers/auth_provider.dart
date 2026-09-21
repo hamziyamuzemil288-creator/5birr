@@ -347,10 +347,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
 /// Provider instance.
 /// Phase 1: multi-city state (saved city + travel-mode browsing).
-/// Recreated on auth changes so a sign-out never leaks the previous
-/// user's saved city.
-final cityProvider =
-    Provider<CityService>((ref) => CityService(Supabase.instance.client));
+/// Exposes the shared singleton so every reader sees the same state;
+/// recreated provider stays cheap and sign-out-safe via loadSavedCity.
+final cityProvider = Provider<CityService>((ref) => CityService.instance);
 
 final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
   return AuthNotifier(SupabaseService.instance);

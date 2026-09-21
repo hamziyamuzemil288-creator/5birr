@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/services/city_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
 
 class UserCategoryScreen extends StatefulWidget {
@@ -34,18 +35,30 @@ class _State extends State<UserCategoryScreen> {
           .eq('parent_id', widget.categoryId)
           .eq('is_active', true)
           .order('sort_order');
-      final prods = await client
-          .from('products')
-          .select('*, product_images(*)')
-          .eq('category_id', widget.categoryId)
-          .eq('is_active', true)
-          .order('created_at', ascending: false)
-          .limit(50);
+      // Phase 1+4: shared city-scoped query, ranked by popularity.
+      final city = CityService.instance.activeCity;
+      final prods = await client.rpc('visible_products_for_city', params: {
+        'p_city': city,
+        'p_category_id': widget.categoryId,
+      });
+      final prodsRaw = List<Map<String, dynamic>>.from(prods as List);
+      // Hydrate images (the RPC returns product columns only).
+      final imgs = prodsRaw.isEmpty
+          ? <Map<String, dynamic>>[]
+          : List<Map<String, dynamic>>.from(await client
+              .from('product_images')
+              .select()
+              .inFilter(
+                  'product_id', prodsRaw.map((p) => p['id'] as String).toList()));
+      final imagesByProduct = <String, List<Map<String, dynamic>>>{};
+      for (final im in imgs) {
+        (imagesByProduct[im['product_id'] as String] ??= []).add(im);
+      }
       if (mounted) {
         setState(() {
           _category = cat;
           _subcategories = List<Map<String, dynamic>>.from(subs as List);
-          _products = List<Map<String, dynamic>>.from(prods as List);
+          _products = prodsRaw;
           _loading = false;
         });
       }
