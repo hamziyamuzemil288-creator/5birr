@@ -4,6 +4,7 @@ name: Flutter CI
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: write
@@ -22,6 +23,9 @@ jobs:
         run: flutter create --platforms=android,ios .
 
       - name: Commit platform scaffolding if generated
+        # Only on main pushes: PR checkouts sit on a merge ref that cannot
+        # accept a push.
+        if: github.event_name == 'push'
         run: |
           if [ -z "$(git status --porcelain android/ ios/)" ]; then
             echo "No new platform files — skipping commit."
@@ -48,7 +52,15 @@ jobs:
         run: flutter analyze
         continue-on-error: true
 
+      # Phase 3 safety net: run the app test suite on every push/PR so a
+      # broken connection is caught in CI, not on the live dashboard. The
+      # connectivity checks live in connectivity-ci.yml (they need live
+      # Supabase secrets); this step runs the local unit/widget tests.
+      - name: Run tests
+        run: flutter test
+
       - name: Commit pubspec.lock if changed
+        if: github.event_name == 'push'
         run: |
           if [ -z "$(git status --porcelain pubspec.lock)" ]; then
             echo "pubspec.lock unchanged — skipping commit."

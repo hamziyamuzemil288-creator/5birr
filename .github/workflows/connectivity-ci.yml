@@ -1,0 +1,61 @@
+# 5BIRR / Aliob — Connectivity verification (Phase 3 safety net)
+name: Connectivity CI
+
+# Phase 3 of the money-flow / connections command: run the integration
+# verification suite on every push/PR so a broken connection is caught in
+# CI, not discovered later on the live admin dashboard.
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  connectivity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Fork PRs cannot read repo secrets (expected and unavoidable) — mark
+      # the run explicitly instead of silently passing. Same-repo pushes and
+      # PRs always have the secrets and must not skip.
+      - name: Decide whether secrets are available
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run connectivity suite (live, read-only)
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -o pipefail
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL / SUPABASE_ANON_KEY secrets are not set (repo Settings -> Secrets and variables -> Actions). The connectivity safety net cannot run."
+            exit 1
+          fi
+          mkdir -p build
+          flutter test tools/integration_test/connectivity_test.dart \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+            | tee build/connectivity-report.txt
+
+      - name: Fork PR — connectivity check skipped
+        if: steps.gate.outputs.skip == 'true'
+        run: |
+          echo "::notice::Fork PR: live connectivity suite skipped (no secret access from forks). It will run on the maintainers' merge push."

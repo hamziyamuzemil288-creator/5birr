@@ -1,0 +1,109 @@
+// tools/integration_test/connectivity_test.dart
+//
+// Phase 3: integration-verification safety net (see CONNECTIONS.md).
+// Verifies the app's cross-actor connections end to end against the LIVE
+// Supabase project using READ-ONLY RPC assertions — it writes no app data.
+//
+// Run:   flutter test tools/integration_test/connectivity_test.dart \
+//          --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
+// CI:    .github/workflows/connectivity-ci.yml runs it on push/PR and fails
+//        the pipeline if any connection is broken.
+//
+// A missing SUPABASE_URL / SUPABASE_ANON_KEY is a HARD FAILURE (the safety
+// net must never silently pass), except on fork PRs where secrets are
+// unavailable; there the workflow skips with an explicit notice.
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase/supabase.dart';
+
+const _url = String.fromEnvironment('SUPABASE_URL');
+const _anonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+void main() {
+  if (_url.isEmpty || _anonKey.isEmpty) {
+    // Safety nets must never silently pass: fail loudly so CI surfaces the
+    // misconfiguration instead of reporting a green-but-meaningless run.
+    fail('SUPABASE_URL / SUPABASE_ANON_KEY missing. Supply them via '
+        '--dart-define (see CONNECTIONS.md).');
+  }
+
+  late final SupabaseClient client;
+
+  setUpAll(() {
+    client = SupabaseClient(_url, _anonKey);
+  });
+
+  Future<bool> ok(String fn) async => (await client.rpc(fn)) == true;
+
+  group('money: wallet ledger -> admin income (Phase 1)', () {
+    test('subscription scheduler is wired (pg_cron -> charge_due_subscriptions)',
+        () async {
+      expect(await ok('assert_subscription_scheduler_scheduled'), isTrue,
+          reason: 'The Phase 1 break: nothing scheduled the monthly fee, so '
+              'SUBSCRIPTION_FEE rows were never written and Total Income '
+              'stayed 0.00. If this fails, the pg_cron jobs are missing.');
+    });
+
+    test('wallet balances equal completed ledger totals (no drift)', () async {
+      expect(await ok('assert_income_ledger_consistent'), isTrue,
+          reason: 'A balance diverging from sum(net_amount) means some path '
+              'moved money without writing the ledger — the bug class that '
+              'produced a 0.00 Total Income.');
+    });
+
+    test('recent completed rides charged their transaction fee', () async {
+      expect(await ok('assert_recent_completed_rides_have_fees'), isTrue,
+          reason: 'transition_ride_status must charge the fee on COMPLETED; '
+              'a missing row means rides froze before completion (break #2).');
+    });
+
+    test('recent started/completed orders charged their transaction fee',
+        () async {
+      expect(await ok('assert_recent_started_orders_have_fees'), isTrue,
+          reason: 'transition_order_status must charge the fee on STARTED.');
+    });
+
+    test('recent approved recharges credited their wallets', () async {
+      expect(await ok('assert_recent_approved_recharges_credited'), isTrue,
+          reason: 'approve_wallet_recharge must write the RECHARGE ledger '
+              'row the income summary and wallet UI read.');
+    });
+  });
+
+  group('ride chain: claim -> progress -> fee (Phase 2 #5)', () {
+    test('transition function covers the live ARRIVED/TRIP_STARTED chain',
+        () async {
+      expect(await ok('assert_ride_transition_covers_chain'), isTrue,
+          reason: 'The live function previously raised UNEXPECTED_RIDE_STATUS '
+              'for ARRIVED/TRIP_STARTED, freezing rides before COMPLETED so '
+              'the ride fee never reached the ledger (break #2).');
+    });
+  });
+
+  group('staff attribution: actions -> performance view (Phase 2 #6)', () {
+    test('staff_performance uses the real ride ownership column', () async {
+      expect(await ok('assert_staff_performance_uses_claimed_by'), isTrue,
+          reason: 'ride_requests has no provider_id column — the old query '
+              'raised undefined-column and the staff performance view errored '
+              'for every staff member (break #3).');
+    });
+  });
+
+  group('city/GPS: signup city -> scoping (Phase 2 #2)', () {
+    test('profiles carry the city column the scoping helpers read', () async {
+      expect(await ok('assert_profiles_have_city'), isTrue,
+          reason: 'CityService writes profiles.city and the city-scoping '
+              'helpers read it; a missing column silently unscopes every '
+              'feed.');
+    });
+  });
+
+  group('user<->provider: order routing (Phase 2 #3)', () {
+    test('create_order_secure persists fulfillment + city', () async {
+      expect(await ok('assert_create_order_persists_fulfillment'), isTrue,
+          reason: 'Checkout fulfillment_mode/delivery_address and city '
+              'scoping must survive order creation, or provider queues and '
+              'delivery flows lose the data.');
+    });
+  });
+}
