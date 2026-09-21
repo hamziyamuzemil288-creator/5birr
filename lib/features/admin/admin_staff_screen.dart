@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/providers/auth_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -22,6 +23,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   bool _loading = true;
   String? _error;
   bool _isSuperAdmin = false;
+  /// One-time bootstrap: an ADMIN with no super admin yet may initialize
+  /// the staff program (create_staff self-links the first super admin).
+  bool _canBootstrap = false;
 
   static const _permissionOptions = {
     'sales_transactions': 'Sales & transactions',
@@ -59,9 +63,14 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
           .from('staff')
           .select()
           .order('created_at', ascending: false);
+      final staff = List<Map<String, dynamic>>.from(rows as List);
       if (!mounted) return;
+      final hasActiveSuper =
+          staff.any((s) => s['is_super_admin'] == true && s['is_active'] == true);
       setState(() {
-        _staff = List<Map<String, dynamic>>.from(rows as List);
+        _staff = staff;
+        _canBootstrap =
+            ref.read(authProvider).isAdmin && !_isSuperAdmin && !hasActiveSuper;
         _loading = false;
       });
     } catch (e) {
@@ -70,6 +79,75 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  /// One-time initialization of the staff program: the acting ADMIN creates
+  /// themselves as the first super admin (create_staff self-links their auth
+  /// user). Only offered when no active super admin exists.
+  Future<void> _bootstrapStaffProgram() async {
+    final nameController = TextEditingController(
+        text: Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] as String? ?? '');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Initialize staff program'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+                'You are the first admin. This creates your super-admin '
+                'staff record so you can add sub-admins with limited '
+                'permissions. This can only be done once.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(labelText: 'Your name *'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Initialize')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final name = nameController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Your name is required')));
+      return;
+    }
+    try {
+      final code =
+          'SA-' + DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
+      await Supabase.instance.client.rpc('create_staff', params: {
+        'p_name': name,
+        'p_staff_code': code,
+        'p_permissions': <String>[
+          'sales_transactions',
+          'registrations',
+          'category_management',
+          'support_chat',
+          'payment_verification',
+          'admin_history'
+        ],
+        'p_sales_target': 0,
+        'p_is_super_admin': true,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Staff program initialized — you are the super admin')));
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.toString())));
     }
   }
 
@@ -290,7 +368,43 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   ],
                 ))
               : _staff.isEmpty
-                  ? const Center(child: Text('No staff yet'))
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.group_outlined,
+                                size: 48, color: AppTheme.textMuted),
+                            const SizedBox(height: 12),
+                            const Text('No staff yet',
+                                style: TextStyle(color: AppTheme.textMuted)),
+                            if (_canBootstrap) ...[
+                              const SizedBox(height: 16),
+                              PrimaryButton(
+                                label: 'INITIALIZE STAFF PROGRAM',
+                                onPressed: _bootstrapStaffProgram,
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'One-time: makes you the super admin so you '
+                                'can add sub-admins with limited permissions.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                    fontSize: 12, color: AppTheme.textMuted),
+                              ),
+                            ] else ...[
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Ask the super admin to add staff members.',
+                                style: TextStyle(
+                                    fontSize: 12, color: AppTheme.textMuted),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    )
                   : RefreshIndicator(
                       onRefresh: _load,
                       child: ListView.builder(
