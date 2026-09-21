@@ -21,6 +21,9 @@ class _State extends State<UserRideRequestScreen> {
   final _pickupCtrl = TextEditingController();
   final _destCtrl = TextEditingController();
   Position? _pickupPos;
+  // Pickup fallback when GPS is unavailable: set by typing an address
+  // (geocoded on submit) or by picking a point on the map.
+  LatLng? _pickupManual;
   // Destination coordinates come from the map picker — nothing else sets
   // these, so a ride request cannot be submitted without picking a pin.
   LatLng? _destLatLng;
@@ -46,6 +49,7 @@ class _State extends State<UserRideRequestScreen> {
       if (mounted) setState(() => _locStatus = r.status);
       if (r.success) {
         _pickupPos = r.position;
+        _pickupManual = null; // GPS re-take clears any manual override
         _pickupCtrl.text = 'Current Location';
       }
       // Load vehicle categories
@@ -66,14 +70,67 @@ class _State extends State<UserRideRequestScreen> {
     }
   }
 
+  /// Effective pickup point: the latest explicit choice wins — a typed or
+  /// map-picked pickup overrides an earlier GPS fix; "Use current location"
+  /// clears the manual override. Null until one is set.
+  LatLng? get _pickupPoint =>
+      _pickupManual ??
+      (_pickupPos != null
+          ? LatLng(_pickupPos!.latitude, _pickupPos!.longitude)
+          : null);
+
   /// Initial map center for the picker: current pin, else GPS pickup,
   /// else a sensible default (Addis Ababa).
   LatLng _initialMapCenter() {
     if (_destLatLng != null) return _destLatLng!;
-    if (_pickupPos != null) {
-      return LatLng(_pickupPos!.latitude, _pickupPos!.longitude);
-    }
+    if (_pickupPoint != null) return _pickupPoint!;
     return const LatLng(9.03, 38.74); // Addis Ababa, Ethiopia
+  }
+
+  Future<void> _pickPickupOnMap() async {
+    final picked = await Navigator.of(context).push<LatLng>(
+      MaterialPageRoute(
+        builder: (_) => _MapPickerScreen(
+          initialCenter: _initialMapCenter(),
+          title: 'Pick Pickup Location',
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _pickupManual = picked;
+      _error = null;
+    });
+    _pickupCtrl.text = _formatCoords(picked);
+    // Reverse geocode into a readable label (best-effort, same as dest).
+    try {
+      final placemarks = await placemarkFromCoordinates(
+          picked.latitude, picked.longitude);
+      if (!mounted) return;
+      final address =
+          _formatPlacemark(placemarks.isNotEmpty ? placemarks.first : null);
+      if (address.isNotEmpty) _pickupCtrl.text = address;
+    } catch (_) {
+      // Coordinate text remains as the label.
+    }
+  }
+
+  /// Geocode a typed pickup address. Returns true when a coordinate was
+  /// found and stored in [_pickupManual].
+  Future<bool> _geocodeTypedPickup() async {
+    final text = _pickupCtrl.text.trim();
+    if (text.isEmpty) return false;
+    try {
+      final locations = await locationFromAddress(text);
+      if (locations.isEmpty) return false;
+      final loc = locations.first;
+      if (!mounted) return true;
+      setState(() =>
+          _pickupManual = LatLng(loc.latitude, loc.longitude));
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   String _formatCoords(LatLng p) =>
@@ -127,9 +184,15 @@ class _State extends State<UserRideRequestScreen> {
   }
 
   Future<void> _submit() async {
-    if (_pickupPos == null) {
-      setState(() => _error = 'Pickup location is required');
-      return;
+    // No GPS fix yet? Try the typed address before giving up.
+    if (_pickupPoint == null) {
+      final found = await _geocodeTypedPickup();
+      if (!mounted) return;
+      if (!found) {
+        setState(() => _error =
+            'Pickup location is required — use current location, type an address, or pick on the map');
+        return;
+      }
     }
     if (_destLatLng == null) {
       setState(() => _error = 'Destination is required');
@@ -141,8 +204,8 @@ class _State extends State<UserRideRequestScreen> {
     });
     try {
       await RideService.instance.createRideRequest(
-        pickupLat: _pickupPos!.latitude,
-        pickupLng: _pickupPos!.longitude,
+        pickupLat: _pickupPoint!.latitude,
+        pickupLng: _pickupPoint!.longitude,
         destLat: _destLatLng!.latitude,
         destLng: _destLatLng!.longitude,
         pickupText: _pickupCtrl.text,
@@ -198,7 +261,9 @@ class _State extends State<UserRideRequestScreen> {
                     hint: 'Tap to use current location',
                   ),
                   const SizedBox(height: 4),
-                  TextButton.icon(
+                  Row(
+                    children: [
+                      TextButton.icon(
                     onPressed: () async {
                       final r =
                           await LocationService.instance
@@ -206,7 +271,10 @@ class _State extends State<UserRideRequestScreen> {
                       if (!mounted) return;
                       setState(() => _locStatus = r.status);
                       if (r.success) {
-                        setState(() => _pickupPos = r.position);
+                        setState(() {
+                          _pickupPos = r.position;
+                          _pickupManual = null;
+                        });
                         _pickupCtrl.text = 'Current Location';
                       } else if (r.status == LocationStatus.deniedForever ||
                           r.status == LocationStatus.serviceDisabled) {
@@ -220,7 +288,15 @@ class _State extends State<UserRideRequestScreen> {
                     icon: const Icon(Icons.my_location, size: 16),
                     label: const Text('Use current location'),
                   ),
-                  if (_pickupPos == null &&
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: _pickPickupOnMap,
+                        icon: const Icon(Icons.map_outlined, size: 16),
+                        label: const Text('Pick on map'),
+                      ),
+                    ],
+                  ),
+                  if (_pickupPoint == null &&
                       (_locStatus == LocationStatus.deniedForever ||
                           _locStatus == LocationStatus.serviceDisabled))
                     const Padding(
@@ -327,7 +403,9 @@ class _State extends State<UserRideRequestScreen> {
 /// Drag the map and tap to drop a pin; confirm returns the picked [LatLng].
 class _MapPickerScreen extends StatefulWidget {
   final LatLng initialCenter;
-  const _MapPickerScreen({super.key, required this.initialCenter});
+  final String title;
+  const _MapPickerScreen(
+      {super.key, required this.initialCenter, this.title = 'Pick Destination'});
 
   @override
   State<_MapPickerScreen> createState() => _MapPickerScreenState();
@@ -339,7 +417,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Pick Destination')),
+      appBar: AppBar(title: Text(widget.title)),
       body: Stack(
         children: [
           FlutterMap(

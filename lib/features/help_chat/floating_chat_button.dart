@@ -3,13 +3,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/providers/auth_provider.dart';
+import '../../routing/app_router.dart' show appRouterProvider;
 
 /// Draggable floating chat bubble, visible on every signed-in screen.
+///
+/// Rendered declaratively in a Stack layered above the route content
+/// (`MaterialApp.builder` wraps the Router's Navigator), so no imperative
+/// Overlay bookkeeping is needed — the bubble simply exists whenever
+/// [_visibleFor] says it should.
 ///
 /// - Drag to reposition anywhere on screen; clamped inside safe areas and
 ///   clear of system nav bars.
 /// - Position persists for the current app session (in-memory only).
-/// - Sits at the top of the global Overlay, above all route content.
 /// - Tap opens the in-app help chat at /help.
 class FloatingChatOverlay extends ConsumerStatefulWidget {
   const FloatingChatOverlay({super.key, this.child});
@@ -22,29 +27,18 @@ class FloatingChatOverlay extends ConsumerStatefulWidget {
 }
 
 class _FloatingChatOverlayState extends ConsumerState<FloatingChatOverlay> {
-  OverlayEntry? _entry;
-
-  @override
-  void dispose() {
-    _entry?.remove();
-    _entry = null;
-    super.dispose();
-  }
-
   /// Routes where the bubble must never appear: auth/onboarding/splash
   /// screens, the chat screen itself, and the full-screen live ride map
   /// (chat stays reachable there via Profile → Help & Support).
-  bool _visibleFor(BuildContext context) {
-    final auth = ref.read(authProvider);
+  bool _visibleFor(GoRouter router, AuthState auth) {
     if (!auth.isAuthenticated || auth.isAdmin) return false;
 
-    final String loc;
+    String loc;
     try {
-      loc = GoRouter.of(context)
-          .routerDelegate
-          .currentConfiguration
-          .uri
-          .toString();
+      // The builder's context sits ABOVE the Router widget, so Inherited
+      // lookups (GoRouter.of) fail here. Use the router instance directly —
+      // its delegate's current match list is the same source of truth.
+      loc = router.routerDelegate.currentConfiguration.uri.toString();
     } catch (_) {
       return false;
     }
@@ -68,26 +62,23 @@ class _FloatingChatOverlayState extends ConsumerState<FloatingChatOverlay> {
     return true;
   }
 
-  void _syncEntry(BuildContext context) {
-    final visible = _visibleFor(context);
-    if (visible && _entry == null) {
-      final entry = OverlayEntry(builder: (_) => const _DraggableChatBubble());
-      _entry = entry;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _entry == entry) {
-          Overlay.of(context, rootOverlay: true).insert(entry);
-        }
-      });
-    } else if (!visible && _entry != null) {
-      _entry!.remove();
-      _entry = null;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    _syncEntry(context);
-    return widget.child ?? const SizedBox.shrink();
+    final router = ref.watch(appRouterProvider);
+    final auth = ref.watch(authProvider);
+
+    return Stack(
+      children: [
+        // The MaterialApp's entire content (Router → Navigator → page).
+        // Keyed by the router so the element survives page transitions
+        // without being rebuilt from scratch.
+        KeyedSubtree(
+          key: ValueKey(router.hashCode),
+          child: widget.child ?? const SizedBox.shrink(),
+        ),
+        if (_visibleFor(router, auth)) const _DraggableChatBubble(),
+      ],
+    );
   }
 }
 
