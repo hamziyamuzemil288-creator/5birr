@@ -192,6 +192,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         TextEditingController(text: existing?['staff_code'] as String? ?? '');
     final targetController = TextEditingController(
         text: existing?['sales_target']?.toString() ?? '0');
+    final emailController = TextEditingController();
     final selected = ((existing?['permissions'] as List?) ?? [])
         .map((e) => e.toString())
         .toList();
@@ -242,6 +243,21 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       const InputDecoration(labelText: 'Sales target (ETB)'),
                 ),
                 const SizedBox(height: 12),
+                if (existing == null || existing?['user_id'] == null) ...[
+                  TextField(
+                    controller: emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: InputDecoration(
+                      labelText: existing == null
+                          ? 'Sign-in email (optional)'
+                          : 'Sign-in email *',
+                      helperText: existing == null
+                          ? 'The account this staff member signs in with'
+                          : 'This staff entry is not linked to an account yet',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 const Text('Branch', style: AppTheme.sectionHeader),
                 const SizedBox(height: 4),
                 SegmentedButton<String>(
@@ -332,16 +348,27 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     try {
                       final client = Supabase.instance.client;
                       if (existing == null) {
-                        await client.rpc('create_staff', params: {
-                          'p_name': nameController.text.trim(),
-                          'p_staff_code': codeController.text.trim(),
-                          'p_permissions': selected,
-                          'p_sales_target':
-                              double.tryParse(targetController.text) ?? 0,
-                          'p_is_super_admin': isSuper,
-                          'p_branch': isSuper ? 'ADMIN' : branch,
-                          'p_assigned_categories': selectedCats,
-                        });
+                        final created = await client.rpc('create_staff',
+                            params: {
+                              'p_name': nameController.text.trim(),
+                              'p_staff_code': codeController.text.trim(),
+                              'p_permissions': selected,
+                              'p_sales_target':
+                                  double.tryParse(targetController.text) ?? 0,
+                              'p_is_super_admin': isSuper,
+                              'p_branch': isSuper ? 'ADMIN' : branch,
+                              'p_assigned_categories': selectedCats,
+                            }) as Map<String, dynamic>;
+                        // Attach the sign-in account immediately when an
+                        // email was given (link_staff_user enforces the
+                        // same manage matrix server-side).
+                        final email = emailController.text.trim();
+                        if (email.isNotEmpty) {
+                          await client.rpc('link_staff_user', params: {
+                            'p_staff_id': created['id'],
+                            'p_email': email,
+                          });
+                        }
                       } else {
                         await client.rpc('update_staff', params: {
                           'p_staff_id': existing['id'],
@@ -351,6 +378,13 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                               double.tryParse(targetController.text) ?? 0,
                           'p_assigned_categories': selectedCats,
                         });
+                        final email = emailController.text.trim();
+                        if (email.isNotEmpty) {
+                          await client.rpc('link_staff_user', params: {
+                            'p_staff_id': existing['id'],
+                            'p_email': email,
+                          });
+                        }
                       }
                       if (sheetContext.mounted) Navigator.pop(sheetContext, true);
                     } catch (e) {
@@ -372,6 +406,58 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       ),
     );
     if (result == true) _load();
+  }
+
+  /// Attach a staff record to a real account by email — the linked user
+  /// then signs in and reaches the admin panel with the row's permissions.
+  Future<void> _linkAccount(Map<String, dynamic> staff) async {
+    final emailController = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Link ${staff['name']} to an account'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+                'Enter the email of the account this staff member will sign '
+                'in with. They must already be registered.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: emailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(labelText: 'Email *'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Link')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final email = emailController.text.trim();
+    if (email.isEmpty) return;
+    try {
+      await Supabase.instance.client.rpc('link_staff_user', params: {
+        'p_staff_id': staff['id'],
+        'p_email': email,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$email can now sign in as staff')));
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    }
   }
 
   Future<void> _revoke(Map<String, dynamic> staff) async {
@@ -579,11 +665,16 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   if (v == 'edit') _openEditor(s);
                                   if (v == 'perf') _showPerformance(s);
                                   if (v == 'revoke') _revoke(s);
+                                  if (v == 'link') _linkAccount(s);
                                 },
                                 itemBuilder: (_) => [
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
+                                  if (_canManage(s) && s['user_id'] == null)
+                                    const PopupMenuItem(
+                                        value: 'link',
+                                        child: Text('Link account')),
                                   if (_canManage(s))
                                     const PopupMenuItem(
                                         value: 'edit',
