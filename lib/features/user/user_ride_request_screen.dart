@@ -430,8 +430,6 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 // Android identifies tile requests by the app's package name.
-                // TODO: replace with the real applicationId once the
-                // android/app/build.gradle scaffold exists in this repo.
                 userAgentPackageName: 'com.amistbirr.myapp',
               ),
               if (_picked != null)
