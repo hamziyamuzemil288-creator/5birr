@@ -971,8 +971,9 @@ BEGIN
 END;
 $$;
 
+-- One GRANT covers 4-arg calls too: defaulted params live on the function
+-- itself (no overload), so a 4-type GRANT here would raise 42883.
 GRANT EXECUTE ON FUNCTION public.calculate_fare_estimate(double precision, double precision, double precision, double precision, uuid) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.calculate_fare_estimate(double precision, double precision, double precision, double precision) TO authenticated;
 
 -- create_ride_request restated (same name/signature/posture as 0011):
 -- + fare stamping from calculate_fare_estimate
