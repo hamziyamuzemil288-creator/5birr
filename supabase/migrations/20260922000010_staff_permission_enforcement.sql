@@ -31,7 +31,9 @@
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.staff_has_permission(
   p_user_id uuid DEFAULT auth.uid(),
-  p_permission text
+  -- A param after one with a default must also have one (42P13); the NULL
+  -- guard in the body fails closed, so an omitted permission never grants.
+  p_permission text DEFAULT NULL
 )
 RETURNS boolean
 LANGUAGE sql
@@ -39,7 +41,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT EXISTS (
+  SELECT p_permission IS NOT NULL AND EXISTS (
     SELECT 1 FROM public.staff
     WHERE user_id = p_user_id
       AND is_active

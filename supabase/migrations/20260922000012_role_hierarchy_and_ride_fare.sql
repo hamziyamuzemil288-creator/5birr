@@ -114,12 +114,14 @@ $$;
 -- OR this in everywhere it is used.
 CREATE OR REPLACE FUNCTION public.staff_has_permission(
   p_user_id uuid DEFAULT auth.uid(),
-  p_permission text
+  -- A param after one with a default must also have one (42P13); the NULL
+  -- guard in the body fails closed, so an omitted permission never grants.
+  p_permission text DEFAULT NULL
 )
 RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
 AS $$
-  SELECT EXISTS (
+  SELECT p_permission IS NOT NULL AND EXISTS (
     SELECT 1 FROM public.staff
     WHERE user_id = p_user_id
       AND is_active
@@ -400,6 +402,57 @@ BEGIN
   RETURN v_staff;
 END;
 $$;
+
+-- Attach a staff record to a real account by email. Without this, only the
+-- bootstrap rows are usable — sub-admins could never sign in with their
+-- permissions. The linked user gains the app-level ADMIN role (the router
+-- gate); revoke_staff removes it again. One staff row per user.
+CREATE OR REPLACE FUNCTION public.link_staff_user(
+  p_staff_id uuid,
+  p_email text
+)
+RETURNS public.staff
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  v_staff public.staff;
+  v_user_id uuid;
+BEGIN
+  IF NOT public.can_manage_staff(p_staff_id, auth.uid()) THEN
+    RAISE EXCEPTION 'INSUFFICIENT_PERMISSION_TO_MANAGE_STAFF';
+  END IF;
+
+  SELECT id INTO v_user_id FROM auth.users
+    WHERE lower(email) = lower(trim(p_email))
+    LIMIT 1;
+  IF v_user_id IS NULL THEN
+    RAISE EXCEPTION 'NO_USER_WITH_THAT_EMAIL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.staff WHERE user_id = v_user_id AND id <> p_staff_id
+  ) THEN
+    RAISE EXCEPTION 'USER_ALREADY_LINKED_TO_STAFF';
+  END IF;
+
+  UPDATE public.staff SET user_id = v_user_id, updated_at = now()
+  WHERE id = p_staff_id
+  RETURNING * INTO v_staff;
+  IF v_staff.id IS NULL THEN
+    RAISE EXCEPTION 'STAFF_NOT_FOUND';
+  END IF;
+
+  INSERT INTO public.user_roles (user_id, role)
+  VALUES (v_user_id, 'ADMIN')
+  ON CONFLICT (user_id, role) DO NOTHING;
+
+  PERFORM public.log_admin_action(auth.uid(), 'STAFF_USER_LINKED', v_staff.id, 'staff', NULL,
+    '{}', jsonb_build_object('linked_user', v_user_id));
+  RETURN v_staff;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_staff_user(uuid, text) TO authenticated;
 
 -- Performance view: self, super admin, or CEO may read a row.
 CREATE OR REPLACE FUNCTION public.staff_performance(p_staff_id uuid)
