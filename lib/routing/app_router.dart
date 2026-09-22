@@ -8,6 +8,7 @@ import '../features/auth/signup_screen.dart' show SignupScreen, SignupRole;
 import '../features/auth/role_selection_screen.dart';
 import '../features/auth/admin_login_screen.dart';
 import '../features/auth/terms_policy_screen.dart';
+import '../features/auth/update_password_screen.dart';
 import '../features/user/user_dashboard.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
@@ -115,7 +116,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isAuthRoute = loc == '/login' ||
           loc == '/role-select' ||
           loc == '/admin-login' ||
-          loc == '/terms';
+          loc == '/terms' ||
+          loc == '/update-password';
       final isSignupRoute = loc.startsWith('/signup/');
       final isApprovalRoute = _isApprovalRoute(loc);
 
@@ -133,6 +135,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       if (authState.profile == null || authState.roles.isEmpty) {
         refreshNotifier.scheduleProfileRetry();
         return null;
+      }
+
+      // ── Password recovery — checked BEFORE every other gate ──
+      // A recovery session is a real session but must only be used to set
+      // a new password. Send them to /update-password from anywhere else;
+      // clear the flag the moment the new password is saved.
+      if (authState.isRecoverySession && loc != '/update-password') {
+        return '/update-password';
       }
 
       // ── Pending / rejected status (checked BEFORE dashboard redirect) ──
@@ -186,6 +196,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(path: '/admin-login', builder: (_, __) => const AdminLoginScreen()),
+      GoRoute(
+        path: '/update-password',
+        builder: (_, __) => const UpdatePasswordScreen(),
+      ),
       GoRoute(
         path: '/terms',
         builder: (_, s) => TermsPolicyScreen(returnToSignup: s.extra == true),

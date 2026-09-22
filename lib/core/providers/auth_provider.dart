@@ -20,6 +20,10 @@ class AuthState {
   final bool isLoading;
   final String? error;
 
+  /// True while the session came from a password-recovery link — the
+  /// router must send the user to /update-password before anything else.
+  final bool isRecoverySession;
+
   const AuthState({
     this.user,
     this.profile,
@@ -27,6 +31,7 @@ class AuthState {
     this.primaryRole,
     this.isLoading = true,
     this.error,
+    this.isRecoverySession = false,
   });
 
   AuthState copyWith({
@@ -36,6 +41,7 @@ class AuthState {
     AppUserRole? primaryRole,
     bool? isLoading,
     String? error,
+    bool? isRecoverySession,
     bool clearError = false,
   }) {
     return AuthState(
@@ -45,6 +51,7 @@ class AuthState {
       primaryRole: primaryRole ?? this.primaryRole,
       isLoading: isLoading ?? this.isLoading,
       error: clearError ? null : (error ?? this.error),
+      isRecoverySession: isRecoverySession ?? this.isRecoverySession,
     );
   }
 
@@ -86,6 +93,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
         state = const AuthState(isLoading: false);
       } else if (event == AuthChangeEvent.tokenRefreshed && session != null) {
         await _loadUserProfile(session.user);
+      } else if (event == AuthChangeEvent.passwordRecovery &&
+          session != null) {
+        // The password-reset email was opened on this device. The session
+        // is real but must only be used to set a new password — flag the
+        // state so the router lands on /update-password.
+        await _loadUserProfile(session.user, isRecovery: true);
       }
     });
 
@@ -98,7 +111,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<void> _loadUserProfile(User user) async {
+  Future<void> _loadUserProfile(User user, {bool isRecovery = false}) async {
     // Bump the sequence so an older in-flight call cannot overwrite our result.
     final seq = ++_profileLoadSeq;
 
@@ -155,6 +168,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
         primaryRole: primaryRole,
         isLoading: false,
         error: null,
+        // Keeps the recovery flag across later token refreshes, and only
+        // ever turns it on here (copyWith keeps the previous value).
+        isRecoverySession: isRecovery ? true : null,
       );
 
       // Presence heartbeat: while a provider is signed in and the app is
@@ -301,6 +317,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
+  /// Sends the password-reset email for [email].
+  ///
+  /// The link opens the app through the Supabase deep-link scheme
+  /// (registered in AndroidManifest.xml) and fires AuthChangeEvent
+  /// .passwordRecovery, which flags the session and sends the user to
+  /// /update-password. Always completes without telling the caller
+  /// whether the address exists (account-enumeration safe).
+  Future<void> resetPassword({required String email}) async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      await _svc.client.auth.resetPasswordForEmail(
+        email,
+        redirectTo: 'io.supabase.com.amistbirr.myapp://login-callback/',
+      );
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+      rethrow;
+    }
+    state = state.copyWith(isLoading: false);
+  }
+
   /// Sign in with email + password.
   /// Profile loading is handled exclusively by the _authSub listener
   /// when AuthChangeEvent.signedIn fires — no need to call
@@ -321,6 +358,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
       state = state.copyWith(isLoading: false, error: e.toString());
       rethrow;
     }
+  }
+
+  /// Clear the recovery-session flag after the new password was saved,
+  /// so the router resumes the normal authenticated flow.
+  void clearRecoveryFlag() {
+    if (!state.isRecoverySession) return;
+    state = state.copyWith(isRecoverySession: false);
   }
 
   /// Sign out.

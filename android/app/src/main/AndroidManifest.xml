@@ -31,6 +31,17 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Supabase Auth email deep links (password recovery). The
+                 scheme "io.supabase." + applicationId is supabase_flutter's
+                 default; resetPasswordForEmail(redirectTo:) builds links in
+                 this shape and AuthChangeEvent.passwordRecovery fires when
+                 the app opens via this filter. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="io.supabase.com.amistbirr.myapp"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

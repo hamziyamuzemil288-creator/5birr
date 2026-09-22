@@ -66,6 +66,114 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return 'Login failed: $raw';
   }
 
+  /// Password reset: ask for the email, send the recovery link. The link
+  /// opens the app (deep link in AndroidManifest) and lands the user on
+  /// /update-password via the passwordRecovery auth event.
+  void _showForgotPasswordSheet() {
+    final emailController =
+        TextEditingController(text: _emailController.text.trim());
+    var sending = false;
+    var sent = false;
+    String? sheetError;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheetState) => Padding(
+          padding: EdgeInsets.fromLTRB(
+              24, 24, 24, 24 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Reset Password', style: AppTheme.heading),
+              const SizedBox(height: 8),
+              const Text(
+                'Enter your account email and we will send you a link to '
+                'set a new password.',
+                style: AppTheme.bodyMedium,
+              ),
+              const SizedBox(height: 20),
+              BirrTextField(
+                label: 'Email',
+                hint: 'you@example.com',
+                controller: emailController,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.done,
+              ),
+              if (sheetError != null) ...[
+                const SizedBox(height: 12),
+                Text(sheetError!,
+                    style:
+                        const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+              if (sent) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle_outline,
+                        color: AppTheme.success, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Reset link sent — check your email (and the spam '
+                        'folder). The link opens this app.',
+                        style: const TextStyle(
+                            fontSize: 13, color: AppTheme.success),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: PrimaryButton(
+                  label: sent ? 'RESEND LINK' : 'SEND RESET LINK',
+                  isLoading: sending,
+                  onPressed: () async {
+                    final email = emailController.text.trim();
+                    if (email.isEmpty ||
+                        !email.contains('@') ||
+                        !email.contains('.')) {
+                      setSheetState(() =>
+                          sheetError = 'Enter a valid email address');
+                      return;
+                    }
+                    setSheetState(() {
+                      sending = true;
+                      sheetError = null;
+                    });
+                    try {
+                      await ref
+                          .read(authProvider.notifier)
+                          .resetPassword(email: email);
+                      setSheetState(() {
+                        sending = false;
+                        sent = true;
+                      });
+                    } catch (_) {
+                      setSheetState(() {
+                        sending = false;
+                        sheetError = 'Could not send the email. Check your '
+                            'connection and try again.';
+                      });
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -181,9 +289,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         Align(
                           alignment: Alignment.centerRight,
                           child: TextButton(
-                            onPressed: () {
-                              // TODO: Password reset flow
-                            },
+                            onPressed: _showForgotPasswordSheet,
                             child: const Text('Forgot Password?'),
                           ),
                         ),

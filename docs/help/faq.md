@@ -26,6 +26,18 @@ once you're approved, you can sign in and start right away.
 Sometimes a photo is unreadable or details don't match. You'll get a
 notification explaining what to fix, and you can resubmit your documents.
 
+**What if my application was rejected?**
+You'll see the reviewer's note on the rejection screen. Tap **Correct &
+Resubmit** to send your application back to the review queue — you can
+add a short note for the reviewers. If you think the rejection was a
+mistake, tap **Contact Support** and our team will help.
+
+**I forgot my password. How do I reset it?**
+On the sign-in screen tap **Forgot Password?**, enter your email, and
+we'll send you a reset link. Opening the link takes you straight to a
+screen where you set a new password. If the email doesn't arrive, check
+your spam folder and try again in a few minutes.
+
 **Can I use the same account as both a customer and a provider?**
 One account is one role. If you also want to sell or provide rides, register
 a provider account with the same details.
