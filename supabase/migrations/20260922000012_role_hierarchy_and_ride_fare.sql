@@ -912,11 +912,21 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Admin-configurable defaults (per-category overrides live in
 -- categories.metadata as {"base_fare":..,"per_km":..,"minimum_fare":..}).
+-- SETTINGS GUARD BYPASS (same session-local pattern as 0038): the settings
+-- trigger calls is_admin() -> auth.uid(), which is NULL on a migration
+-- connection (no JWT), so the guard would fire for the owner itself. Disable
+-- the trigger for this transaction only; app-level writes stay guarded.
+BEGIN;
+ALTER TABLE public.system_settings DISABLE TRIGGER trg_system_settings_security;
+
 INSERT INTO system_settings (key, value, description) VALUES
   ('ride_base_fare', '50', 'Ride: base fare in ETB applied to every trip'),
   ('ride_per_km', '20', 'Ride: charge per kilometer in ETB'),
   ('ride_minimum_fare', '80', 'Ride: minimum fare in ETB')
 ON CONFLICT (key) DO NOTHING;
+
+ALTER TABLE public.system_settings ENABLE TRIGGER trg_system_settings_security;
+COMMIT;
 
 ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
 
