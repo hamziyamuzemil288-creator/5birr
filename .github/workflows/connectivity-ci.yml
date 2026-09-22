@@ -58,6 +58,29 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # TEMPORARY DIAGNOSTIC: fingerprint the secrets (lengths, prefixes,
+      # hash prefixes — never full values) and probe the API from the runner
+      # so a bad/rotated key is distinguishable from a bad URL. Remove once
+      # the 404 diagnosis is confirmed.
+      - name: Secret fingerprint + runner-side API probe (diagnostic)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          fp() { printf 'len=%s sha256=%s first6=%s last4=%s\n' "${#1}" "$(printf '%s' "$1" | sha256sum | cut -c1-12)" "${1:0:6}" "${1: -4}"; }
+          echo "SUPABASE_URL:"; fp "$SUPABASE_URL"; echo "  value-shape: $SUPABASE_URL"
+          echo "SUPABASE_ANON_KEY:"; fp "$SUPABASE_ANON_KEY"
+          case "$SUPABASE_ANON_KEY" in
+            eyJ*) echo "  format: legacy JWT";;
+            sb_publishable_*) echo "  format: publishable";;
+            sb_secret_*) echo "  format: SECRET KEY IN ANON SLOT (wrong)";;
+            *) echo "  format: UNRECOGNIZED";;
+          esac
+          echo "--- runner-side probes (with secret as-is) ---"
+          curl -s -o /tmp/b1 -w 'rest rpc [%{http_code}] ' -X POST "$SUPABASE_URL/rest/v1/rpc/assert_profiles_have_city" -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' -d '{}'; head -c 200 /tmp/b1; echo
+          curl -s -o /tmp/b2 -w 'auth token [%{http_code}] ' -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' -d '{"email":"probe@invalid.invalid","password":"x"}'; head -c 120 /tmp/b2; echo
+
       - name: Run connectivity suite (live, read-only)
         if: steps.gate.outputs.skip == 'false'
         env:
