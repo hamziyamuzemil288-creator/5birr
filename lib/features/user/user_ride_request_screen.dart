@@ -32,13 +32,65 @@ class _State extends State<UserRideRequestScreen> {
   List<Map<String, dynamic>> _vehicleCategories = [];
   bool _loading = true;
   bool _submitting = false;
+  bool _fareLoading = false;
+  String? _fareError;
+  double? _fareEstimate;
   String? _error;
   LocationStatus? _locStatus;
+
+  /// Latest inputs sent to calculate_fare_estimate — dedupes and skips
+  /// stale responses when the user changes points quickly.
+  (double, double, double, double, String?)? _fareRequestKey;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  /// Server-side fare (system_settings pricing, per-category overrides).
+  /// Fire-and-refresh: failures leave the estimate hidden, never block a
+  /// ride request — the server re-computes authoritatively on submit.
+  Future<void> _refreshFare() async {
+    final p = _pickupPoint;
+    final d = _destLatLng;
+    if (p == null || d == null) return;
+    final key = (p.latitude, p.longitude, d.latitude, d.longitude, _selectedVehicleCategory);
+    if (key == _fareRequestKey && _fareEstimate != null) return;
+    _fareRequestKey = key;
+    setState(() {
+      _fareLoading = true;
+      _fareError = null;
+    });
+    try {
+      final res = await Supabase.instance.client.rpc(
+        'calculate_fare_estimate',
+        params: {
+          'p_pickup_lat': p.latitude,
+          'p_pickup_lng': p.longitude,
+          'p_dest_lat': d.latitude,
+          'p_dest_lng': d.longitude,
+          if (_selectedVehicleCategory != null)
+            'p_vehicle_category_id': _selectedVehicleCategory,
+        },
+      );
+      // A newer request superseded this one — discard.
+      if (_fareRequestKey != key) return;
+      if (mounted) {
+        setState(() {
+          _fareEstimate = (res as num?)?.toDouble();
+          _fareLoading = false;
+        });
+      }
+    } catch (_) {
+      if (_fareRequestKey != key) return;
+      if (mounted) {
+        setState(() {
+          _fareLoading = false;
+          _fareError = 'Fare unavailable';
+        });
+      }
+    }
   }
 
   Future<void> _load() async {
@@ -102,6 +154,7 @@ class _State extends State<UserRideRequestScreen> {
       _error = null;
     });
     _pickupCtrl.text = _formatCoords(picked);
+    _refreshFare();
     // Reverse geocode into a readable label (best-effort, same as dest).
     try {
       final placemarks = await placemarkFromCoordinates(
@@ -151,6 +204,7 @@ class _State extends State<UserRideRequestScreen> {
     // Coordinates go in the text field immediately; the reverse-geocoded
     // address replaces them when (and if) it resolves.
     _destCtrl.text = _formatCoords(picked);
+    _refreshFare();
     await _reverseGeocode(picked);
   }
 
@@ -276,6 +330,7 @@ class _State extends State<UserRideRequestScreen> {
                           _pickupManual = null;
                         });
                         _pickupCtrl.text = 'Current Location';
+                        _refreshFare();
                       } else if (r.status == LocationStatus.deniedForever ||
                           r.status == LocationStatus.serviceDisabled) {
                         // Recovery path: jump straight to the OS settings.
@@ -363,6 +418,7 @@ class _State extends State<UserRideRequestScreen> {
                         onSelected: (_) {
                           setState(() => _selectedVehicleCategory =
                               selected ? null : c['id']);
+                          _refreshFare();
                         },
                         selectedColor: AppTheme.teal,
                         labelStyle: TextStyle(
@@ -371,7 +427,60 @@ class _State extends State<UserRideRequestScreen> {
                       );
                     }).toList(),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 16),
+                  // Fare estimate from the server's pricing engine (base +
+                  // per-km × distance, minimum enforced) — the same values
+                  // stamped onto the ride request.
+                  if (_fareLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Row(children: [
+                        SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('Estimating fare…',
+                            style:
+                                TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                      ]),
+                    )
+                  else if (_fareEstimate != null)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 4),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryGreen.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.payments_outlined,
+                              color: AppTheme.primaryGreen, size: 20),
+                          const SizedBox(width: 10),
+                          Text('Estimated fare',
+                              style: TextStyle(
+                                  fontSize: 13, color: AppTheme.textPrimary)),
+                          const Spacer(),
+                          Text(
+                            'ETB ${_fareEstimate!.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.primaryGreen),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (_fareError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(_fareError!,
+                          style: const TextStyle(
+                              fontSize: 12, color: AppTheme.textMuted)),
+                    ),
+                  const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
                     child: PrimaryButton(

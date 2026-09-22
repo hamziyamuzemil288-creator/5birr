@@ -6,11 +6,14 @@ import '../../core/providers/auth_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
-/// Phase 2: staff / sub-admin management.
+/// Staff / role-hierarchy management.
 ///
-/// Visible only to super admins (the super-admin flag lives on the staff
-/// row, enforced server-side by the create/update/revoke RPCs — hiding the
-/// UI is convenience, not the security boundary).
+/// Hierarchy (enforced server-side by the staff RPCs — hiding UI here is
+/// convenience, not the security boundary):
+///   CEO            top of both branches; only the CEO creates super admins
+///   Super Admin    ADMIN branch; monitors sub-admins, sees reports/expenses
+///   Me (owner)     ME branch; jointly controls sub-admins with Super Admin
+///   Sub-Admin      categorized; explicit permission list ∩ categories
 class AdminStaffScreen extends ConsumerStatefulWidget {
   const AdminStaffScreen({super.key});
 
@@ -20,13 +23,19 @@ class AdminStaffScreen extends ConsumerStatefulWidget {
 
 class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   List<Map<String, dynamic>> _staff = [];
+  List<Map<String, dynamic>> _categories = [];
   bool _loading = true;
   String? _error;
   bool _isSuperAdmin = false;
-  /// One-time bootstrap: an ADMIN with no super admin yet may initialize
-  /// the staff program (create_staff self-links the first super admin).
+  bool _isCeo = false;
+  /// One-time bootstrap: an ADMIN with neither CEO nor super admin yet may
+  /// initialize the hierarchy (create_staff self-links the top row).
   bool _canBootstrap = false;
+  bool _hasExistingProgram = false;
 
+  /// Permission vocabulary. The three `view_*` entries are the
+  /// reports / expenses / auth-log visibility the hierarchy spec adds;
+  /// action permissions stay as before.
   static const _permissionOptions = {
     'sales_transactions': 'Sales & transactions',
     'registrations': 'Registrations',
@@ -34,6 +43,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     'support_chat': 'Support / chat',
     'payment_verification': 'Payment verification',
     'admin_history': 'View admin history',
+    'view_reports': 'View reports',
+    'view_expenses': 'View expenses',
+    'view_auth_logs': 'View auth logs',
   };
 
   @override
@@ -53,24 +65,36 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       if (uid != null) {
         final me = await client
             .from('staff')
-            .select('is_super_admin')
+            .select('is_super_admin,is_ceo')
             .eq('user_id', uid)
             .eq('is_active', true)
             .maybeSingle();
         _isSuperAdmin = (me?['is_super_admin'] as bool?) ?? false;
+        _isCeo = (me?['is_ceo'] as bool?) ?? false;
       }
-      final rows = await client
-          .from('staff')
-          .select()
-          .order('created_at', ascending: false);
+      final rows = await client.from('staff').select().order('created_at');
       final staff = List<Map<String, dynamic>>.from(rows as List);
+      // Vehicle categories for sub-admin scope assignment.
+      List<Map<String, dynamic>> cats = [];
+      try {
+        final catRows = await client
+            .from('categories')
+            .select('id,name,sector')
+            .eq('is_active', true)
+            .order('sort_order');
+        cats = List<Map<String, dynamic>>.from(catRows as List);
+      } catch (_) {
+        // Category listing is optional for the editor; staff ops continue.
+      }
       if (!mounted) return;
       final hasActiveSuper =
           staff.any((s) => s['is_super_admin'] == true && s['is_active'] == true);
+      final hasCeo = staff.any((s) => s['is_ceo'] == true && s['is_active'] == true);
       setState(() {
         _staff = staff;
-        _canBootstrap =
-            ref.read(authProvider).isAdmin && !_isSuperAdmin && !hasActiveSuper;
+        _categories = cats;
+        _hasExistingProgram = hasActiveSuper || hasCeo;
+        _canBootstrap = ref.read(authProvider).isAdmin && !_hasExistingProgram;
         _loading = false;
       });
     } catch (e) {
@@ -82,23 +106,38 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
-  /// One-time initialization of the staff program: the acting ADMIN creates
-  /// themselves as the first super admin (create_staff self-links their auth
-  /// user). Only offered when no active super admin exists.
+  String _branchLabel(Map<String, dynamic> s) {
+    if (s['is_ceo'] == true) return 'CEO';
+    final branch = (s['branch'] as String?) ?? 'ADMIN';
+    if (s['is_super_admin'] == true) return 'Super Admin';
+    return branch == 'ME' ? 'Owner team' : 'Admin team';
+  }
+
+  IconData _branchIcon(Map<String, dynamic> s) {
+    if (s['is_ceo'] == true) return Icons.workspace_premium_outlined;
+    if (s['is_super_admin'] == true) return Icons.shield_outlined;
+    return ((s['branch'] as String?) ?? 'ADMIN') == 'ME'
+        ? Icons.badge_outlined
+        : Icons.support_agent_outlined;
+  }
+
+  /// One-time initialization of the hierarchy. The acting ADMIN becomes the
+  /// CEO (ME branch, owner row) — create_staff self-links their auth user.
   Future<void> _bootstrapStaffProgram() async {
     final nameController = TextEditingController(
         text: Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] as String? ?? '');
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Initialize staff program'),
+        title: const Text('Initialize role hierarchy'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-                'You are the first admin. This creates your super-admin '
-                'staff record so you can add sub-admins with limited '
-                'permissions. This can only be done once.'),
+                'You are the first admin. This creates your CEO (owner) '
+                'record at the top of the hierarchy so you can add a super '
+                'admin and categorized sub-admins. This can only be done '
+                'once.'),
             const SizedBox(height: 12),
             TextField(
               controller: nameController,
@@ -125,24 +164,19 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
     try {
       final code =
-          'SA-' + DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
+          'CEO-' + DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
       await Supabase.instance.client.rpc('create_staff', params: {
         'p_name': name,
         'p_staff_code': code,
-        'p_permissions': <String>[
-          'sales_transactions',
-          'registrations',
-          'category_management',
-          'support_chat',
-          'payment_verification',
-          'admin_history'
-        ],
+        'p_permissions': _permissionOptions.keys.toList(),
         'p_sales_target': 0,
-        'p_is_super_admin': true,
+        'p_is_super_admin': false,
+        'p_branch': 'ME',
+        'p_assigned_categories': <String>[],
       });
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Staff program initialized — you are the super admin')));
+          content: Text('Hierarchy initialized — you are the CEO')));
       _load();
     } catch (e) {
       if (!mounted) return;
@@ -161,7 +195,15 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     final selected = ((existing?['permissions'] as List?) ?? [])
         .map((e) => e.toString())
         .toList();
+    final selectedCats = ((existing?['assigned_categories'] as List?) ?? [])
+        .map((e) => e.toString())
+        .toList();
     bool isSuper = (existing?['is_super_admin'] as bool?) ?? false;
+    // Super Admin rows always live in the ADMIN branch; new entries default
+    // to the ADMIN branch, matching the pre-hierarchy behavior.
+    String branch = (existing?['branch'] as String?) ??
+        (isSuper ? 'ADMIN' : 'ADMIN');
+    final canSetSuper = _isCeo && existing == null;
 
     final result = await showModalBottomSheet<bool>(
       context: context,
@@ -173,98 +215,158 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         builder: (sheetContext, setSheetState) => Padding(
           padding: EdgeInsets.fromLTRB(
               20, 20, 20, MediaQuery.of(sheetContext).viewInsets.bottom + 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(existing == null ? 'Add staff' : 'Edit staff',
-                  style: AppTheme.sectionHeader),
-              const SizedBox(height: 16),
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Full name *'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: codeController,
-                enabled: existing == null,
-                decoration: const InputDecoration(
-                    labelText: 'Staff ID *', helperText: 'Unique, immutable'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: targetController,
-                keyboardType: TextInputType.number,
-                decoration:
-                    const InputDecoration(labelText: 'Sales target (ETB)'),
-              ),
-              const SizedBox(height: 12),
-              const Text('Permissions', style: AppTheme.sectionHeader),
-              ..._permissionOptions.entries.map(
-                (e) => CheckboxListTile(
-                  dense: true,
-                  title: Text(e.value, style: const TextStyle(fontSize: 13)),
-                  value: selected.contains(e.key),
-                  onChanged: (on) => setSheetState(() {
-                    on == true
-                        ? selected.add(e.key)
-                        : selected.remove(e.key);
-                  }),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(existing == null ? 'Add staff' : 'Edit staff',
+                    style: AppTheme.sectionHeader),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Full name *'),
                 ),
-              ),
-              CheckboxListTile(
-                dense: true,
-                title: const Text('Super admin (runs the staff program)',
-                    style: TextStyle(fontSize: 13)),
-                value: isSuper,
-                onChanged: (on) => setSheetState(() => isSuper = on ?? false),
-              ),
-              const SizedBox(height: 16),
-              PrimaryButton(
-                label: existing == null ? 'Create staff' : 'Save changes',
-                onPressed: () async {
-                  if (nameController.text.trim().isEmpty ||
-                      codeController.text.trim().isEmpty) {
-                    ScaffoldMessenger.of(sheetContext).showSnackBar(
-                      const SnackBar(
-                          content: Text('Name and staff ID are required')),
-                    );
-                    return;
-                  }
-                  try {
-                    final client = Supabase.instance.client;
-                    if (existing == null) {
-                      await client.rpc('create_staff', params: {
-                        'p_name': nameController.text.trim(),
-                        'p_staff_code': codeController.text.trim(),
-                        'p_permissions': selected,
-                        'p_sales_target':
-                            double.tryParse(targetController.text) ?? 0,
-                        'p_is_super_admin': isSuper,
-                      });
-                    } else {
-                      await client.rpc('update_staff', params: {
-                        'p_staff_id': existing['id'],
-                        'p_name': nameController.text.trim(),
-                        'p_permissions': selected,
-                        'p_sales_target':
-                            double.tryParse(targetController.text) ?? 0,
-                      });
-                    }
-                    if (sheetContext.mounted) Navigator.pop(sheetContext, true);
-                  } catch (e) {
-                    if (sheetContext.mounted) {
+                const SizedBox(height: 12),
+                TextField(
+                  controller: codeController,
+                  enabled: existing == null,
+                  decoration: const InputDecoration(
+                      labelText: 'Staff ID *', helperText: 'Unique, immutable'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: targetController,
+                  keyboardType: TextInputType.number,
+                  decoration:
+                      const InputDecoration(labelText: 'Sales target (ETB)'),
+                ),
+                const SizedBox(height: 12),
+                const Text('Branch', style: AppTheme.sectionHeader),
+                const SizedBox(height: 4),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                        value: 'ADMIN',
+                        label: Text('Admin'),
+                        icon: Icon(Icons.admin_panel_settings_outlined, size: 16)),
+                    ButtonSegment(
+                        value: 'ME',
+                        label: Text('Me'),
+                        icon: Icon(Icons.badge_outlined, size: 16)),
+                  ],
+                  selected: {branch},
+                  onSelectionChanged: canSetSuper || existing == null
+                      ? (sel) => setSheetState(() => branch = sel.first)
+                      : null,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Sub-admins in "Me" are jointly managed by you and the '
+                  'super admin. Sub-admins in "Admin" report to the super '
+                  'admin.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                ),
+                const SizedBox(height: 12),
+                const Text('Permissions', style: AppTheme.sectionHeader),
+                ..._permissionOptions.entries.map(
+                  (e) => CheckboxListTile(
+                    dense: true,
+                    title: Text(e.value, style: const TextStyle(fontSize: 13)),
+                    value: selected.contains(e.key),
+                    onChanged: (on) => setSheetState(() {
+                      on == true
+                          ? selected.add(e.key)
+                          : selected.remove(e.key);
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text('Assigned categories', style: AppTheme.sectionHeader),
+                const SizedBox(height: 4),
+                Text(
+                  'Empty = unrestricted. Sub-admins only act inside their '
+                  'categories.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                ),
+                ..._categories.map(
+                  (c) => CheckboxListTile(
+                    dense: true,
+                    title: Text('${c['name']}',
+                        style: const TextStyle(fontSize: 13)),
+                    subtitle: Text('${c['sector']}',
+                        style: const TextStyle(fontSize: 10)),
+                    value: selectedCats.contains(c['id']),
+                    onChanged: (on) => setSheetState(() {
+                      on == true
+                          ? selectedCats.add(c['id'] as String)
+                          : selectedCats.remove(c['id']);
+                    }),
+                  ),
+                ),
+                if (canSetSuper)
+                  CheckboxListTile(
+                    dense: true,
+                    title: const Text('Super admin (runs the staff program)',
+                        style: TextStyle(fontSize: 13)),
+                    subtitle: const Text('ADMIN branch only; created by the CEO',
+                        style: TextStyle(fontSize: 11)),
+                    value: isSuper,
+                    onChanged: (on) => setSheetState(() {
+                      isSuper = on ?? false;
+                      if (isSuper) branch = 'ADMIN';
+                    }),
+                  ),
+                const SizedBox(height: 16),
+                PrimaryButton(
+                  label: existing == null ? 'Create staff' : 'Save changes',
+                  onPressed: () async {
+                    if (nameController.text.trim().isEmpty ||
+                        codeController.text.trim().isEmpty) {
                       ScaffoldMessenger.of(sheetContext).showSnackBar(
-                        SnackBar(
-                            content: Text(e
-                                .toString()
-                                .replaceFirst('PostgrestException(', ''))),
+                        const SnackBar(
+                            content: Text('Name and staff ID are required')),
                       );
+                      return;
                     }
-                  }
-                },
-              ),
-            ],
+                    try {
+                      final client = Supabase.instance.client;
+                      if (existing == null) {
+                        await client.rpc('create_staff', params: {
+                          'p_name': nameController.text.trim(),
+                          'p_staff_code': codeController.text.trim(),
+                          'p_permissions': selected,
+                          'p_sales_target':
+                              double.tryParse(targetController.text) ?? 0,
+                          'p_is_super_admin': isSuper,
+                          'p_branch': isSuper ? 'ADMIN' : branch,
+                          'p_assigned_categories': selectedCats,
+                        });
+                      } else {
+                        await client.rpc('update_staff', params: {
+                          'p_staff_id': existing['id'],
+                          'p_name': nameController.text.trim(),
+                          'p_permissions': selected,
+                          'p_sales_target':
+                              double.tryParse(targetController.text) ?? 0,
+                          'p_assigned_categories': selectedCats,
+                        });
+                      }
+                      if (sheetContext.mounted) Navigator.pop(sheetContext, true);
+                    } catch (e) {
+                      if (sheetContext.mounted) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          SnackBar(
+                              content: Text(e
+                                  .toString()
+                                  .replaceFirst('PostgrestException(', ''))),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -345,11 +447,19 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
+  /// Only the CEO / Super Admin / owner may edit or revoke; the server
+  /// enforces the same matrix via can_manage_staff.
+  bool _canManage(Map<String, dynamic> s) {
+    if (!_isCeo && !_isSuperAdmin) return false;
+    if (s['is_ceo'] == true) return _isCeo; // only the CEO manages the CEO row
+    return s['is_active'] == true;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Staff / Sub-admins')),
-      floatingActionButton: _isSuperAdmin
+      appBar: AppBar(title: const Text('Roles & Staff')),
+      floatingActionButton: (_isCeo || _isSuperAdmin)
           ? FloatingActionButton.extended(
               onPressed: () => _openEditor(),
               icon: const Icon(Icons.person_add_alt),
@@ -382,13 +492,13 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                             if (_canBootstrap) ...[
                               const SizedBox(height: 16),
                               PrimaryButton(
-                                label: 'INITIALIZE STAFF PROGRAM',
+                                label: 'INITIALIZE ROLE HIERARCHY',
                                 onPressed: _bootstrapStaffProgram,
                               ),
                               const SizedBox(height: 8),
                               const Text(
-                                'One-time: makes you the super admin so you '
-                                'can add sub-admins with limited permissions.',
+                                'One-time: makes you the CEO so you can add '
+                                'a super admin and categorized sub-admins.',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                     fontSize: 12, color: AppTheme.textMuted),
@@ -396,7 +506,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                             ] else ...[
                               const SizedBox(height: 8),
                               const Text(
-                                'Ask the super admin to add staff members.',
+                                'Ask the CEO or super admin to add staff members.',
                                 style: TextStyle(
                                     fontSize: 12, color: AppTheme.textMuted),
                               ),
@@ -415,12 +525,22 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           final perms = ((s['permissions'] as List?) ?? [])
                               .map((e) => e.toString())
                               .toList();
+                          final cats = ((s['assigned_categories'] as List?) ?? [])
+                              .map((e) => e.toString())
+                              .toList();
+                          final catNames = cats
+                              .map((id) => _categories
+                                  .where((c) => c['id'] == id)
+                                  .map((c) => c['name'])
+                                  .join(', '))
+                              .where((n) => n.isNotEmpty)
+                              .join(', ');
                           return Card(
                             margin: const EdgeInsets.only(bottom: 10),
                             child: ListTile(
                               leading: Icon(
                                 s['is_active'] == true
-                                    ? Icons.badge_outlined
+                                    ? _branchIcon(s)
                                     : Icons.block_outlined,
                                 color: s['is_active'] == true
                                     ? AppTheme.primaryGreen
@@ -428,17 +548,32 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                               ),
                               title: Text('${s['name']}'
                                   '  ·  ${s['staff_code']}'),
-                              subtitle: Text(
-                                perms.isEmpty
-                                    ? 'No permissions'
-                                    : perms
-                                        .map((p) =>
-                                            _permissionOptions[p] ?? p)
-                                        .join(', '),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(_branchLabel(s),
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppTheme.teal)),
+                                  Text(
+                                    perms.isEmpty
+                                        ? 'No permissions'
+                                        : perms
+                                            .map((p) =>
+                                                _permissionOptions[p] ?? p)
+                                            .join(', '),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  if (catNames.isNotEmpty)
+                                    Text('Categories: $catNames',
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 11)),
+                                ],
                               ),
-                              isThreeLine: perms.length > 2,
+                              isThreeLine: true,
                               trailing: PopupMenuButton<String>(
                                 onSelected: (v) {
                                   if (v == 'edit') _openEditor(s);
@@ -449,11 +584,11 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
-                                  if (_isSuperAdmin && s['is_active'] == true)
+                                  if (_canManage(s))
                                     const PopupMenuItem(
                                         value: 'edit',
                                         child: Text('Edit')),
-                                  if (_isSuperAdmin && s['is_active'] == true)
+                                  if (_canManage(s))
                                     const PopupMenuItem(
                                         value: 'revoke',
                                         child: Text('Revoke')),
