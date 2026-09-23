@@ -710,14 +710,18 @@ class _ShopServiceToggle extends StatefulWidget {
 class _ShopServiceToggleState extends State<_ShopServiceToggle> {
   int _index = 0; // 0 = Shop, 1 = Service
 
+  static const _labels = ['Shop', 'Ride / Service'];
+
   @override
   Widget build(BuildContext context) {
-    // ToggleButtons lays its children out in an unbounded internal Row; the
-    // parent Row then overflows by a few px on narrow screens. Filling the
-    // available WIDTH only (fixed 34px height — never SizedBox.expand, which
-    // passes tight infinite-height constraints and throws inside the
-    // unbounded header) and sharing width equally between the segments lets
-    // the labels shrink instead of overflowing.
+    // Custom two-segment toggle (ToggleButtons removed for good): its
+    // internal layout wraps every child in an InkWell + minWidth-64
+    // ConstrainedBox inside a min-size Row, so Expanded segments never flex
+    // and the row kept overflowing its box on narrow screens. This plain Row
+    // mathematically cannot overflow: Expanded divides the bounded container
+    // width exactly, and FittedBox only scales labels down when space is
+    // genuinely tight. Fixed 34px height (never SizedBox.expand inside the
+    // unbounded header).
     return Container(
       width: double.infinity,
       height: 34,
@@ -725,40 +729,47 @@ class _ShopServiceToggleState extends State<_ShopServiceToggle> {
         color: Colors.white.withOpacity(0.15),
         borderRadius: BorderRadius.circular(17),
       ),
-      child: ToggleButtons(
-        isSelected: [_index == 0, _index == 1],
-        onPressed: (i) {
-          if (i == _index) return;
-          setState(() => _index = i);
-          widget.onChanged(i);
-        },
-        borderRadius: BorderRadius.circular(17),
-        selectedColor: AppTheme.primaryGreenDark,
-        fillColor: Colors.white,
-        color: Colors.white,
-        renderBorder: false,
-        constraints: const BoxConstraints(minHeight: 30, minWidth: 64),
-        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-        children: const [
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10),
-                child: Text('Shop'),
+      child: Row(
+        children: List.generate(_labels.length, (i) {
+          final selected = i == _index;
+          return Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (i == _index) return;
+                setState(() => _index = i);
+                widget.onChanged(i);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                alignment: Alignment.center,
+                margin: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: selected ? Colors.white : Colors.transparent,
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      _labels[i],
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: selected
+                            ? AppTheme.primaryGreenDark
+                            : Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10),
-                child: Text('Ride / Service'),
-              ),
-            ),
-          ),
-        ],
+          );
+        }),
       ),
     );
   }
