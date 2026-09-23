@@ -52,6 +52,20 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   bool _uploadingDocs = false;
   String? _uploadError;
 
+  /// ID document type (Task 4). Types with QRs go through the verification
+  /// agent; 'OTHER' (and TRADE_LICENSE, which never has a QR) skip the agent
+  /// and go straight to manual admin review.
+  String _idDocType = 'NATIONAL_ID';
+  static const _idDocTypes = <String, String>{
+    'NATIONAL_ID': 'National ID',
+    'DRIVING_LICENSE_ID': 'Driving License',
+    'PASSPORT': 'Passport',
+    'OTHER': 'Other (no QR check)',
+  };
+
+  /// Outcome of the QR agent for UI messaging after submit.
+  String? _verificationOutcome;
+
   final _picker = ImagePicker();
   final _supabase = Supabase.instance.client;
 
@@ -287,7 +301,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             await DocumentUploadService.instance.uploadAndRecord(
               file: _nationalIdImage!,
               userId: userId,
-              documentType: 'NATIONAL_ID',
+              documentType: _idDocType,
             );
             try {
               await DocumentUploadService.instance.uploadAndRecord(
@@ -300,6 +314,54 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             } catch (e) {
               // First file is already stored and recorded; keep going.
               licenseError = e;
+            }
+
+            // QR verification agent for QR-capable ID types. 'OTHER' skips
+            // it entirely (straight to manual admin review). Best-effort:
+            // any agent failure keeps the normal manual-review path — the
+            // document row defaults to MANUAL_REVIEW, so an agent outage can
+            // never block or auto-approve anyone.
+            if (_idDocType == 'NATIONAL_ID' ||
+                _idDocType == 'DRIVING_LICENSE_ID' ||
+                _idDocType == 'PASSPORT') {
+              try {
+                final docs = await _supabase
+                    .from('user_documents')
+                    .select('id')
+                    .eq('user_id', userId)
+                    .eq('document_type', _idDocType)
+                    .order('uploaded_at', ascending: false)
+                    .limit(1);
+                final docId = ((docs as List?)?.isNotEmpty ?? false)
+                    ? (docs as List).first['id'] as String
+                    : null;
+                if (docId != null) {
+                  final res = await _supabase.functions.invoke(
+                    'document-verify',
+                    body: {'document_id': docId},
+                  );
+                  final data = res.data as Map<String, dynamic>?;
+                  final status = data?['status'] as String?;
+                  if (status == 'AUTO_APPROVED') {
+                    _verificationOutcome =
+                        'Your ID was verified automatically — your account is '
+                        'already approved.';
+                  } else if (status == 'SUSPECTED_FRAUD') {
+                    _verificationOutcome =
+                        'We could not verify your document automatically. It '
+                        'was flagged for a manual check — our team will review '
+                        'it shortly.';
+                  } else {
+                    _verificationOutcome =
+                        'No readable QR found on your document. It was sent to '
+                        'our team for a manual check instead — nothing is '
+                        'blocked.';
+                  }
+                }
+              } catch (_) {
+                // Agent unreachable → manual review (default state). Never
+                // blocks signup.
+              }
             }
           } catch (docError) {
             await _showDocumentUploadError(docError, router, messenger);
@@ -351,6 +413,23 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       // Record the user's terms acceptance (version + timestamp) on the
       // profile now that a session exists. Best-effort, never blocks.
       await _recordTermsAcceptance();
+
+      // Auto-approved by the QR agent → straight into the app. Otherwise the
+      // waiting screen shows (with the agent's outcome note when present).
+      if (_verificationOutcome != null &&
+          _verificationOutcome!.contains('already approved')) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_verificationOutcome!)),
+        );
+        context.go('/user');
+        return;
+      }
+      if (_verificationOutcome != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_verificationOutcome!)),
+        );
+      }
 
       context.go('/pending-approval');
     } catch (e) {
@@ -646,16 +725,38 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        // National ID image: providers only (verified upfront). Regular
-        // users browse and buy without ever providing an ID here.
-        if (_isProvider)
+        // National ID / ID document: providers only (verified upfront).
+        // Regular users browse and buy without ever providing an ID here.
+        if (_isProvider) ...[
+          const Text('ID document type', style: AppTheme.sectionHeader),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: _idDocTypes.entries
+                .map((e) => ChoiceChip(
+                      label: Text(e.value, style: const TextStyle(fontSize: 12)),
+                      selected: _idDocType == e.key,
+                      onSelected: (_) => setState(() => _idDocType = e.key),
+                    ))
+                .toList(),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _idDocType == 'OTHER'
+                ? 'Sent to our team for a standard manual check.'
+                : 'If your document has a QR code, we verify it automatically.',
+            style: AppTheme.caption,
+          ),
+          const SizedBox(height: 12),
           DocumentUploadCard(
-            title: 'National ID',
-            subtitle: 'Clear photo of front side',
+            title: _idDocTypes[_idDocType] ?? 'ID document',
+            subtitle: 'Clear photo of the side with the QR / ID number',
             file: _nationalIdImage,
             onPick: () => _showImagePicker(true),
             onRemove: () => setState(() => _nationalIdImage = null),
           ),
+        ],
         // License is only required for providers
         if (_isProvider) ...[
           const SizedBox(height: 12),

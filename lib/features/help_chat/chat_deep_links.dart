@@ -40,4 +40,6 @@ const List<ChatDeepLink> kKnownRoutes = [
   ChatDeepLink('Help & Support', '/help'),
   ChatDeepLink('My profile', '/user/profile'),
   ChatDeepLink('Favorites', '/user/favorites'),
+  // Appeals (user-submitted appeal / spam-report form)
+  ChatDeepLink('Submit an appeal', '/appeal'),
 ];

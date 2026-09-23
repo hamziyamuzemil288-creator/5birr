@@ -20,7 +20,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _totalUsers = 0;
   int _totalProducts = 0;
   int _totalOrders = 0;
+  int _openAppeals = 0;
   double _totalIncome = 0;
+  // my_admin_permissions() returns ['*'] for the true Admin/CEO — i.e. every
+  // card visible — and the explicit list for staff, who then see only their
+  // permitted sections. Server-side RLS remains the real boundary.
+  Set<String> _myPerms = const {'*'};
   bool _loading = true;
 
   @override
@@ -53,7 +58,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       count(() => client.from('profiles').select('id').count(CountOption.exact)),
       count(() => client.from('products').select('id').count(CountOption.exact)),
       count(() => client.from('orders').select('id').inFilter('status', ['APPROVED', 'STARTED', 'COMPLETED']).count(CountOption.exact)),
+      count(() => client.from('appeal_cases').select('id').eq('status', 'OPEN').count(CountOption.exact)),
     ]);
+
+    // Section visibility for the signed-in principal (fail-open to '*' is
+    // impossible: my_admin_permissions returns [] for no perms — a genuine
+    // restriction — so a thrown call simply leaves the default).
 
     // Platform income = fees actually charged: per-transaction fees plus
     // subscription fees from the wallet ledger (orders table has no fee
@@ -70,6 +80,17 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       }
     } catch (_) {}
 
+    // Permission fetch is independent of the counts (a failure must never
+    // blank the dashboard; worst case the full list shows while RLS still
+    // guards every screen).
+    try {
+      final perms = await client.rpc('my_admin_permissions');
+      final list = ((perms as List?) ?? const [])
+          .map((e) => e.toString())
+          .toList();
+      if (mounted) setState(() => _myPerms = list.toSet());
+    } catch (_) {}
+
     if (mounted) {
       setState(() {
         _pendingProviders = results[0];
@@ -79,11 +100,16 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         _totalUsers = results[4];
         _totalProducts = results[5];
         _totalOrders = results[6];
+        _openAppeals = results[7];
         _totalIncome = income;
         _loading = false;
       });
     }
   }
+
+  /// Card visibility per the signed-in principal's permissions.
+  bool _can(String perm) =>
+      _myPerms.contains('*') || _myPerms.contains(perm);
 
   @override
   Widget build(BuildContext context) {
@@ -273,11 +299,16 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Column(
                         children: [
-                          _menuCard(Icons.person_add, 'User Approvals', '$_pendingUsers pending', () => context.push('/admin/users')),
-                          _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.push('/admin/approvals')),
-                          _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.push('/admin/providers')),
-                          _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
-                          _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.push('/admin/payment-methods')),
+                          if (_can('registrations'))
+                            _menuCard(Icons.person_add, 'User Approvals', '$_pendingUsers pending', () => context.push('/admin/users')),
+                          if (_can('registrations'))
+                            _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.push('/admin/approvals')),
+                          if (_can('registrations'))
+                            _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.push('/admin/providers')),
+                          if (_can('payment_verification'))
+                            _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
+                          if (_can('payment_verification'))
+                            _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.push('/admin/payment-methods')),
                         ],
                       ),
                     ),
@@ -303,10 +334,14 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Column(
                         children: [
-                          _menuCard(Icons.receipt_long, 'Transaction History', '1% fees & orders', () => context.push('/admin/transactions')),
-                          _menuCard(Icons.account_balance_wallet, 'Income Summary', 'ETB ${_totalIncome.toStringAsFixed(0)} total', () => context.push('/admin/income')),
-                          _menuCard(Icons.receipt, 'Expenses', 'Log & track', () => context.push('/admin/expenses')),
-                          _menuCard(Icons.analytics_outlined, 'Sector Reports', 'Per-category data', () => context.push('/admin/reports')),
+                          if (_can('sales_transactions'))
+                            _menuCard(Icons.receipt_long, 'Transaction History', '1% fees & orders', () => context.push('/admin/transactions')),
+                          if (_can('view_reports'))
+                            _menuCard(Icons.account_balance_wallet, 'Income Summary', 'ETB ${_totalIncome.toStringAsFixed(0)} total', () => context.push('/admin/income')),
+                          if (_can('view_expenses'))
+                            _menuCard(Icons.receipt, 'Expenses', 'Log & track', () => context.push('/admin/expenses')),
+                          if (_can('view_reports'))
+                            _menuCard(Icons.analytics_outlined, 'Sector Reports', 'Per-category data', () => context.push('/admin/reports')),
                         ],
                       ),
                     ),
@@ -332,13 +367,30 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                       child: Column(
                         children: [
-                          _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
-                          _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
-                          _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
-                          _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
+                          if (_can('registrations'))
+                            _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
+                          if (_can('*') || _can('admin_history'))
+                            _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
+                          if (_can('support_chat'))
+                            _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
+                          if (_can('support_chat'))
+                            _menuCard(Icons.gavel_outlined, 'Appeals',
+                                _openAppeals > 0
+                                    ? '$_openAppeals open case${_openAppeals == 1 ? '' : 's'}'
+                                    : 'User appeals & reports',
+                                () => context.push('/admin/appeals')),
+                          if (_can('admin_history'))
+                            _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
                           // Phase 2: staff management (server-side RBAC; the
                           // screen itself also self-hides without permission).
-                          _menuCard(Icons.group_outlined, 'Staff / Sub-admins', 'Permissions & targets', () => context.push('/admin/staff')),
+                          if (_can('*') || _can('admin_history'))
+                            _menuCard(Icons.group_outlined, 'Staff / Sub-admins', 'Permissions & targets', () => context.push('/admin/staff')),
+                          // Task 3: true-Admin-only assignment console.
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.admin_panel_settings_outlined, 'Staff Assignment',
+                                'Roles, city, warnings, deletion', () => context.push('/admin/staff-assignment')),
+                          if (_can('*') || _can('admin_history'))
+                            _menuCard(Icons.tune, 'Role Permissions', 'Per-staff section access', () => context.push('/admin/roles/permissions')),
                         ],
                       ),
                     ),

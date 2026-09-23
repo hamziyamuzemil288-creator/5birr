@@ -60,6 +60,68 @@ function looksLikeIssue(text: string): boolean {
   return ISSUE_RE.test(text);
 }
 
+// ── Appeal / spam-report intent (routes to the user appeal form) ──────────
+const APPEAL_RE =
+  /\b(appeals?|banned?|unban|suspend(ed|sion)?|flagged|spam(?:my|mer|ming)?|report\s+(?:a\s+|an\s+|the\s+)?(?:spam|abuse|scam(?:mer)?)|wrongly\s+(?:banned|flagged|suspended)|my\s+(?:account|shop|store)\s+(?:was|is|got|has\s+been)\s+(?:banned|suspended|flagged|closed|blocked)|account\s+(?:banned|suspended|blocked))\b/i;
+
+function isAppealIntent(text: string): boolean {
+  return APPEAL_RE.test(text);
+}
+
+function appealReply(): string {
+  return (
+    "I'm sorry you're dealing with that — let's get it in front of our team properly.\n\n" +
+    "The appeal form lets you attach a photo as evidence and describe exactly what " +
+    "happened. Our support team reviews every appeal and contacts you on the phone " +
+    "number you provide.\n\n" +
+    "Tap \"Submit an appeal\" below to get started — or tell me a bit more here if " +
+    "you'd prefer."
+  );
+}
+
+// ── Input normalization: tolerant matching for real-world typing ─────────
+// Lowercases, normalizes quotes, expands common chat shorthand, and collapses
+// whitespace. Used for DETECTION only — stored content (ticket answers, etc.)
+// always uses the raw message.
+function norm(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\b(plz|pls)\b/g, "please")
+    .replace(/\bu\b/g, "you")
+    .replace(/\bur\b/g, "your")
+    .replace(/\bwat\b|\bwht\b/g, "what")
+    .replace(/\bhw\b/g, "how")
+    .replace(/\bi\s+wnt\b/g, "i want")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ── Follow-up memory (in-memory, 30-min TTL, per isolate) ─────────────────
+// Remembers the user's last few messages so short follow-ups like "and rides?"
+// resolve against the recent conversation instead of dead-ending.
+const msgHistory = new Map<string, string[]>();
+const historyTimestamps = new Map<string, number>();
+const HISTORY_TTL_MS = 30 * 60 * 1000;
+
+function rememberMessage(userId: string, q: string): void {
+  const ts = historyTimestamps.get(userId);
+  if (ts && Date.now() - ts > HISTORY_TTL_MS) msgHistory.set(userId, []);
+  const arr = msgHistory.get(userId) ?? [];
+  arr.push(q);
+  if (arr.length > 3) arr.shift();
+  msgHistory.set(userId, arr);
+  historyTimestamps.set(userId, Date.now());
+}
+
+function withRecentContext(userId: string, q: string): string {
+  const arr = msgHistory.get(userId) ?? [];
+  const prev = arr.slice(0, -1); // exclude the current message
+  if (!prev.length) return q;
+  return [...prev.slice(-2), q].join(" ");
+}
+
 // Details collected across the guided flow: the bot asks for the provider's
 // name/ID, their city, the user's own phone number, then the order number and
 // a short description before submitting everything as a support ticket.
@@ -267,6 +329,8 @@ const INTENT_ROUTES: Record<string, { label: string; route: string }[]> = {
   ride_status: [{ label: "Book a ride", route: "/user/ride-request" }],
   subscription: [{ label: "Open my Wallet", route: "/wallet" }],
   greeting: [],
+  smalltalk: [],
+  appeal: [{ label: "Submit an appeal", route: "/appeal" }],
 };
 
 // Log the assistant turn server-side and return the response payload with
@@ -452,10 +516,81 @@ function isGreeting(text: string): boolean {
   return GREETING_RE.test(text.trim());
 }
 
-const GREETING_REPLY =
+const GREETING_REPLIES = [
   "Hi! 👋 I'm the Aliob assistant. I can help with registering, buying and orders, " +
-  "escrow and payments, wallet recharges, fees, points, and rides.\n\n" +
-  "What can I help you with today?";
+    "escrow and payments, wallet recharges, fees, points, and rides.\n\n" +
+    "What can I help you with today?",
+  "Hello! 👋 Welcome to Aliob — ask me anything about buying, selling, rides, " +
+    "payments or your account.",
+  "Hi there! 😊 What can I do for you today?",
+];
+
+// ── Small talk: friendly, varied, anchored so real questions are never
+//    swallowed (each chatty pool matches the WHOLE message; the capabilities
+//    pattern is safe anywhere because its reply is always relevant).
+const CAPABILITIES_REPLY =
+  "I'm the Aliob assistant 👋 Here's what I can help with:\n\n" +
+  "• Buying & orders — how to shop, track an order, or a payment that's stuck\n" +
+  "• Wallet & fees — recharges, the 1% fee, the 5 Birr subscription\n" +
+  "• Rides — booking and live driver tracking\n" +
+  "• Account — registering, activation, ratings\n" +
+  "• Appeals — if you were flagged or want to report someone, I'll take you " +
+  "to the appeal form\n\n" +
+  "Ask me anything about the app!";
+
+const SMALL_TALK_POOLS: { re: RegExp; replies: string[] }[] = [
+  {
+    re:
+      /^(how'?s?|how\s+is)\s*(it\s*going|your\s*day|are\s*(you|u))([\s!,.?]*(and\s*(you|u))?)$|^how\s*(are|was)\s*(your|ur|the)\s*day([\s!,.?]*)?$|^(whats?|what'?s)\s*up[\s!,.?]*$/,
+    replies: [
+      "I'm doing great, thanks for asking! 😊 How can I help you today?",
+      "All good on my side! What can I do for you?",
+      "Having a good day so far — how about you? Anything I can help with?",
+    ],
+  },
+  {
+    re: /\b(who\s*are\s*(you|u)|are\s*(you|u)\s*(a\s*)?(robot|bot|ai|human)|what\s*can\s*(you|u)\s*(do|help)|what\s*do\s*you\s*(do|know)|your\s*name)\b/,
+    replies: [CAPABILITIES_REPLY],
+  },
+  {
+    re: /^(thanks?|thank\s*(you|u)|appreciate\s*it|great|perfect|awesome|nice\s*one|well\s*done)[\s!,.]*$/,
+    replies: [
+      "You're very welcome! 😊 Anything else I can help with?",
+      "Happy to help! Is there anything else?",
+      "Anytime! Let me know if you need anything else.",
+    ],
+  },
+  {
+    re: /^(bye|goodbye|see\s*(you|ya)|later|good\s*night|good\s*day)[\s!,.]*$/,
+    replies: [
+      "Goodbye! 👋 Come back any time you need help.",
+      "See you! Have a great day. 😊",
+    ],
+  },
+  {
+    re: /^(ok|okay|alright|cool|nice|hmm+|oh+i+see|okey)[\s!.]*$/,
+    replies: [
+      "Is there anything else I can help you with?",
+      "Anything else you'd like to know?",
+    ],
+  },
+];
+
+const smallTalkCounters = new Map<string, number>();
+
+function pickReply(userId: string, pool: string[]): string {
+  if (smallTalkCounters.size > 500) smallTalkCounters.clear();
+  const i = smallTalkCounters.get(userId) ?? 0;
+  smallTalkCounters.set(userId, i + 1);
+  return pool[i % pool.length] ?? pool[0] ?? GREETING_REPLIES[0];
+}
+
+function smallTalkReply(userId: string, q: string): string | null {
+  for (const t of SMALL_TALK_POOLS) {
+    if (t.re.test(q)) return pickReply(userId, t.replies);
+  }
+  return null;
+}
 
 // ── Canned answers for the app's core flows ──────────────────────────────
 // Deliberately short, conversational, and honest — the FAQ doc holds the
@@ -598,6 +733,37 @@ function handoffReply(): string {
   );
 }
 
+// Keyword fallback for short/keyword-style queries that embedding search
+// scores weakly. Same corpus, same kinds filter, service-role only — the
+// security guarantees are identical to the semantic path.
+async function searchKeywords(q: string, matchCount: number) {
+  const cleaned = q.replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
+  if (!cleaned) return [] as { content: string; score: number }[];
+  const words = cleaned.split(/\s+/).filter((w) => w.length >= 4).slice(0, 5);
+  if (!words.length) return [] as { content: string; score: number }[];
+  try {
+    const orFilter = words.map((w) => `content.ilike.%${w}%`).join(",");
+    const { data, error } = await admin
+      .from("repo_chunks")
+      .select("content")
+      .in("kind", ["doc", "ui_text"])
+      .or(orFilter)
+      .limit(matchCount);
+    if (error) {
+      console.error("searchKeywords failed:", error.message);
+      return [] as { content: string; score: number }[];
+    }
+    // Constant modest score keeps the buildAnswer threshold logic intact.
+    return ((data ?? []) as { content: string }[]).map((row) => ({
+      content: row.content,
+      score: 0.02,
+    }));
+  } catch (e) {
+    console.error("searchKeywords failed:", (e as Error).message);
+    return [] as { content: string; score: number }[];
+  }
+}
+
 // Search ONLY docs and UI text so end users never see code, file paths or table names.
 async function search(query: string, matchCount: number) {
   const emb = await embedder.run(query, { mean_pool: true, normalize: true });
@@ -670,15 +836,33 @@ Deno.serve(async (req) => {
   try {
     if (LLM_PROVIDER !== "none") return json({ error: "unsupported_provider" }, 400);
 
-    // 4a. Fast path: greetings and small talk.
-    if (isGreeting(question)) {
-      return respond(user.id, GREETING_REPLY, { intent: "greeting" });
+    // 4a. Fast path: greetings, small talk, and appeal/spam-report intent.
+    // Greetings answer at any time (original behavior — including mid-ticket-
+    // flow); the other small-talk tiers stand down while a guided ticket flow
+    // owns the exchange, so its questions are never hijacked by a terse
+    // "ok"/"thanks" answer.
+    rememberMessage(user.id, question);
+    const nq = norm(question);
+    const session = getSession(user.id);
+    if (isGreeting(nq)) {
+      return respond(user.id, pickReply(user.id, GREETING_REPLIES), {
+        intent: "greeting",
+      });
+    }
+    if (!session) {
+      const talk = smallTalkReply(user.id, nq);
+      if (talk) {
+        return respond(user.id, talk, { intent: "smalltalk" });
+      }
+      if (isAppealIntent(nq)) {
+        return respond(user.id, appealReply(), { intent: "appeal" });
+      }
     }
 
     // 4a-bis. Live-data questions answered from the caller's own account
     // (wallet balance, order/ride status, subscription) — read-only, scoped
     // to auth.uid() via user_chat_context().
-    const dataKind = detectDataQuery(question);
+    const dataKind = detectDataQuery(nq);
     const chatCtx = dataKind ? await loadChatContext(userClient) : null;
     if (dataKind && chatCtx) {
       const { reply, intent } = dataReply(dataKind, chatCtx);
@@ -689,8 +873,7 @@ Deno.serve(async (req) => {
     // detected — but PROVIDERS skip it (Behavior 3: direct phone number).
     // Greetings keep priority above, so small talk never starts a ticket.
     const providerCtx = await loadProviderContext(user.id);
-    const session = getSession(user.id);
-    const issueDetected = looksLikeIssue(question) || session !== undefined;
+    const issueDetected = looksLikeIssue(nq) || session !== undefined;
 
     if (providerCtx.isProvider) {
       clearSession(user.id);
@@ -760,10 +943,10 @@ Deno.serve(async (req) => {
     if (fallback) return respond(user.id, fallback, { handoff: true });
 
     // 4d. Fast path: canned answers for the app's core flows.
-    const canned = cannedReply(question);
+    const canned = cannedReply(nq);
     if (canned) {
       return respond(user.id, canned, {
-        intent: cannedIntent(question),
+        intent: cannedIntent(nq),
       });
     }
 
@@ -772,6 +955,21 @@ Deno.serve(async (req) => {
     let hits = await search(question, 6);
     if (!hits.length && hints.length > 1) {
       hits = await search(hints.slice(-3).join(" "), 6);
+    }
+    // Server-side follow-up memory: resolves terse follow-ups ("and rides?")
+    // against the user's recent messages even when the client sent none.
+    if (!hits.length) {
+      const ctxQuery = withRecentContext(user.id, question);
+      if (ctxQuery !== question) {
+        hits = await search(ctxQuery, 6);
+      }
+    }
+    // Keyword fallback: short or keyword-style queries often miss
+    // embedding-wise; a direct ilike pass over the same doc/UI-text corpus
+    // rescues them (same security guarantees — service-role only, kinds
+    // filter intact).
+    if (!hits.length) {
+      hits = await searchKeywords(nq, 6);
     }
     const answer = buildAnswer(question, hits);
     return respond(

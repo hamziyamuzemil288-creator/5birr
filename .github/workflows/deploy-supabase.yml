@@ -205,6 +205,11 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy ride-transition
 
+      # Document QR verification agent (Task 4) — signup ID auto-approval.
+      - name: Deploy function document-verify
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy document-verify
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |

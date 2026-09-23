@@ -29,7 +29,7 @@ class _State extends State<AdminUserManagementScreen> {
     try {
       final data = await Supabase.instance.client
           .from('profiles')
-          .select('*, user_documents(document_type, storage_path)')
+          .select('*, user_documents(document_type, storage_path, verification_status, agent_verdict)')
           .eq('status', _filter)
           .order('created_at', ascending: false);
       if (mounted) {
@@ -118,13 +118,17 @@ class _State extends State<AdminUserManagementScreen> {
   void _showDocumentDialog(Map<String, dynamic> user) {
     final docs = (user['user_documents'] as List?) ?? [];
     final nationalIdDoc = docs.cast<Map<String, dynamic>?>().firstWhere(
-          (d) => d != null && d['document_type'] == 'NATIONAL_ID',
+          (d) => d != null &&
+              (d['document_type'] == 'NATIONAL_ID' ||
+                  d['document_type'] == 'DRIVING_LICENSE_ID' ||
+                  d['document_type'] == 'PASSPORT' ||
+                  d['document_type'] == 'OTHER'),
           orElse: () => null,
         );
 
     if (nationalIdDoc == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No National ID document uploaded')),
+        const SnackBar(content: Text('No ID document uploaded')),
       );
       return;
     }
@@ -134,6 +138,10 @@ class _State extends State<AdminUserManagementScreen> {
       builder: (_) => _DocumentPreviewDialog(
         storagePath: nationalIdDoc['storage_path'] as String,
         userName: user['full_name'] ?? 'Unknown',
+        docType: nationalIdDoc['document_type'] as String?,
+        verificationStatus:
+            nationalIdDoc['verification_status'] as String?,
+        agentVerdict: nationalIdDoc['agent_verdict'] as Map<String, dynamic>?,
       ),
     );
   }
@@ -394,10 +402,16 @@ class _PointsLineState extends State<_PointsLine> {
 class _DocumentPreviewDialog extends StatefulWidget {
   final String storagePath;
   final String userName;
+  final String? docType;
+  final String? verificationStatus;
+  final Map<String, dynamic>? agentVerdict;
 
   const _DocumentPreviewDialog({
     required this.storagePath,
     required this.userName,
+    this.docType,
+    this.verificationStatus,
+    this.agentVerdict,
   });
 
   @override
@@ -444,7 +458,7 @@ class _DocumentPreviewDialogState extends State<_DocumentPreviewDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             AppBar(
-              title: Text('${widget.userName} — National ID'),
+              title: Text('${widget.userName} — ${widget.docType ?? 'ID'}'),
               automaticallyImplyLeading: false,
               actions: [
                 IconButton(
@@ -453,6 +467,46 @@ class _DocumentPreviewDialogState extends State<_DocumentPreviewDialog> {
                 ),
               ],
             ),
+            // QR agent verdict (Task 4): what the agent decided and why.
+            if (widget.verificationStatus != null)
+              Container(
+                width: double.infinity,
+                color: widget.verificationStatus == 'AUTO_APPROVED'
+                    ? AppTheme.primaryGreen.withOpacity(0.10)
+                    : widget.verificationStatus == 'SUSPECTED_FRAUD'
+                        ? AppTheme.error.withOpacity(0.10)
+                        : AppTheme.warning.withOpacity(0.10),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      widget.verificationStatus == 'AUTO_APPROVED'
+                          ? Icons.verified_outlined
+                          : widget.verificationStatus == 'SUSPECTED_FRAUD'
+                              ? Icons.gpp_bad_outlined
+                              : Icons.pending_outlined,
+                      size: 18,
+                      color: widget.verificationStatus == 'AUTO_APPROVED'
+                          ? AppTheme.primaryGreen
+                          : widget.verificationStatus == 'SUSPECTED_FRAUD'
+                              ? AppTheme.error
+                              : AppTheme.warning,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        widget.verificationStatus == 'AUTO_APPROVED'
+                            ? 'QR verified — auto-approved'
+                            : widget.verificationStatus == 'SUSPECTED_FRAUD'
+                                ? 'Flagged: suspected fraud — review manually'
+                                : 'Not auto-verified — manual review',
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Expanded(
               child: _loading
                   ? const Center(

@@ -45,6 +45,10 @@ import '../features/admin/admin_income_summary_screen.dart';
 import '../features/admin/admin_expense_screen.dart';
 import '../features/admin/admin_reports_screen.dart';
 import '../features/admin/admin_support_tickets_screen.dart';
+import '../features/admin/admin_appeals_screen.dart';
+import '../features/admin/admin_staff_assignment_screen.dart';
+import '../features/admin/admin_role_permissions_screen.dart';
+import '../features/appeal/appeal_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
@@ -290,12 +294,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/expenses', builder: (_, __) => const AdminExpenseScreen()),
       GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
       GoRoute(path: '/admin/support-tickets', builder: (_, __) => const AdminSupportTicketsScreen()),
+      GoRoute(path: '/admin/appeals', builder: (_, __) => const AdminAppealsScreen()),
       GoRoute(path: '/admin/history', builder: (_, __) => const AdminHistoryScreen()),
       GoRoute(path: '/admin/staff', builder: (_, __) => const AdminStaffScreen()),
+      // Task 3: role management console (true-Admin-only page + per-staff
+      // permission control; server paths re-check authorization).
+      GoRoute(path: '/admin/staff-assignment', builder: (_, __) => const AdminStaffAssignmentScreen()),
+      GoRoute(path: '/admin/roles/permissions', builder: (_, __) => const AdminRolePermissionsScreen()),
       GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
 
       // ── Help (signed-in users) ──
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),
+      // User-submitted appeal / spam-report form (linked from the help chat).
+      GoRoute(path: '/appeal', builder: (_, __) => const AppealScreen()),
     ],
   );
 });
