@@ -86,14 +86,15 @@ class _FloatingChatOverlayState extends ConsumerState<FloatingChatOverlay> {
 /// while the app runs; intentionally NOT persisted to disk).
 Offset? _lastBubblePosition;
 
-class _DraggableChatBubble extends StatefulWidget {
+class _DraggableChatBubble extends ConsumerStatefulWidget {
   const _DraggableChatBubble();
 
   @override
-  State<_DraggableChatBubble> createState() => _DraggableChatBubbleState();
+  ConsumerState<_DraggableChatBubble> createState() =>
+      _DraggableChatBubbleState();
 }
 
-class _DraggableChatBubbleState extends State<_DraggableChatBubble> {
+class _DraggableChatBubbleState extends ConsumerState<_DraggableChatBubble> {
   static const double _size = 56;
   static const double _margin = 10;
   static const double _navBarClearance = 24;
@@ -129,7 +130,13 @@ class _DraggableChatBubbleState extends State<_DraggableChatBubble> {
                 _clamp(pos + d.delta, size.width, size.height);
           });
         },
-        onTap: () => GoRouter.of(context).push('/help'),
+        onTap: () {
+          // This bubble is rendered in MaterialApp.builder, ABOVE the
+          // Router — GoRouter.of(context) cannot resolve from here (no
+          // Router widget above this context). Push via the router
+          // instance itself, the same source _visibleFor uses.
+          ref.read(appRouterProvider).push('/help');
+        },
         child: Container(
           width: _size,
           height: _size,

@@ -712,36 +712,53 @@ class _ShopServiceToggleState extends State<_ShopServiceToggle> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 34,
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(17),
-      ),
-      child: ToggleButtons(
-        isSelected: [_index == 0, _index == 1],
-        onPressed: (i) {
-          if (i == _index) return;
-          setState(() => _index = i);
-          widget.onChanged(i);
-        },
-        borderRadius: BorderRadius.circular(17),
-        selectedColor: AppTheme.primaryGreenDark,
-        fillColor: Colors.white,
-        color: Colors.white,
-        renderBorder: false,
-        constraints: const BoxConstraints(minHeight: 30, minWidth: 64),
-        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-        children: const [
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 10),
-            child: Text('Shop'),
-          ),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 10),
-            child: Text('Ride / Service'),
-          ),
-        ],
+    // ToggleButtons lays its children out in an unbounded internal Row; the
+    // parent Row then overflows by a few px on narrow screens. Expanding
+    // this widget to fill its Flexible slot and sharing width equally
+    // between the segments lets the labels shrink instead of overflowing.
+    return SizedBox.expand(
+      child: Container(
+        height: 34,
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(17),
+        ),
+        child: ToggleButtons(
+          isSelected: [_index == 0, _index == 1],
+          onPressed: (i) {
+            if (i == _index) return;
+            setState(() => _index = i);
+            widget.onChanged(i);
+          },
+          borderRadius: BorderRadius.circular(17),
+          selectedColor: AppTheme.primaryGreenDark,
+          fillColor: Colors.white,
+          color: Colors.white,
+          renderBorder: false,
+          constraints: const BoxConstraints(minHeight: 30, minWidth: 64),
+          textStyle:
+              const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          children: const [
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text('Shop'),
+                ),
+              ),
+            ),
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text('Ride / Service'),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

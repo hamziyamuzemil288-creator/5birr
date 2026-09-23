@@ -851,6 +851,12 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
   bool _searching = false;
   int _reqId = 0;
   Timer? _debounce;
+  // True once FlutterMap has attached to _mapController (onMapReady).
+  // move() on an unattached controller throws or silently no-ops, so
+  // requests that arrive early are queued in _pendingCenter and applied
+  // the moment the map is ready.
+  bool _mapReady = false;
+  LatLng? _pendingCenter;
 
   /// The fallback center is a constant, not a real position — self-center
   /// on GPS instead of trusting it.
@@ -877,12 +883,22 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
     super.dispose();
   }
 
+  /// Camera move that is safe at any time: applies immediately once the
+  /// map is ready, otherwise queues until onMapReady fires.
+  void _moveCamera(LatLng center, {double zoom = 15}) {
+    if (_mapReady) {
+      _mapController.move(center, zoom);
+    } else {
+      _pendingCenter = center;
+    }
+  }
+
   /// Instant coarse seed while the fresh fix is still in flight.
   Future<void> _seedFromLastKnown() async {
     try {
       final last = await Geolocator.getLastKnownPosition();
       if (last != null && mounted && _centerIsFallback) {
-        _mapController.move(LatLng(last.latitude, last.longitude), 15);
+        _moveCamera(LatLng(last.latitude, last.longitude));
       }
     } catch (_) {
       // Best-effort seed only.
@@ -900,8 +916,8 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
     if (r.success) {
       setState(() => _picked = LatLng(
           r.position!.latitude, r.position!.longitude));
-      _mapController.move(
-          LatLng(r.position!.latitude, r.position!.longitude), 15);
+      _moveCamera(
+          LatLng(r.position!.latitude, r.position!.longitude));
     } else if (showError) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -942,7 +958,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
       _results = const [];
     });
     _searchCtrl.text = place.label;
-    _mapController.move(point, 15);
+    _moveCamera(point);
     FocusScope.of(context).unfocus();
   }
 
@@ -957,6 +973,16 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
             options: MapOptions(
               initialCenter: widget.initialCenter,
               initialZoom: 14,
+              onMapReady: () {
+                // Controller is now attached; apply any camera move that
+                // arrived before the first frame completed.
+                _mapReady = true;
+                final pending = _pendingCenter;
+                if (pending != null) {
+                  _pendingCenter = null;
+                  _mapController.move(pending, 15);
+                }
+              },
               onTap: (_, point) => setState(() => _picked = point),
             ),
             children: [
