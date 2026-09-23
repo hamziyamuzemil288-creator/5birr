@@ -59,9 +59,20 @@ exception when duplicate_object then null; end $$;
 -- No update/delete policies: rows are only touched by the two security
 -- definer RPCs below.
 
--- Hash helper (pgcrypto is already enabled in earlier migrations; if not,
--- enable it here).
-create extension if not exists pgcrypto;
+-- Hash helper. (pgcrypto's `digest` is not reliably exposed in `public`
+-- across Supabase projects; `sha256(bytea)` is core since PG11.)
+
+-- 6-digit code hashing. Live-DB safe: extensions.digest/decrypt helpers
+-- differ across Postgres versions (the live project's pgcrypto exposes
+-- digest only in the extensions schema), so define a pure-SQL sha256 hex
+-- helper and have the RPCs use ONLY this helper.
+create or replace function public.sha256_hex(p_text text)
+returns text
+language sql
+immutable
+as $$
+  select encode(sha256(convert_to(p_text, 'UTF8')), 'hex');
+$$;
 
 -- Issue a code: the CALLER (send-otp Edge Function) generates the 6-digit
 -- code and passes it here; Postgres validates, rate-limits, hashes and
@@ -99,7 +110,7 @@ begin
    where email = v_email and consumed = false;
 
   insert into public.email_otp_codes (email, code_hash)
-  values (v_email, encode(digest(v_code, 'sha256'), 'hex'));
+  values (v_email, public.sha256_hex(v_code));
 
   return jsonb_build_object('ok', true, 'expires_in_seconds', 600);
 end;
@@ -133,7 +144,7 @@ begin
     return jsonb_build_object('ok', false, 'error', 'NO_ACTIVE_CODE');
   end if;
 
-  v_hash := encode(digest(btrim(p_code), 'sha256'), 'hex');
+  v_hash := public.sha256_hex(btrim(p_code));
 
   if v_row.code_hash <> v_hash then
     update public.email_otp_codes
