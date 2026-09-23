@@ -283,14 +283,24 @@ Deno.serve(async (req) => {
     let qrText: string | null = null;
     if (img) qrText = scanQr(img);
 
-    // 3. Profile name for cross-check.
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("full_name, business_name")
-      .eq("id", user.id)
-      .maybeSingle();
+    // 3. Profile name for cross-check. business_name lives on
+    // provider_profiles (0001 schema), not profiles — pull it from there so
+    // the query cannot 400 on an unknown column (which used to silently
+    // empty the name and fail every cross-check).
+    const [{ data: profile, error: profileErr }, { data: providerProfile }] =
+      await Promise.all([
+        admin.from("profiles").select("full_name").eq("id", user.id).maybeSingle(),
+        admin
+          .from("provider_profiles")
+          .select("business_name")
+          .eq("user_id", user.id)
+          .maybeSingle(),
+      ]);
+    if (profileErr) console.error("profile lookup failed:", profileErr.message);
     const profileName =
-      (profile?.full_name as string) || (profile?.business_name as string) || "";
+      ((profile?.full_name as string) ||
+        (providerProfile?.business_name as string) ||
+        "") as string;
 
     // 4. Verdict.
     const verdict = evaluate({
