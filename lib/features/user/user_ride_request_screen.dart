@@ -52,6 +52,12 @@ class _State extends State<UserRideRequestScreen>
   // GPS fix once instead of requiring a second manual tap.
   bool _afterResumePending = false;
 
+  // ---- TEMPORARY on-screen diagnostics (remove after debugging) ----
+  // Shows the live GPS/search state on the screen itself so failures are
+  // visible on a real device without ADB/logcat access.
+  String _dbgGps = '—';
+  String _dbgPhoton = '—';
+
   /// Latest inputs sent to calculate_fare_estimate — dedupes and skips
   /// stale responses when the user changes points quickly.
   (double, double, double, double, String?)? _fareRequestKey;
@@ -149,10 +155,33 @@ class _State extends State<UserRideRequestScreen>
   /// Background GPS resolution for pickup (asks permission on first use;
   /// failures surface inline via the pickup section, not silently).
   Future<void> _resolvePickupLocation() async {
+    setState(() => _dbgGps = 'requesting… (init)');
     final r = await LocationService.instance.getCurrentPositionDetailed();
     if (!mounted) return;
-    setState(() => _locStatus = r.status);
+    setState(() {
+      _locStatus = r.status;
+      _dbgGps = _dbgDescribeLocationResult(r);
+    });
     if (r.success) _applyPickupPosition(r.position!);
+  }
+
+  /// TEMP diagnostics: one-line human summary of a location attempt.
+  String _dbgDescribeLocationResult(LocationResult r) {
+    switch (r.status) {
+      case LocationStatus.ready:
+        final p = r.position!;
+        return 'ready (${p.latitude.toStringAsFixed(4)}, '
+            '${p.longitude.toStringAsFixed(4)})';
+      case LocationStatus.serviceDisabled:
+        return 'serviceDisabled';
+      case LocationStatus.denied:
+        return 'denied';
+      case LocationStatus.deniedForever:
+        return 'deniedForever';
+      case LocationStatus.error:
+        final msg = (r.errorMessage ?? 'unknown').replaceAll('\n', ' ');
+        return 'error: ${msg.length > 60 ? msg.substring(0, 60) : msg}';
+    }
   }
 
   /// Applies a GPS fix to the pickup state, clearing any manual override.
@@ -202,9 +231,15 @@ class _State extends State<UserRideRequestScreen>
 
   Future<void> _searchDestSuggestions(String query) async {
     final reqId = ++_destReqId;
+    setState(() => _dbgPhoton = 'searching "$query"…');
     final results = await PhotonService.autocomplete(query);
     if (!mounted || reqId != _destReqId) return;
-    setState(() => _destSuggestions = results);
+    setState(() {
+      _destSuggestions = results;
+      _dbgPhoton = results.isEmpty
+          ? '0 results for "$query"'
+          : '${results.length} results';
+    });
   }
 
   void _selectDestSuggestion(PhotonPlace place) {
@@ -450,11 +485,15 @@ class _State extends State<UserRideRequestScreen>
                     children: [
                       TextButton.icon(
                     onPressed: () async {
+                      setState(() => _dbgGps = 'requesting… (tap)');
                       final r =
                           await LocationService.instance
                               .getCurrentPositionDetailed();
                       if (!mounted) return;
-                      setState(() => _locStatus = r.status);
+                      setState(() {
+                        _locStatus = r.status;
+                        _dbgGps = _dbgDescribeLocationResult(r);
+                      });
                       if (r.success) {
                         _applyPickupPosition(r.position!);
                       } else if (r.status == LocationStatus.deniedForever ||
@@ -544,6 +583,23 @@ class _State extends State<UserRideRequestScreen>
                           ),
                         ),
                     ],
+                  ),
+                  // TEMPORARY on-screen diagnostics — remove after debugging.
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.textMuted.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'DIAG v33b · GPS: $_dbgGps · Photon: $_dbgPhoton · '
+                      'field: ${_destFieldFocused ? 'focused' : 'not focused'}, '
+                      '${_destCtrl.text.length} chars',
+                      style: const TextStyle(
+                          fontSize: 10, color: AppTheme.textMuted),
+                    ),
                   ),
                   if (_destFieldFocused && _destSuggestions.isNotEmpty)
                     Container(
