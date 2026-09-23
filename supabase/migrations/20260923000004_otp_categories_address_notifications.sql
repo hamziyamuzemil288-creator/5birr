@@ -213,6 +213,25 @@ alter table public.provider_profiles
 -- ============================================================
 -- 4. Broadcast target types + delivered count
 -- ============================================================
+-- Create-if-missing: 0024's broadcast table never reached the live DB (the
+-- deploy workflow stages one file per duplicate version — 0020_audit_log
+-- wins over 0024_admin_expenses — and those duplicates were applied to the
+-- live DB only by pasting SQL, where some files never made it). A missing
+-- table must not break the deploy, so ensure it here, matching 0024.
+create table if not exists public.admin_notification_broadcasts (
+  id uuid primary key default uuid_generate_v4(),
+  admin_id uuid not null references auth.users(id),
+  title text not null,
+  body text,
+  target_type text not null default 'ALL'
+    check (target_type in ('ALL_USERS','ALL_PROVIDERS','ALL','SPECIFIC_USER','ROLE')),
+  target_user_id uuid references auth.users(id),
+  sent_count int not null default 0,
+  delivered_count int not null default 0,
+  target_role text,
+  created_at timestamptz not null default now()
+);
+
 alter table public.admin_notification_broadcasts
   drop constraint if exists admin_notification_broadcasts_target_type_check;
 
@@ -223,6 +242,13 @@ alter table public.admin_notification_broadcasts
 alter table public.admin_notification_broadcasts
   add column if not exists delivered_count int not null default 0,
   add column if not exists target_role text;
+
+alter table public.admin_notification_broadcasts enable row level security;
+
+do $$ begin
+  create policy admin_broadcasts_admin_only on public.admin_notification_broadcasts
+    for all using (is_admin()) with check (is_admin());
+exception when duplicate_object then null; end $$;
 
 do $$ begin
   create index if not exists idx_admin_broadcasts_role
