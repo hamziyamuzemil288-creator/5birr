@@ -10,6 +10,10 @@ class AppCategory {
   final String? imageUrl;
   final String? description;
   final String? marketplaceSector; // FOOD, RETAIL, ACCOMMODATION, SERVICES, TRANSPORT, OTHER
+  /// Task 7 item 5: two top-level groups. 'PRODUCT_BASED' = the user
+  /// orders/receives a physical product; 'BOOKING_BASED' = the user books a
+  /// service/ride/time slot. Null on legacy rows before grouping.
+  final String? serviceGroup;
   final bool isActive;
   final int sortOrder;
   final DateTime createdAt;
@@ -26,6 +30,7 @@ class AppCategory {
     this.imageUrl,
     this.description,
     this.marketplaceSector,
+    this.serviceGroup,
     this.isActive = true,
     this.sortOrder = 0,
     required this.createdAt,
@@ -44,6 +49,7 @@ class AppCategory {
       imageUrl: json['image_url'] as String?,
       description: json['description'] as String?,
       marketplaceSector: json['marketplace_sector'] as String?,
+      serviceGroup: json['service_group'] as String?,
       isActive: json['is_active'] as bool? ?? true,
       sortOrder: json['sort_order'] as int? ?? 0,
       createdAt: DateTime.parse(json['created_at'] as String),

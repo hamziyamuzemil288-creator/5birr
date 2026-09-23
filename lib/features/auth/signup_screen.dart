@@ -1,18 +1,15 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
-import '../../core/services/document_upload_service.dart';
 import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
-import '../../core/widgets/document_upload_card.dart';
 import 'terms_policy_screen.dart';
+import 'otp_verification_screen.dart';
 
 enum SignupRole { user, vehicleProvider, serviceProvider }
 
@@ -37,6 +34,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   // home/browse queries. Defaults to the service fallback city.
   String? _selectedCity;
 
+  // Task 7: Kebele + Street/Road (after City) — GPS accuracy + identity
+  // verification; stored on profiles via the signup metadata.
+  final _kebeleController = TextEditingController();
+  final _streetRoadController = TextEditingController();
+
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
@@ -47,14 +49,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   // the account exists, with the version the user actually saw.
   bool _agreedToTerms = false;
 
-  File? _nationalIdImage;
-  File? _licenseImage;
-  bool _uploadingDocs = false;
-  String? _uploadError;
-
-  /// ID document type (Task 4). Types with QRs go through the verification
-  /// agent; 'OTHER' (and TRADE_LICENSE, which never has a QR) skip the agent
-  /// and go straight to manual admin review.
+  /// ID document type (Task 4). Kept for the profile record: signup no
+  /// longer collects document IMAGES (Task 7 moved the upload to the first
+  /// protected action after wallet recharge), but the chosen type still
+  /// tells the user (and later screens) which ID to prepare. 'OTHER' never
+  /// has a QR and always routes to manual admin review.
   String _idDocType = 'NATIONAL_ID';
   static const _idDocTypes = <String, String>{
     'NATIONAL_ID': 'National ID',
@@ -62,23 +61,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     'PASSPORT': 'Passport',
     'OTHER': 'Other (no QR check)',
   };
-
-  /// Outcome of the QR agent for UI messaging after submit.
-  String? _verificationOutcome;
-
-  final _picker = ImagePicker();
-  final _supabase = Supabase.instance.client;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _emailController.dispose();
-    _phoneController.dispose();
-    _nationalIdController.dispose();
-    _passwordController.dispose();
-    _confirmPasswordController.dispose();
-    super.dispose();
-  }
 
   bool get _isProvider =>
       widget.role == SignupRole.vehicleProvider ||
@@ -106,359 +88,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     }
   }
 
-  Future<void> _pickImage(ImageSource source, bool isNationalId) async {
-    try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1920,
-        maxHeight: 1920,
-        imageQuality: 85,
-      );
-      if (picked != null) {
-        final file = File(picked.path);
-        final size = await file.length();
-        if (size > 10 * 1024 * 1024) {
-          setState(() => _uploadError = 'Image must be under 10 MB');
-          return;
-        }
-        setState(() {
-          if (isNationalId) {
-            _nationalIdImage = file;
-          } else {
-            _licenseImage = file;
-          }
-          _uploadError = null;
-        });
-      }
-    } catch (e) {
-      setState(() => _uploadError = 'Failed to pick image');
-    }
-  }
-
-  void _showImagePicker(bool isNationalId) {
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Camera'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _pickImage(ImageSource.camera, isNationalId);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Gallery'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _pickImage(ImageSource.gallery, isNationalId);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Shown when the account itself was created but document storage failed.
-  /// The error must reach the user (and support), never disappear silently.
-  /// [router]/[messenger] are captured at method entry so this still works
-  /// when navigation has disposed the signup screen mid-flight.
-  Future<void> _showDocumentUploadError(
-    Object error,
-    GoRouter router,
-    ScaffoldMessengerState messenger,
-  ) async {
-    // Report even if navigation has disposed this screen: the pending-
-    // approval screen offers a recovery action for exactly this case.
-    final message = _documentErrorText(error);
-    if (!mounted) {
-      router.push(
-          '/pending-approval?resumeDocUpload=true&docError=${Uri.encodeComponent(message)}');
-      return;
-    }
-    setState(() => _uploadingDocs = false);
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Documents not uploaded'),
-        content: Text(
-          'Your account was created, but your documents could not be '
-          'uploaded, so verification cannot start yet.\n\n'
-          'Reason: $message\n\n'
-          'Please contact support — they will help you finish verification. '
-          'You can also retry from the pending-approval screen.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Continue'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Human-readable, secret-free text for a document pipeline failure.
-  String _documentErrorText(Object error) {
-    if (error is PostgrestException) {
-      final details = error.details?.toString();
-      return 'database error ${error.code}: ${error.message}'
-          '${details == null || details.isEmpty ? '' : ' — $details'}';
-    }
-    if (error is StorageException) {
-      return 'storage error: ${error.message}';
-    }
-    return error.toString();
-  }
-
-  /// Records the user's terms acceptance on their profile. Best-effort:
-  /// a failure here never blocks the account that was just created, but it
-  /// is surfaced so consent can be re-confirmed on next launch.
-  Future<void> _recordTermsAcceptance() async {
-    try {
-      await _supabase.rpc('accept_terms', params: {'p_version': kTermsVersion});
-    } catch (_) {
-      // Non-fatal: the account itself was already created successfully.
-    }
-  }
-
-  Future<void> _handleSignup() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (!_agreedToTerms) {
-      setState(() => _error =
-          'Please read and accept the Terms & Privacy Policy to continue.');
-      return;
-    }
-
-    // Captured before any await: used to report failures even if navigation
-    // has disposed this screen by the time an upload/insert fails.
-    final router = GoRouter.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-
-    // Regular users sign up with contact details only — no ID is collected
-    // here. Browsing, cart, and checkout never require one; a National ID
-    // is only requested at booking time for booking-type orders.
-    if (_isProvider) {
-      if (_nationalIdImage == null) {
-        setState(() => _uploadError = 'National ID image is required');
-        return;
-      }
-      if (_licenseImage == null) {
-        setState(() => _uploadError = _roleName == 'Vehicle Provider'
-            ? 'Driving license image is required'
-            : 'Trading license image is required');
-        return;
-      }
-    }
-
-    setState(() {
-      _isLoading = true;
-      _error = null;
-      _uploadError = null;
-    });
-
-    try {
-      if (_isProvider) {
-        await ref.read(authProvider.notifier).signUpAsProvider(
-              email: _emailController.text.trim(),
-              phone: _phoneController.text.trim(),
-              password: _passwordController.text,
-              businessName: _nameController.text.trim(),
-              ownerNationalId: _nationalIdController.text.trim(),
-              providerType: _providerType,
-              city: _selectedCity,
-            );
-
-        // Upload documents after account is created. Failures are surfaced:
-        // without the documents the admin cannot verify the account, so the
-        // user must know (and contact support) instead of the signup silently
-        // "succeeding" without them. The router only navigates away after
-        // this completes (success, partial success, or reported failure).
-        final userId = _supabase.auth.currentUser?.id;
-        if (userId == null) {
-          // No session (e.g. email confirmation enabled): GoTrue issued no
-          // JWT, so nothing can be uploaded or recorded now. Tell the user
-          // instead of silently skipping — documents are requested again
-          // after they log in.
-          final msg = 'Account created. Your verification documents will be '
-              'requested after you sign in.';
-          messenger.showSnackBar(SnackBar(content: Text(msg)));
-          setState(() => _uploadError = msg);
-        } else {
-          setState(() => _uploadingDocs = true);
-
-          // Same shared per-file unit (upload + user_documents insert + one
-          // retry) the pending-approval recovery screen uses. The real
-          // exception is kept so the dialog/deep-link below shows the same
-          // detail as before.
-          Object? licenseError;
-          try {
-            await DocumentUploadService.instance.uploadAndRecord(
-              file: _nationalIdImage!,
-              userId: userId,
-              documentType: _idDocType,
-            );
-            try {
-              await DocumentUploadService.instance.uploadAndRecord(
-                file: _licenseImage!,
-                userId: userId,
-                documentType: _roleName == 'Vehicle Provider'
-                    ? 'DRIVING_LICENSE'
-                    : 'TRADE_LICENSE',
-              );
-            } catch (e) {
-              // First file is already stored and recorded; keep going.
-              licenseError = e;
-            }
-
-            // QR verification agent for QR-capable ID types. 'OTHER' skips
-            // it entirely (straight to manual admin review). Best-effort:
-            // any agent failure keeps the normal manual-review path — the
-            // document row defaults to MANUAL_REVIEW, so an agent outage can
-            // never block or auto-approve anyone.
-            if (_idDocType == 'NATIONAL_ID' ||
-                _idDocType == 'DRIVING_LICENSE_ID' ||
-                _idDocType == 'PASSPORT') {
-              try {
-                final docs = await _supabase
-                    .from('user_documents')
-                    .select('id')
-                    .eq('user_id', userId)
-                    .eq('document_type', _idDocType)
-                    .order('uploaded_at', ascending: false)
-                    .limit(1);
-                final docId = ((docs as List?)?.isNotEmpty ?? false)
-                    ? (docs as List).first['id'] as String
-                    : null;
-                if (docId != null) {
-                  final res = await _supabase.functions.invoke(
-                    'document-verify',
-                    body: {'document_id': docId},
-                  );
-                  final data = res.data as Map<String, dynamic>?;
-                  final status = data?['status'] as String?;
-                  if (status == 'AUTO_APPROVED') {
-                    _verificationOutcome =
-                        'Your ID was verified automatically — your account is '
-                        'already approved.';
-                  } else if (status == 'SUSPECTED_FRAUD') {
-                    _verificationOutcome =
-                        'We could not verify your document automatically. It '
-                        'was flagged for a manual check — our team will review '
-                        'it shortly.';
-                  } else {
-                    _verificationOutcome =
-                        'No readable QR found on your document. It was sent to '
-                        'our team for a manual check instead — nothing is '
-                        'blocked.';
-                  }
-                }
-              } catch (_) {
-                // Agent unreachable → manual review (default state). Never
-                // blocks signup.
-              }
-            }
-          } catch (docError) {
-            await _showDocumentUploadError(docError, router, messenger);
-          } finally {
-            if (mounted) setState(() => _uploadingDocs = false);
-          }
-          // Report a second-file failure only after the first file's row
-          // was recorded (never instead of it).
-          if (licenseError != null) {
-            await _showDocumentUploadError(licenseError, router, messenger);
-          }
-        }
-      } else {
-        await ref.read(authProvider.notifier).signUp(
-              email: _emailController.text.trim(),
-              phone: _phoneController.text.trim(),
-              password: _passwordController.text,
-              fullName: _nameController.text.trim(),
-              role: AppUserRole.user,
-              city: _selectedCity,
-            );
-
-        // No documents are collected for regular users at signup — the
-        // admin approves the account from the submitted details alone.
-      }
-
-      // Admin approval is the account gate (email confirmation is
-      // disabled in Supabase Auth), so signUp() returns a session
-      // immediately and the handle_new_user() trigger has already created
-      // the profile in PENDING_APPROVAL status. Go straight to the
-      // waiting-for-admin-approval screen.
-      final hasSession = _supabase.auth.currentSession != null;
-      if (!mounted) return;
-
-      if (!hasSession) {
-        // Defensive: only possible if email confirmation gets re-enabled
-        // in Supabase Auth. The account was still created — send the user
-        // to sign in instead of pretending registration failed.
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content:
-                  Text('Account created. Please sign in to continue.')),
-        );
-        context.go('/login');
-        return;
-      }
-
-      // Record the user's terms acceptance (version + timestamp) on the
-      // profile now that a session exists. Best-effort, never blocks.
-      await _recordTermsAcceptance();
-
-      // Auto-approved by the QR agent → straight into the app. Otherwise the
-      // waiting screen shows (with the agent's outcome note when present).
-      if (_verificationOutcome != null &&
-          _verificationOutcome!.contains('already approved')) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_verificationOutcome!)),
-        );
-        context.go('/user');
-        return;
-      }
-      if (_verificationOutcome != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_verificationOutcome!)),
-        );
-      }
-
-      context.go('/pending-approval');
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _uploadingDocs = false;
-          _error = _friendlyError(e.toString());
-        });
-      }
-    }
-  }
-
-  String _friendlyError(String raw) {
-    if (raw.contains('already registered') ||
-        raw.contains('already exists') ||
-        raw.contains('duplicate')) {
-      return 'An account with this email already exists.';
-    }
-    if (raw.contains('Password should be at least')) {
-      return 'Password must be at least 6 characters.';
-    }
-    if (raw.contains('network') || raw.contains('SocketException')) {
-      return 'Network error. Please check your connection.';
-    }
-    if (raw.contains('rate limit')) {
-      return 'Too many attempts. Please wait a moment and try again.';
-    }
-    return 'Registration failed: $raw';
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    _nationalIdController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    _kebeleController.dispose();
+    _streetRoadController.dispose();
+    super.dispose();
   }
 
   @override
@@ -515,7 +155,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                       const SizedBox(height: 6),
                       Text(
                         _isProvider
-                            ? 'Your application will be reviewed before activation'
+                            ? 'Register now — verify your ID when you start selling'
                             : 'Create your account to get started',
                         style: TextStyle(
                           fontSize: 14,
@@ -537,30 +177,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Document uploads are provider-only; regular users
-                        // sign up with contact details alone.
-                        if (_isProvider) ...[
-                          _buildDocumentSection(),
-                          const SizedBox(height: 24),
-                        ],
                         _buildFormFields(),
                         const SizedBox(height: 12),
-                        if (_uploadError != null)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.error.withOpacity(0.08),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color: AppTheme.error.withOpacity(0.2)),
-                            ),
-                            child: Text(_uploadError!,
-                                style: const TextStyle(
-                                    fontSize: 13, color: AppTheme.error)),
-                          ),
-                        if (_error != null) ...[
-                          const SizedBox(height: 12),
+                        if (_error != null)
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(12),
@@ -574,7 +193,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                                 style: const TextStyle(
                                     fontSize: 13, color: AppTheme.error)),
                           ),
-                        ],
                         const SizedBox(height: 24),
                         // Terms & Privacy agreement (final step, every flow).
                         Row(
@@ -619,12 +237,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                         SizedBox(
                           width: double.infinity,
                           child: PrimaryButton(
-                            label: _isProvider
-                                ? 'SUBMIT APPLICATION'
-                                : 'CREATE ACCOUNT',
+                            label: 'CONTINUE',
                             isLoading: _isLoading,
-                            onPressed:
-                                _agreedToTerms ? _handleSignup : null,
+                            onPressed: _agreedToTerms ? _handleSubmit : null,
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -654,7 +269,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               ),
             ],
           ),
-          if (_isLoading || _uploadingDocs)
+          if (_isLoading)
             Container(
               color: Colors.black26,
               child: Center(
@@ -671,17 +286,15 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                       ),
                     ],
                   ),
-                  child: Column(
+                  child: const Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const CircularProgressIndicator(
+                      CircularProgressIndicator(
                           color: AppTheme.primaryGreen),
-                      const SizedBox(height: 16),
+                      SizedBox(height: 16),
                       Text(
-                        _uploadingDocs
-                            ? 'Uploading documents...'
-                            : 'Creating account...',
-                        style: const TextStyle(
+                        'Creating account...',
+                        style: TextStyle(
                             fontSize: 14, color: AppTheme.textSecondary),
                       ),
                     ],
@@ -694,86 +307,135 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     );
   }
 
-  Widget _buildDocumentSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppTheme.primaryGreen.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.description_outlined,
-                  color: AppTheme.primaryGreen, size: 20),
-            ),
-            const SizedBox(width: 12),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Required Documents',
-                      style: AppTheme.sectionHeader),
-                  SizedBox(height: 2),
-                  Text('Upload clear photos of your documents',
-                      style: AppTheme.caption),
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        // National ID / ID document: providers only (verified upfront).
-        // Regular users browse and buy without ever providing an ID here.
-        if (_isProvider) ...[
-          const Text('ID document type', style: AppTheme.sectionHeader),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: _idDocTypes.entries
-                .map((e) => ChoiceChip(
-                      label: Text(e.value, style: const TextStyle(fontSize: 12)),
-                      selected: _idDocType == e.key,
-                      onSelected: (_) => setState(() => _idDocType = e.key),
-                    ))
-                .toList(),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            _idDocType == 'OTHER'
-                ? 'Sent to our team for a standard manual check.'
-                : 'If your document has a QR code, we verify it automatically.',
-            style: AppTheme.caption,
-          ),
-          const SizedBox(height: 12),
-          DocumentUploadCard(
-            title: _idDocTypes[_idDocType] ?? 'ID document',
-            subtitle: 'Clear photo of the side with the QR / ID number',
-            file: _nationalIdImage,
-            onPick: () => _showImagePicker(true),
-            onRemove: () => setState(() => _nationalIdImage = null),
-          ),
-        ],
-        // License is only required for providers
-        if (_isProvider) ...[
-          const SizedBox(height: 12),
-          DocumentUploadCard(
-            title: _roleName == 'Vehicle Provider'
-                ? 'Driving License'
-                : 'Trading License',
-            subtitle: _roleName == 'Vehicle Provider'
-                ? 'Updated driving license'
-                : 'Valid trading license',
-            file: _licenseImage,
-            onPick: () => _showImagePicker(false),
-            onRemove: () => setState(() => _licenseImage = null),
-          ),
-        ],
-      ],
+  /// Validate the form, then hand the user to email verification. The
+  /// account is only created AFTER the 6-digit code is verified — the
+  /// server (handle_new_user trigger) refuses signups without one.
+  Future<void> _handleSubmit() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (!_agreedToTerms) {
+      setState(() =>
+          _error = 'Please read and accept the Terms & Privacy Policy to continue.');
+      return;
+    }
+
+    // Park everything the account-creation step will need; the OTP screen
+    // hands it back when the code is verified.
+    final draft = SignupDraft(
+      rolePath: switch (widget.role) {
+        SignupRole.user => 'user',
+        SignupRole.vehicleProvider => 'vehicle-provider',
+        SignupRole.serviceProvider => 'service-provider',
+      },
+      name: _nameController.text.trim(),
+      email: _emailController.text.trim().toLowerCase(),
+      phone: _phoneController.text.trim(),
+      password: _passwordController.text,
+      city: _selectedCity,
+      kebele: _kebeleController.text.trim(),
+      streetRoad: _streetRoadController.text.trim(),
+      idDocType: _idDocType,
+      nationalIdNumber:
+          _isProvider ? _nationalIdController.text.trim() : null,
     );
+
+    final verified = await context.push<bool>(
+      '/otp-verify',
+      extra: OtpArgs(draft: draft),
+    );
+    if (verified != true || !mounted) return;
+
+    // Code verified — create the account now.
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      if (_isProvider) {
+        await ref.read(authProvider.notifier).signUpAsProvider(
+              email: draft.email,
+              phone: draft.phone,
+              password: draft.password,
+              businessName: draft.name,
+              ownerNationalId: draft.nationalIdNumber ?? '',
+              providerType: _providerType,
+              city: draft.city,
+              kebele: draft.kebele,
+              streetRoad: draft.streetRoad,
+              idDocType: draft.idDocType,
+            );
+      } else {
+        await ref.read(authProvider.notifier).signUp(
+              email: draft.email,
+              phone: draft.phone,
+              password: draft.password,
+              fullName: draft.name,
+              role: AppUserRole.user,
+              city: draft.city,
+              kebele: draft.kebele,
+              streetRoad: draft.streetRoad,
+            );
+      }
+
+      // Admin approval is the account gate (email confirmation is disabled
+      // in Supabase Auth), so signUp() returns a session immediately and the
+      // handle_new_user() trigger has already created the profile in
+      // PENDING_APPROVAL status. Go straight to the waiting screen.
+      final hasSession = Supabase.instance.client.auth.currentSession != null;
+      if (!mounted) return;
+
+      if (!hasSession) {
+        // Defensive: only possible if email confirmation gets re-enabled
+        // in Supabase Auth. The account was still created — send the user
+        // to sign in instead of pretending registration failed.
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text('Account created. Please sign in to continue.')),
+        );
+        context.go('/login');
+        return;
+      }
+
+      // Record the user's terms acceptance (version + timestamp) on the
+      // profile now that a session exists. Best-effort, never blocks.
+      try {
+        await Supabase.instance.client
+            .rpc('accept_terms', params: {'p_version': kTermsVersion});
+      } catch (_) {
+        // Non-fatal: the account itself was already created successfully.
+      }
+
+      context.go('/pending-approval');
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = _friendlyError(e.toString());
+        });
+      }
+    }
+  }
+
+  String _friendlyError(String raw) {
+    if (raw.contains('already registered') ||
+        raw.contains('already exists') ||
+        raw.contains('duplicate')) {
+      return 'An account with this email already exists.';
+    }
+    if (raw.contains('Password should be at least')) {
+      return 'Password must be at least 6 characters.';
+    }
+    if (raw.contains('network') || raw.contains('SocketException')) {
+      return 'Network error. Please check your connection.';
+    }
+    if (raw.contains('rate limit')) {
+      return 'Too many attempts. Please wait a moment and try again.';
+    }
+    if (raw.contains('EMAIL_OTP_REQUIRED')) {
+      return 'Email verification expired. Please verify your email again.';
+    }
+    return 'Registration failed: $raw';
   }
 
   Widget _buildFormFields() {
@@ -812,6 +474,32 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           validator: (v) =>
               (v == null || v.isEmpty) ? 'City is required' : null,
           onChanged: (v) => setState(() => _selectedCity = v),
+        ),
+        const SizedBox(height: 16),
+        // Task 7: Kebele + Street/Road right after City — used for GPS
+        // tracking accuracy and identity verification.
+        BirrTextField(
+          label: 'Kebele',
+          hint: 'e.g. Kebele 08',
+          controller: _kebeleController,
+          textInputAction: TextInputAction.next,
+          validator: (v) {
+            if (v == null || v.trim().isEmpty) return 'Kebele is required';
+            return null;
+          },
+        ),
+        const SizedBox(height: 16),
+        BirrTextField(
+          label: 'Street / Road',
+          hint: 'e.g. Bole Road, near Edna Mall',
+          controller: _streetRoadController,
+          textInputAction: TextInputAction.next,
+          validator: (v) {
+            if (v == null || v.trim().isEmpty) {
+              return 'Street / Road is required';
+            }
+            return null;
+          },
         ),
         const SizedBox(height: 16),
         BirrTextField(
@@ -853,9 +541,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ),
         ),
         const SizedBox(height: 16),
-        // National ID is only collected from providers (verified upfront).
-        // Regular users sign up without it and provide ID later at booking
-        // time if the order type requires one.
+        // National ID number is collected for the record (providers only);
+        // the ID IMAGE is uploaded later, at the first protected action
+        // (upload product / accept order) after wallet recharge (Task 7).
         if (_isProvider) ...[
           BirrTextField(
             label: 'National ID Number',
@@ -868,6 +556,27 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               if (v.trim().length < 4) return 'Invalid national ID';
               return null;
             },
+          ),
+          const SizedBox(height: 16),
+          const Text('ID document type', style: AppTheme.sectionHeader),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: _idDocTypes.entries
+                .map((e) => ChoiceChip(
+                      label: Text(e.value, style: const TextStyle(fontSize: 12)),
+                      selected: _idDocType == e.key,
+                      onSelected: (_) => setState(() => _idDocType = e.key),
+                    ))
+                .toList(),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _idDocType == 'OTHER'
+                ? 'Verified manually by our team later.'
+                : 'If your document has a QR code, it can be verified automatically later.',
+            style: AppTheme.caption,
           ),
           const SizedBox(height: 16),
         ],
@@ -899,7 +608,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           controller: _confirmPasswordController,
           obscure: _obscureConfirm,
           textInputAction: TextInputAction.done,
-          onEditingComplete: _handleSignup,
+          onEditingComplete: _handleSubmit,
           suffixIcon: IconButton(
             icon: Icon(
               _obscureConfirm

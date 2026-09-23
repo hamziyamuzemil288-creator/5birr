@@ -61,11 +61,10 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         final catData = await client
             .from('categories')
             .select()
-            .eq('sector', 'SERVICE')
             .eq('is_active', true)
             .isFilter('parent_id', null)
             .order('sort_order')
-            .limit(12);
+            .limit(30);
         categories =
             (catData as List).map((j) => AppCategory.fromJson(j)).toList();
         _cachedCategories = categories;
@@ -343,37 +342,14 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
               ),
             ),
           ),
-          // Categories
+          // Categories — two top-level groups (Task 7 item 5):
+          // PRODUCT_BASED = the user orders/receives a physical product;
+          // BOOKING_BASED = the user books a service/ride/time slot.
           if (_categories.isNotEmpty) ...[
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
-                child: Text('Browse Categories',
-                    style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textPrimary)),
-              ),
-            ),
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 96,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  itemCount: _categories.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 16),
-                  itemBuilder: (_, i) {
-                    final c = _categories[i];
-                    return CategoryCard(
-                      name: c.name,
-                      icon: _catIcon(c.slug),
-                      onTap: () => context.push('/user/category/${c.id}'),
-                    );
-                  },
-                ),
-              ),
-            ),
+            _categoryGroup('Product-based',
+                _categories.where((c) => c.serviceGroup != 'BOOKING_BASED').toList()),
+            _categoryGroup('Booking-based',
+                _categories.where((c) => c.serviceGroup == 'BOOKING_BASED').toList()),
           ],
           // Products header
           SliverToBoxAdapter(
@@ -649,7 +625,54 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     if (slug.contains('education')) return Icons.school_outlined;
     if (slug.contains('fitness')) return Icons.fitness_center;
     if (slug.contains('real-estate')) return Icons.apartment;
+    if (slug.contains('ride') || slug.contains('taxi') || slug.contains('bus') || slug.contains('airport'))
+      return Icons.directions_car_outlined;
+    if (slug.contains('delivery') || slug.contains('freight') || slug.contains('truck') || slug.contains('moving'))
+      return Icons.local_shipping_outlined;
+    if (slug.contains('tour') || slug.contains('travel')) return Icons.tour_outlined;
+    if (slug.contains('ambulance') || slug.contains('emergency')) return Icons.emergency_outlined;
+    if (slug.contains('rental')) return Icons.car_rental_outlined;
+    if (slug.contains('motorcycle') || slug.contains('bajaj')) return Icons.two_wheeler_outlined;
+    if (slug.contains('special')) return Icons.agriculture_outlined;
     return Icons.category_outlined;
+  }
+
+  /// Task 7 item 5: one titled horizontal rail of category cards.
+  Widget _categoryGroup(String title, List<AppCategory> cats) {
+    if (cats.isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
+    return SliverMainAxisGroup(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+            child: Text(title,
+                style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary)),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 96,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              itemCount: cats.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 16),
+              itemBuilder: (_, i) {
+                final c = cats[i];
+                return CategoryCard(
+                  name: c.name,
+                  icon: _catIcon(c.slug),
+                  onTap: () => context.push('/user/category/${c.id}'),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 

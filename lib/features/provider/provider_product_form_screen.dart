@@ -8,6 +8,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/provider_activation_service.dart';
+import '../../core/services/provider_doc_gate.dart';
 
 class ProviderProductFormScreen extends StatefulWidget {
   final String? productId;
@@ -155,6 +156,10 @@ class _State extends State<ProviderProductFormScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_providerId == null) return;
+    // Task 7: one-time document check before the first protected action.
+    // Providers upload their ID documents here (not at signup) — after
+    // their wallet recharge, exactly when they start selling.
+    if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
     // Block uploads until the one-time registration fee is paid.
     if (!_registrationFeePaid) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

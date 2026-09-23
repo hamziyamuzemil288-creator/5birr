@@ -83,11 +83,11 @@ class _ServiceProviderDashboardState
       appBar: AppBar(
         title: const Text('Aliob Business'),
         actions: [
+          // Task 7 item 2: real notification inbox (admin broadcasts land
+          // here), not a placeholder snackbar.
           IconButton(
               icon: const Icon(Icons.notifications_outlined),
-              onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Coming soon')),
-              )),
+              onPressed: () => context.push('/admin-notifications')),
           IconButton(
               icon: const Icon(Icons.logout),
               onPressed: () =>

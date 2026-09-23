@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/provider_activation_service.dart';
+import '../../core/services/provider_doc_gate.dart';
 
 class VehicleFormScreen extends StatefulWidget {
   final String? vehicleId;
@@ -91,6 +92,9 @@ class _State extends State<VehicleFormScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_providerId == null) return;
+    // Task 7: one-time document check before the first protected action
+    // (registering a vehicle for orders). Happens after wallet recharge.
+    if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
     // Block uploads until the one-time registration fee is paid.
     if (!_registrationFeePaid) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

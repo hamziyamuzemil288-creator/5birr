@@ -223,6 +223,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String fullName,
     required AppUserRole role,
     String? city,
+    String? kebele,
+    String? streetRoad,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -236,6 +238,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'full_name': fullName,
           'phone': e164 ?? phone,
           if (city != null && city.isNotEmpty) 'city': city,
+          if (kebele != null && kebele.isNotEmpty) 'kebele': kebele,
+          if (streetRoad != null && streetRoad.isNotEmpty) 'street_road': streetRoad,
         },
       );
 
@@ -279,6 +283,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String ownerNationalId,
     required String providerType,
     String? city,
+    String? kebele,
+    String? streetRoad,
+    String idDocType = 'NATIONAL_ID',
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -294,7 +301,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'national_id': ownerNationalId,
           'provider_type': providerType,
           'business_name': businessName,
+          // Task 7: ID document type is recorded now; the actual image is
+          // uploaded at the first protected action (upload product / claim
+          // order) after wallet recharge.
+          'id_doc_type': idDocType,
           if (city != null && city.isNotEmpty) 'city': city,
+          if (kebele != null && kebele.isNotEmpty) 'kebele': kebele,
+          if (streetRoad != null && streetRoad.isNotEmpty) 'street_road': streetRoad,
         },
       );
 

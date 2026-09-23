@@ -5,11 +5,13 @@ import '../core/providers/auth_provider.dart';
 import '../features/splash/splash_screen.dart';
 import '../features/auth/login_screen.dart';
 import '../features/auth/signup_screen.dart' show SignupScreen, SignupRole;
+import '../features/auth/otp_verification_screen.dart';
 import '../features/auth/role_selection_screen.dart';
 import '../features/auth/admin_login_screen.dart';
 import '../features/auth/terms_policy_screen.dart';
 import '../features/auth/update_password_screen.dart';
 import '../features/user/user_dashboard.dart';
+import '../features/user/user_notifications_screen.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
 import '../features/user/user_category_screen.dart';
@@ -200,6 +202,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(path: '/admin-login', builder: (_, __) => const AdminLoginScreen()),
+
+      // Task 7 item 1: email OTP verification between the signup form and
+      // account creation. Returns `true` when the code was verified.
+      GoRoute(
+        path: '/otp-verify',
+        builder: (_, s) => OtpVerificationScreen(args: s.extra as OtpArgs),
+      ),
       GoRoute(
         path: '/update-password',
         builder: (_, __) => const UpdatePasswordScreen(),
@@ -307,6 +316,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),
       // User-submitted appeal / spam-report form (linked from the help chat).
       GoRoute(path: '/appeal', builder: (_, __) => const AppealScreen()),
+
+      // Task 7 item 2: standalone notification inbox for providers/vehicle
+      // owners (their dashboards' bell). Users get the same screen as a
+      // dashboard tab; staff in the admin panel have /admin/send-notifications.
+      GoRoute(
+          path: '/admin-notifications',
+          builder: (_, __) => const Scaffold(body: UserNotificationsScreen())),
     ],
   );
 });

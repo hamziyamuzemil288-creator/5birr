@@ -103,7 +103,9 @@ jobs:
             exit 0
           fi
 
-          LAST=$(gh api -R "${{ github.repository }}" 'actions/workflows/debug-apk.yml/runs?per_page=1' \
+          # gh api has no -R flag — the repo must be embedded in the endpoint
+          # path (this is the -R bug that deadlocked the whole sweep).
+          LAST=$(gh api "repos/${{ github.repository }}/actions/workflows/debug-apk.yml/runs?per_page=1" \
             --jq '.workflow_runs[0] | [.id, .conclusion] | @tsv')
           RUN_ID="${LAST%%$'\t'*}"; CONCLUSION="${LAST#*$'\t'}"
           echo "Latest Build Debug APK run $RUN_ID: $CONCLUSION"

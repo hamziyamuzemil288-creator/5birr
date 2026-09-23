@@ -61,12 +61,14 @@ class _AdminNotificationSendScreenState extends State<AdminNotificationSendScree
           await client.from('notifications').insert(notifications);
         }
       } else if (_targetType == 'ROLE') {
-        // Role-based: query profiles with matching role
+        // Role-based: roles live in user_roles (Task 7 fix — the old query
+        // filtered profiles.role, a column that does not exist, so every
+        // role-targeted broadcast silently sent to nobody).
         final users = await client
-            .from('profiles')
-            .select('id')
-            .contains('role', '["$_targetRole"]');
-        final userIds = (users as List).map((u) => u['id'] as String).toList();
+            .from('user_roles')
+            .select('user_id')
+            .eq('role', _targetRole);
+        final userIds = (users as List).map((u) => u['user_id'] as String).toList();
 
         final notifications = userIds.map((uid) => {
           'user_id': uid,
@@ -77,6 +79,20 @@ class _AdminNotificationSendScreenState extends State<AdminNotificationSendScree
 
         if (notifications.isNotEmpty) {
           await client.from('notifications').insert(notifications);
+        }
+
+        // Broadcast bookkeeping (admin_notification_broadcasts, 0024).
+        try {
+          await client.from('admin_notification_broadcasts').insert({
+            'admin_id': client.auth.currentUser!.id,
+            'title': _titleCtrl.text.trim(),
+            'body': _bodyCtrl.text.trim(),
+            'target_type': 'ROLE',
+            'target_role': _targetRole,
+            'delivered_count': notifications.length,
+          });
+        } catch (_) {
+          // Audit row is best-effort; delivery already succeeded.
         }
       } else {
         // Direct to specific user

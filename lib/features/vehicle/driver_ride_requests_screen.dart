@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart' as geo;
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/services/provider_doc_gate.dart';
 
 class DriverRideRequestsScreen extends StatefulWidget {
   const DriverRideRequestsScreen({super.key});
@@ -68,6 +69,10 @@ class _State extends State<DriverRideRequestsScreen> {
 
   Future<void> _claim(Map<String, dynamic> ride) async {
     if (_providerId == null) return;
+    // Task 7: one-time document check before accepting an order — the
+    // post-recharge trigger point. Missing docs open the upload + QR
+    // verification sheet; declining keeps the ride available to others.
+    if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
     // Get first available vehicle
     final client = Supabase.instance.client;
     final vehicles = await client
