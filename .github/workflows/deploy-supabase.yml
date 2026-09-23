@@ -210,6 +210,12 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy document-verify
 
+      # Email OTP delivery for signup (Task 7). Stub mode until an email
+      # provider is wired (see the function header for the TODO).
+      - name: Deploy function send-otp
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy send-otp
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |
