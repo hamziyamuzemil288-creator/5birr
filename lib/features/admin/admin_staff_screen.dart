@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../core/providers/auth_provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -28,10 +27,6 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   String? _error;
   bool _isSuperAdmin = false;
   bool _isCeo = false;
-  /// One-time bootstrap: an ADMIN with neither CEO nor super admin yet may
-  /// initialize the hierarchy (create_staff self-links the top row).
-  bool _canBootstrap = false;
-  bool _hasExistingProgram = false;
 
   /// Permission vocabulary. The three `view_*` entries are the
   /// reports / expenses / auth-log visibility the hierarchy spec adds;
@@ -61,16 +56,20 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     });
     try {
       final client = Supabase.instance.client;
-      final uid = client.auth.currentUser?.id;
-      if (uid != null) {
-        final me = await client
-            .from('staff')
-            .select('is_super_admin,is_ceo')
-            .eq('user_id', uid)
-            .eq('is_active', true)
-            .maybeSingle();
-        _isSuperAdmin = (me?['is_super_admin'] as bool?) ?? false;
-        _isCeo = (me?['is_ceo'] as bool?) ?? false;
+      // Identity via the server helpers: is_ceo() covers the true Admin
+      // (the Supabase-registered owner account, which never has a staff
+      // row) and is_super_admin() the active Super Admin staff row.
+      if (client.auth.currentUser != null) {
+        try {
+          _isCeo = await client.rpc('is_ceo') == true;
+        } catch (_) {
+          _isCeo = false;
+        }
+        try {
+          _isSuperAdmin = await client.rpc('is_super_admin') == true;
+        } catch (_) {
+          _isSuperAdmin = false;
+        }
       }
       final rows = await client.from('staff').select().order('created_at');
       final staff = List<Map<String, dynamic>>.from(rows as List);
@@ -87,14 +86,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         // Category listing is optional for the editor; staff ops continue.
       }
       if (!mounted) return;
-      final hasActiveSuper =
-          staff.any((s) => s['is_super_admin'] == true && s['is_active'] == true);
-      final hasCeo = staff.any((s) => s['is_ceo'] == true && s['is_active'] == true);
       setState(() {
         _staff = staff;
         _categories = cats;
-        _hasExistingProgram = hasActiveSuper || hasCeo;
-        _canBootstrap = ref.read(authProvider).isAdmin && !_hasExistingProgram;
         _loading = false;
       });
     } catch (e) {
@@ -119,70 +113,6 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     return ((s['branch'] as String?) ?? 'ADMIN') == 'ME'
         ? Icons.badge_outlined
         : Icons.support_agent_outlined;
-  }
-
-  /// One-time initialization of the hierarchy. The acting ADMIN becomes the
-  /// CEO (ME branch, owner row) — create_staff self-links their auth user.
-  Future<void> _bootstrapStaffProgram() async {
-    final nameController = TextEditingController(
-        text: Supabase.instance.client.auth.currentUser?.userMetadata?['full_name'] as String? ?? '');
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Initialize role hierarchy'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-                'You are the first admin. This creates your CEO (owner) '
-                'record at the top of the hierarchy so you can add a super '
-                'admin and categorized sub-admins. This can only be done '
-                'once.'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(labelText: 'Your name *'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Initialize')),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    final name = nameController.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Your name is required')));
-      return;
-    }
-    try {
-      final code =
-          'CEO-' + DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
-      await Supabase.instance.client.rpc('create_staff', params: {
-        'p_name': name,
-        'p_staff_code': code,
-        'p_permissions': _permissionOptions.keys.toList(),
-        'p_sales_target': 0,
-        'p_is_super_admin': false,
-        'p_branch': 'ME',
-        'p_assigned_categories': <String>[],
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Hierarchy initialized — you are the CEO')));
-      _load();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.toString())));
-    }
   }
 
   Future<void> _openEditor([Map<String, dynamic>? existing]) async {
@@ -575,28 +505,12 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                             const SizedBox(height: 12),
                             const Text('No staff yet',
                                 style: TextStyle(color: AppTheme.textMuted)),
-                            if (_canBootstrap) ...[
-                              const SizedBox(height: 16),
-                              PrimaryButton(
-                                label: 'INITIALIZE ROLE HIERARCHY',
-                                onPressed: _bootstrapStaffProgram,
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                'One-time: makes you the CEO so you can add '
-                                'a super admin and categorized sub-admins.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                    fontSize: 12, color: AppTheme.textMuted),
-                              ),
-                            ] else ...[
-                              const SizedBox(height: 8),
-                              const Text(
-                                'Ask the CEO or super admin to add staff members.',
-                                style: TextStyle(
-                                    fontSize: 12, color: AppTheme.textMuted),
-                              ),
-                            ],
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Ask the CEO or super admin to add staff members.',
+                              style: TextStyle(
+                                  fontSize: 12, color: AppTheme.textMuted),
+                            ),
                           ],
                         ),
                       ),
