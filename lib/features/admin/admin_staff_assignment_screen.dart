@@ -228,7 +228,8 @@ class _AdminStaffAssignmentScreenState
 
   Future<void> _toggleSuperAdmin(bool on) async {
     final u = _selected;
-    final staffId = (u?['_staff']?.['id']) as String?;
+    final staffMap = u?['_staff'] as Map<String, dynamic>?;
+    final staffId = staffMap?['id'] as String?;
     if (u == null || _saving) return;
     if (on && staffId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
