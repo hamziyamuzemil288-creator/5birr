@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 
 class DriverTripScreen extends StatefulWidget {
@@ -245,10 +246,7 @@ class _State extends State<DriverTripScreen> {
             initialZoom: points.length == 1 ? 15 : 13.5,
           ),
           children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.amistbirr.myapp',
-            ),
+            const ResilientTileLayer(),
             MarkerLayer(
               markers: [
                 if (driverMarker != null)

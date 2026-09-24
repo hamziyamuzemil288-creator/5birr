@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
@@ -986,11 +987,9 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
               onTap: (_, point) => setState(() => _picked = point),
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                // Android identifies tile requests by the app's package name.
-                userAgentPackageName: 'com.amistbirr.myapp',
-              ),
+              // Tile errors fail gracefully (placeholder + retry) instead
+              // of crashing the screen — see ResilientTileLayer.
+              const ResilientTileLayer(),
               if (_picked != null)
                 MarkerLayer(
                   markers: [

@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 
 class UserActiveRideScreen extends StatefulWidget {
@@ -240,10 +241,7 @@ class _State extends State<UserActiveRideScreen> {
               onTap: (_, __) => setState(() => _followUser = false),
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.amistbirr.myapp',
-              ),
+              const ResilientTileLayer(),
               const RichAttributionWidget(
                 attributions: [
                   TextSourceAttribution('© OpenStreetMap contributors'),
