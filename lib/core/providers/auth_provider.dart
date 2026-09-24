@@ -17,6 +17,7 @@ class AuthState {
   final UserProfile? profile;
   final List<AppUserRole> roles;
   final AppUserRole? primaryRole;
+  final bool isStaffGateway;
   final bool isLoading;
   final String? error;
 
@@ -29,6 +30,7 @@ class AuthState {
     this.profile,
     this.roles = const [],
     this.primaryRole,
+    this.isStaffGateway = false,
     this.isLoading = true,
     this.error,
     this.isRecoverySession = false,
@@ -39,6 +41,7 @@ class AuthState {
     UserProfile? profile,
     List<AppUserRole>? roles,
     AppUserRole? primaryRole,
+    bool? isStaffGateway,
     bool? isLoading,
     String? error,
     bool? isRecoverySession,
@@ -49,6 +52,7 @@ class AuthState {
       profile: profile ?? this.profile,
       roles: roles ?? this.roles,
       primaryRole: primaryRole ?? this.primaryRole,
+      isStaffGateway: isStaffGateway ?? this.isStaffGateway,
       isLoading: isLoading ?? this.isLoading,
       error: clearError ? null : (error ?? this.error),
       isRecoverySession: isRecoverySession ?? this.isRecoverySession,
@@ -57,6 +61,7 @@ class AuthState {
 
   bool get isAuthenticated => user != null;
   bool get isAdmin => roles.contains(AppUserRole.admin);
+  bool get isStaffMember => isStaffGateway && isAdmin;
   bool get isVehicleProvider => roles.contains(AppUserRole.vehicleProvider);
   bool get isServiceProvider => roles.contains(AppUserRole.serviceProvider);
   bool get isUser => roles.contains(AppUserRole.user);
@@ -156,6 +161,22 @@ class AuthNotifier extends StateNotifier<AuthState> {
           .map((r) => _parseRole(r['role'] as String))
           .toList();
 
+      // Gateway accounts are ADMIN-role identities, but they use the staff
+      // workspace rather than the CEO/admin dashboard. This lookup is
+      // deliberately user-scoped and contains no password data.
+      bool isStaffGateway = false;
+      try {
+        final gateway = await _svc.client
+            .from('staff_credentials')
+            .select('staff_id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+        isStaffGateway = gateway != null;
+      } catch (_) {
+        // A pre-Task-12 database has no gateway table. Preserve the existing
+        // login behavior until the migration is deployed.
+      }
+
       final primaryRole = roles.firstWhere(
         (r) => r != AppUserRole.user,
         orElse: () => AppUserRole.user,
@@ -166,6 +187,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         profile: profile,
         roles: roles,
         primaryRole: primaryRole,
+        isStaffGateway: isStaffGateway,
         isLoading: false,
         error: null,
         // Keeps the recovery flag across later token refreshes, and only

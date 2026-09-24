@@ -119,10 +119,15 @@ class _State extends State<VehicleFormScreen> {
       if (_isEdit) {
         await client.from('vehicles').update(data).eq('id', widget.vehicleId!);
       } else {
-        data['provider_id'] = _providerId;
-        data['status'] = 'PENDING_APPROVAL';
-        data['is_available'] = false;
-        await client.from('vehicles').insert(data);
+        await client.rpc('create_provider_vehicle', params: {
+          'p_provider_id': _providerId,
+          'p_brand': data['brand'],
+          'p_model': data['model'],
+          'p_plate_number': data['plate_number'],
+          'p_color': data['color'],
+          'p_capacity': data['capacity'],
+          'p_category_id': data['category_id'],
+        });
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(

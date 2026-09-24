@@ -8,6 +8,8 @@ import '../features/auth/signup_screen.dart' show SignupScreen, SignupRole;
 import '../features/auth/otp_verification_screen.dart';
 import '../features/auth/role_selection_screen.dart';
 import '../features/auth/admin_login_screen.dart';
+import '../features/auth/staff_login_screen.dart';
+import '../features/staff/staff_dashboard_screen.dart';
 import '../features/auth/terms_policy_screen.dart';
 import '../features/auth/update_password_screen.dart';
 import '../features/user/user_dashboard.dart';
@@ -122,6 +124,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isAuthRoute = loc == '/login' ||
           loc == '/role-select' ||
           loc == '/admin-login' ||
+          loc == '/staff/login' ||
           loc == '/terms' ||
           loc == '/update-password';
       final isSignupRoute = loc.startsWith('/signup/');
@@ -141,6 +144,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       if (authState.profile == null || authState.roles.isEmpty) {
         refreshNotifier.scheduleProfileRetry();
         return null;
+      }
+
+      // Staff gateway accounts are authenticated but intentionally land in
+      // their own workspace, not the broad admin dashboard.
+      if (authState.isStaffMember) {
+        if (loc == '/staff/login' || loc == '/' || isAuthRoute || isSignupRoute) {
+          return '/staff/dashboard';
+        }
       }
 
       // ── Password recovery — checked BEFORE every other gate ──
@@ -202,6 +213,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(path: '/admin-login', builder: (_, __) => const AdminLoginScreen()),
+      GoRoute(path: '/staff/login', builder: (_, __) => const StaffLoginScreen()),
+      GoRoute(path: '/staff/dashboard', builder: (_, __) => const StaffDashboardScreen()),
 
       // Task 7 item 1: email OTP verification between the signup form and
       // account creation. Returns `true` when the code was verified.
@@ -328,6 +341,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 });
 
 String _getDashboardPath(AuthState auth) {
+  if (auth.isStaffMember) return '/staff/dashboard';
   if (auth.isAdmin) return '/admin';
   if (auth.primaryRole == AppUserRole.vehicleProvider) return '/vehicle';
   if (auth.primaryRole == AppUserRole.serviceProvider) return '/provider';

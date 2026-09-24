@@ -216,6 +216,18 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy send-otp
 
+      - name: Deploy function staff-create-gateway
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy staff-create-gateway
+
+      - name: Deploy function staff-change-password
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy staff-change-password
+
+      - name: Deploy function staff-login (no JWT verification)
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy staff-login --no-verify-jwt
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |

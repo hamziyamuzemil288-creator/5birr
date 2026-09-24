@@ -6,8 +6,10 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/captcha_service.dart';
 import '../../core/services/city_service.dart';
 import '../../core/utils/phone_formatter.dart';
+import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import 'terms_policy_screen.dart';
@@ -50,6 +52,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
+  bool _captchaRequired = false;
+  String? _captchaId;
   String? _error;
 
   // Terms & Privacy agreement (Behavior 5): required before the submit
@@ -86,6 +90,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       default:
         return '';
     }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCaptchaRequirement();
+  }
+
+  Future<void> _loadCaptchaRequirement() async {
+    final required = await CaptchaService.instance.isRequired();
+    if (mounted) setState(() => _captchaRequired = required);
   }
 
   @override
@@ -263,13 +278,22 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                             ),
                           ],
                         ),
+                        if (_captchaRequired) ...[
+                          const SizedBox(height: 16),
+                          CaptchaChallengeField(
+                            onVerified: (id) => setState(() => _captchaId = id),
+                          ),
+                        ],
                         const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
                           child: PrimaryButton(
                             label: 'CONTINUE',
                             isLoading: _isLoading,
-                            onPressed: _agreedToTerms ? _handleSubmit : null,
+                            onPressed: _agreedToTerms &&
+                                    (!_captchaRequired || _captchaId != null)
+                                ? _handleSubmit
+                                : null,
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -347,6 +371,11 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           _error = 'Please read and accept the Terms & Privacy Policy to continue.');
       return;
     }
+    if (_captchaRequired && _captchaId == null) {
+      setState(() =>
+          _error = 'Please complete the security check before continuing.');
+      return;
+    }
 
     // Park everything the account-creation step will need; the OTP screen
     // hands it back when the code is verified.
@@ -367,6 +396,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           _isProvider ? _nationalIdController.text.trim() : null,
       referralCode:
           _isProvider ? _referralController.text.trim() : null,
+      captchaId: _captchaId,
     );
 
     final verified = await context.push<bool>(

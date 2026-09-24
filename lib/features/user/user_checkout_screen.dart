@@ -55,7 +55,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   Future<void> _refreshProviderReadiness() async {
     try {
       final prov = await Supabase.instance.client
-          .from('provider_profiles')
+          .from('public_provider_profiles')
           .select('business_name, registration_fee_paid, status')
           .eq('id', widget.providerId)
           .maybeSingle();

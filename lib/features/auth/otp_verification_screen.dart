@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/services/captcha_service.dart';
 import '../../core/services/otp_service.dart';
+import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/primary_button.dart';
 
 /// Extra route data: everything the signup screen needs to finish the
@@ -29,6 +31,9 @@ class SignupDraft {
   // Task 8: optional referral code (provider flows only). Parked through OTP
   // verification like every other field; blank/unknown never blocks signup.
   final String? referralCode;
+  // Task 10: the signup CAPTCHA id is reused for the first OTP request so the
+  // user solves one challenge at the start of registration.
+  final String? captchaId;
 
   const SignupDraft({
     required this.rolePath,
@@ -41,6 +46,7 @@ class SignupDraft {
     this.streetRoad,
     this.nationalIdNumber,
     this.referralCode,
+    this.captchaId,
   });
 }
 
@@ -61,8 +67,10 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
 
   bool _verifying = false;
   bool _sending = false;
+  bool _captchaRequired = false;
+  bool _showResendCaptcha = false;
+  String? _resendCaptchaId;
   String? _error;
-  String? _devCode; // stub-mode aid, shown as a banner
   Timer? _resendTimer;
 
   int _resendIn = 0;
@@ -72,7 +80,18 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    _requestCode(initial: true);
+    _initializeOtpRequest();
+  }
+
+  Future<void> _initializeOtpRequest() async {
+    final required = await CaptchaService.instance.isRequired();
+    if (!mounted) return;
+    setState(() => _captchaRequired = required);
+    if (!required || widget.args.draft.captchaId != null) {
+      await _requestCode();
+    } else {
+      setState(() => _showResendCaptcha = true);
+    }
   }
 
   @override
@@ -89,17 +108,26 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
 
   String get _email => widget.args.draft.email;
 
-  Future<void> _requestCode({bool initial = false}) async {
+  Future<void> _requestCode({String? captchaId}) async {
+    final challengeId = captchaId ?? widget.args.draft.captchaId;
+    if (_captchaRequired && challengeId == null) {
+      setState(() => _showResendCaptcha = true);
+      return;
+    }
     setState(() {
       _sending = true;
       _error = null;
     });
     try {
-      final devCode = await OtpService.instance.sendOtp(_email);
+      await OtpService.instance.sendOtp(
+        _email,
+        captchaId: challengeId,
+      );
       if (!mounted) return;
       setState(() {
         _sending = false;
-        _devCode = devCode;
+        _showResendCaptcha = false;
+        _resendCaptchaId = null;
         _expiresAt = DateTime.now().add(const Duration(minutes: 10));
         _resendIn = 60;
       });
@@ -118,6 +146,19 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
         _error = 'Could not send the code. Check your connection and retry.';
       });
     }
+  }
+
+  void _startResendCaptcha() {
+    if (!_captchaRequired) {
+      _requestCode();
+      return;
+    }
+    setState(() => _showResendCaptcha = true);
+  }
+
+  void _onResendCaptchaVerified(String captchaId) {
+    setState(() => _resendCaptchaId = captchaId);
+    _requestCode(captchaId: captchaId);
   }
 
   void _startResendCountdown() {
@@ -235,22 +276,20 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                 children: List.generate(_codeLength, (i) => _box(i)),
               ),
 
-              if (_devCode != null) ...[
+              if (_showResendCaptcha) ...[
                 const SizedBox(height: 20),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.gold.withOpacity(0.08),
-                    border: Border.all(color: AppTheme.gold.withOpacity(0.3)),
-                    borderRadius: BorderRadius.circular(8),
+                const Text(
+                  'One quick check is needed before sending a new code.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary,
                   ),
-                  child: Text(
-                    'DEV MODE — no email provider connected yet.\n'
-                    'Your verification code is: $_devCode',
-                    style: const TextStyle(
-                        fontSize: 13, color: AppTheme.textPrimary),
-                  ),
+                ),
+                const SizedBox(height: 10),
+                CaptchaChallengeField(
+                  key: ValueKey('resend-captcha-${_resendCaptchaId ?? 'new'}'),
+                  onVerified: _onResendCaptchaVerified,
                 ),
               ],
 
@@ -288,7 +327,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                             fontSize: 13, color: AppTheme.textMuted),
                       )
                     : TextButton(
-                        onPressed: () => _requestCode(),
+                        onPressed: _startResendCaptcha,
                         child: const Text(
                           'Resend code',
                           style: TextStyle(

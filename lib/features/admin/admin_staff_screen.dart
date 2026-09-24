@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/services/staff_admin_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -122,7 +123,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         TextEditingController(text: existing?['staff_code'] as String? ?? '');
     final targetController = TextEditingController(
         text: existing?['sales_target']?.toString() ?? '0');
-    final emailController = TextEditingController();
+    final usernameController = TextEditingController();
+    final passwordController = TextEditingController();
+    final confirmPasswordController = TextEditingController();
     final selected = ((existing?['permissions'] as List?) ?? [])
         .map((e) => e.toString())
         .toList();
@@ -173,18 +176,32 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       const InputDecoration(labelText: 'Sales target (ETB)'),
                 ),
                 const SizedBox(height: 12),
-                if (existing == null || existing?['user_id'] == null) ...[
+                if (existing == null && _isCeo) ...[
+                  const SizedBox(height: 4),
+                  const Text('Gateway credentials (CEO only)',
+                      style: AppTheme.sectionHeader),
+                  const SizedBox(height: 8),
                   TextField(
-                    controller: emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: InputDecoration(
-                      labelText: existing == null
-                          ? 'Sign-in email (optional)'
-                          : 'Sign-in email *',
-                      helperText: existing == null
-                          ? 'The account this staff member signs in with'
-                          : 'This staff entry is not linked to an account yet',
+                    controller: usernameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Username *',
+                      helperText: '3–32 characters; handed to staff offline',
                     ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Initial password *',
+                      helperText: 'At least 10 characters; never shown again',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: confirmPasswordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: 'Confirm password *'),
                   ),
                   const SizedBox(height: 12),
                 ],
@@ -277,8 +294,22 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     }
                     try {
                       final client = Supabase.instance.client;
-                      if (existing == null) {
-                        final created = await client.rpc('create_staff',
+                      if (existing == null && _isCeo) {
+                        const service = StaffAdminService();
+                        await service.createGateway(
+                          name: nameController.text.trim(),
+                          staffCode: codeController.text.trim(),
+                          username: usernameController.text,
+                          password: passwordController.text,
+                          confirmPassword: confirmPasswordController.text,
+                          permissions: selected,
+                          salesTarget: double.tryParse(targetController.text) ?? 0,
+                          isSuperAdmin: isSuper,
+                          branch: isSuper ? 'ADMIN' : branch,
+                          assignedCategories: selectedCats,
+                        );
+                      } else if (existing == null) {
+                        await client.rpc('create_staff',
                             params: {
                               'p_name': nameController.text.trim(),
                               'p_staff_code': codeController.text.trim(),
@@ -289,16 +320,6 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                               'p_branch': isSuper ? 'ADMIN' : branch,
                               'p_assigned_categories': selectedCats,
                             }) as Map<String, dynamic>;
-                        // Attach the sign-in account immediately when an
-                        // email was given (link_staff_user enforces the
-                        // same manage matrix server-side).
-                        final email = emailController.text.trim();
-                        if (email.isNotEmpty) {
-                          await client.rpc('link_staff_user', params: {
-                            'p_staff_id': created['id'],
-                            'p_email': email,
-                          });
-                        }
                       } else {
                         await client.rpc('update_staff', params: {
                           'p_staff_id': existing['id'],
@@ -308,13 +329,6 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                               double.tryParse(targetController.text) ?? 0,
                           'p_assigned_categories': selectedCats,
                         });
-                        final email = emailController.text.trim();
-                        if (email.isNotEmpty) {
-                          await client.rpc('link_staff_user', params: {
-                            'p_staff_id': existing['id'],
-                            'p_email': email,
-                          });
-                        }
                       }
                       if (sheetContext.mounted) Navigator.pop(sheetContext, true);
                     } catch (e) {
@@ -423,10 +437,18 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
 
   Future<void> _showPerformance(Map<String, dynamic> staff) async {
     try {
-      final rows = await Supabase.instance.client
+      final client = Supabase.instance.client;
+      final rows = await client
           .rpc('staff_performance', params: {'p_staff_id': staff['id']});
       final r = (rows as List).isNotEmpty
           ? rows.first as Map<String, dynamic>
+          : <String, dynamic>{};
+      final progressRows = await client.rpc(
+        'staff_progress',
+        params: {'p_staff_id': staff['id']},
+      );
+      final progress = (progressRows as List).isNotEmpty
+          ? Map<String, dynamic>.from(progressRows.first as Map)
           : <String, dynamic>{};
       if (!mounted) return;
       showDialog<void>(
@@ -441,6 +463,12 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
               Text('Sales total: ETB ${r['sales_total'] ?? 0}'),
               Text('Orders: ${r['orders_count'] ?? 0}'),
               Text('Rides: ${r['rides_count'] ?? 0}'),
+              const SizedBox(height: 8),
+              Text('Completed tasks: ${progress['completed_tasks'] ?? 0}',
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              Text('Remaining tasks: ${progress['remaining_tasks'] ?? 0}'),
+              Text('Task progress: ${progress['progress_percent'] ?? 0}%'),
+              Text('30-day completed: ${progress['completed_last_30_days'] ?? 0}'),
               const SizedBox(height: 8),
               Text(
                 'Target: ETB ${staff['sales_target'] ?? 0}',

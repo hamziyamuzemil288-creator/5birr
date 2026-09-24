@@ -5,8 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// Server flow (nothing is trusted client-side):
 ///   1. sendOtp()   -> POST /functions/v1/send-otp. The Edge Function
 ///      generates the code, stores only its SHA-256 hash (10-min expiry,
-///      5 attempts, 60 s resend window) and — while no email provider is
-///      connected — returns `dev_code` so the flow is testable.
+///      5 attempts, 60 s resend window), and sends it to the mailbox.
 ///   2. verifyOtp() -> rpc verify_email_otp(email, code). Consumes the code.
 ///   3. signUp()    -> the handle_new_user trigger refuses to create the
 ///      account unless a verified OTP exists for the email.
@@ -18,13 +17,15 @@ class OtpService {
 
   /// Requests a code for [email].
   ///
-  /// Returns the plaintext code when the server runs in stub mode (no email
-  /// provider connected — dev aid so the flow completes), otherwise null.
+  /// Returns after the server confirms email delivery.
   /// Throws [OtpCooldownException] when the 60-second resend window is open.
-  Future<String?> sendOtp(String email) async {
+  Future<void> sendOtp(String email, {String? captchaId}) async {
     final res = await _client.functions.invoke(
       'send-otp',
-      body: {'email': email.trim().toLowerCase()},
+      body: {
+        'email': email.trim().toLowerCase(),
+        'captcha_id': captchaId,
+      },
     );
     final data = res.data as Map<String, dynamic>?;
 
@@ -37,7 +38,7 @@ class OtpService {
       throw Exception('send-otp error: ${data['error']}');
     }
 
-    return data['dev_code'] as String?;
+    return;
   }
 
   /// Verifies [code] for [email]. Throws on wrong/expired/exhausted codes.

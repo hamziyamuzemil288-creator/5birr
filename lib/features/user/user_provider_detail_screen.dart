@@ -4,7 +4,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
-import '../../core/models/product.dart';
 import '../../core/widgets/provider_trust_section.dart';
 
 class UserProviderDetailScreen extends StatefulWidget {
@@ -32,7 +31,7 @@ class _State extends State<UserProviderDetailScreen> {
     try {
       final client = Supabase.instance.client;
       final prov = await client
-          .from('provider_profiles')
+          .from('public_provider_profiles')
           .select()
           .eq('id', widget.providerId)
           .single();

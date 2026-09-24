@@ -90,6 +90,15 @@ function norm(s: string): string {
     .toLowerCase()
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
+    // Contractions join ("how's" → "hows", "i'm" → "im") so the greeting
+    // and self-report patterns below match both written forms.
+    .replace(/'/g, "")
+    // Emoji, variation selectors and ZWJ are chatter, never content. Stripped
+    // up front so "hi 👋" and "thanks 🙏" still whole-match their tiers.
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\u200D]/gu, " ")
+    // Common ASCII emoticons — explicit forms only; a bare ":" would eat
+    // times and email addresses.
+    .replace(/(?:^|\s)(?:[:;=8]-?[()dDpP]|[xX]d|<3)(?=\s|$)/g, " ")
     // Typo tolerance — greetings & thanks first (transpositions, missing/doubled
     // letters), then the shorthand expansions below catch the rest.
     .replace(/\b(he(ll|lo)l|heello|helo)\b/g, "hello")
@@ -108,6 +117,33 @@ function norm(s: string): string {
     .replace(/\bu\b/g, "you")
     .replace(/\bur\b/g, "your")
     .replace(/\bi\s+wnt\b/g, "i want")
+    // ── Structural chatter tolerance (friendliness task) ──
+    // Chat slang that only ever appears as a standalone token.
+    .replace(/\bhlw\b/g, "hello")
+    .replace(/\bhru\b/g, "how are you")
+    // Gratitude qualifiers collapse to bare "thanks" so the thanks tier
+    // stays a whole-message match ("thanks a lot", "thank you so much",
+    // "many thanks", "great thanks", "got it thanks", "thanks sm", ...).
+    .replace(/\bthanks\s+(?:so|very)\s+much\b/g, "thanks")
+    .replace(/\bthanks\s+a\s+(?:lot|million|ton|bunch)\b/g, "thanks")
+    .replace(/\bthanks[,.]?\s+(?:sm|alot|bro|man|mate|buddy|guys|dear|sir|madam|admin|friend)\b/g, "thanks")
+    .replace(/\b(?:many|so\s+much)\s+thanks\b/g, "thanks")
+    .replace(/\b(?:got\s*it|ok|okay|alright|great|awesome|perfect|fine|good|nice|works)\s+thanks\b/g, "thanks")
+    // "thanks bye" / "tnx bye" are farewells, not gratitude.
+    .replace(/\bthanks\s+bye\b/g, "bye")
+    // "hi there / hi friend / hello team" collapse to the bare greeting —
+    // safe because a real question never starts "hi there how ..." and stay
+    // whole-message below.
+    .replace(/\b(hi|hello|hey|selam|hallo)\s+(?:there|friend|bros?|guys|team|everyone|dear|all|folks|fam|aliob|admin)\b/g, "$1")
+    // "how are you today / doing today" and "how is your day going" collapse
+    // into forms the greeting / small-talk tiers already match.
+    .replace(/\bhow\s+are\s+you\s+(?:doing\s+)?(?:today|this\s+(?:morning|afternoon|evening|night))\b/g, "how are you")
+    .replace(/\b(?:hows?|how\s+is|how\s+was)\s+(?:your|ur)\s+day\s+going\b/g, "hows your day")
+    // The natural reply to the assistant's own "how are you?" is a
+    // return-question — mark it so the dedicated tier catches it.
+    .replace(/\b(?:what|how)\s+about\s+you\b/g, "and you")
+    .replace(/\bhow\s+about\s+yourself\b/g, "and you")
+    .replace(/\byourself\b/g, "and you")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -563,11 +599,11 @@ const SMALL_TALK_POOLS: { re: RegExp; replies: string[] }[] = [
     ],
   },
   {
-    re: /\b(who\s*are\s*(you|u)|are\s*(you|u)\s*(a\s*)?(robot|bot|ai|human)|what\s*can\s*(you|u)\s*(do|help)|what\s*do\s*you\s*(do|know)|your\s*name)\b/,
+    re: /\b(who\s*are\s*(you|u)|are\s*(you|u)\s*(a\s*)?(robot|bot|ai|human)|what\s*can\s*(you|u)\s*(do|help)|what\s*do\s*you\s*(do|know)|what\s+is\s+your\s+name|how\s+do\s+you\s+work|are\s+you\s+real|do\s+you\s+(?:sleep|eat|rest)|who\s+(?:made|created|built|programmed)\s+you|what\s+are\s+you\b|your\s*name)\b/,
     replies: [CAPABILITIES_REPLY],
   },
   {
-    re: /^(thanks?|ty|appreciate\s*it|great|perfect|awesome|nice\s*one|well\s*done)[\s!,.]*$/,
+    re: /^(thanks?|ty|appreciate\s*it|much\s+appreciated|appreciated|thanks?\s+again|no\s+worries|np|cheers|great|perfect|awesome|nice\s*one|well\s*done)[\s!,.]*$/,
     replies: [
       "You're very welcome! 😊 Anything else I can help with?",
       "Happy to help! Is there anything else?",
@@ -575,14 +611,30 @@ const SMALL_TALK_POOLS: { re: RegExp; replies: string[] }[] = [
     ],
   },
   {
-    re: /^(bye|goodbye|see\s*(you|ya)|later|good\s*night|good\s*day)[\s!,.]*$/,
+    re: /^(bye|bye\s*bye|goodbye|see\s*(you|ya)(\s+(tomorrow|soon|later|around|then))?|later|catch\s+(you|ya)\s+later|talk\s+to\s+you\s+later|ttyl|take\s+care|good\s*night|gn|good\s*day)[\s!,.]*$/,
     replies: [
       "Goodbye! 👋 Come back any time you need help.",
       "See you! Have a great day. 😊",
     ],
   },
   {
-    re: /^(ok|okay|alright|cool|nice|hmm+|oh+i+see|okey)[\s!.]*$/,
+    // The user reporting they're fine — the natural answer to the
+    // assistant's own "how are you?". Optional "and you" tail folded in.
+    re: /^(?:im|i\s+am|i\s+m|am|feeling|its|it\s+is)?\s*(?:fine|good|great|okay|ok|well|alright|not\s+bad|pretty\s+good|very\s+good|doing\s+(?:good|great|fine|well|okay)|cant\s+complain|asleep|alive)[\s!.,?]*(?:and\s+(?:you|u))?[\s!.,?]*$/,
+    replies: [
+      "Glad to hear it! 😊 What can I help you with today?",
+      "Happy to hear that! Anything I can help you with?",
+    ],
+  },
+  {
+    // Return-question: the user bounces the “how are you?” back.
+    re: /^(and\s+(?:you|u)|wbu|hbu|you\?|u\?)[\s!.,?]*$/,
+    replies: [
+      "I'm doing great, thanks! 😊 More importantly — what can I help you with?",
+    ],
+  },
+  {
+    re: /^(ok|okay|okay\s+good|alright|cool|nice|hmm+|oh+i+see|okey|k|kk|got\s*it|i\s*see|understood|makes\s+sense|sounds\s+good|that\s+helps|nice\s+to\s+hear|noted|copy\s*that|roger|will\s+do|sure\s+thing|fine|good|yes|yeah|yep|yup|sure|no|nope|nah|true|right|exactly|absolutely|definitely|of\s+course)[\s!.,?]*$/,
     replies: [
       "Is there anything else I can help you with?",
       "Anything else you'd like to know?",

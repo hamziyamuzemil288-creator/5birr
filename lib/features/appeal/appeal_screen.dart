@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/services/captcha_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/widgets/captcha_challenge_field.dart';
 
 /// User-facing appeal / spam-report form.
 ///
@@ -28,8 +30,22 @@ class _AppealScreenState extends State<AppealScreen> {
   final _emailCtrl = TextEditingController();
   XFile? _photo;
   bool _submitting = false;
+  bool _captchaRequired = false;
+  String? _captchaId;
+  int _captchaVersion = 0;
   String? _error;
   String? _caseId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCaptchaRequirement();
+  }
+
+  Future<void> _loadCaptchaRequirement() async {
+    final required = await CaptchaService.instance.isRequired();
+    if (mounted) setState(() => _captchaRequired = required);
+  }
 
   @override
   void dispose() {
@@ -86,6 +102,10 @@ class _AppealScreenState extends State<AppealScreen> {
       setState(() => _error = 'Please attach a photo to support your appeal.');
       return;
     }
+    if (_captchaRequired && _captchaId == null) {
+      setState(() => _error = 'Please complete the security check first.');
+      return;
+    }
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
       setState(() => _error = 'You need to be signed in to submit an appeal.');
@@ -102,7 +122,7 @@ class _AppealScreenState extends State<AppealScreen> {
 
       // 1. Upload the evidence photo (private bucket, same one signup uses).
       final path =
-          'appeals/${user.id}/appeal_${DateTime.now().millisecondsSinceEpoch}.jpg';
+          '${user.id}/appeal_${DateTime.now().millisecondsSinceEpoch}.jpg';
       await client.storage.from(_bucket).upload(
             path,
             File(_photo!.path),
@@ -120,6 +140,7 @@ class _AppealScreenState extends State<AppealScreen> {
             'email': _emailCtrl.text.trim().isEmpty
                 ? null
                 : _emailCtrl.text.trim(),
+            'captcha_id': _captchaId,
           })
           .select('id')
           .single();
@@ -131,9 +152,17 @@ class _AppealScreenState extends State<AppealScreen> {
       });
     } catch (e) {
       if (!mounted) return;
+      final raw = e.toString();
+      final captchaFailed = raw.contains('CAPTCHA_REQUIRED');
       setState(() {
         _submitting = false;
-        _error = 'Could not submit your appeal: $e';
+        if (captchaFailed) {
+          _captchaId = null;
+          _captchaVersion++;
+        }
+        _error = captchaFailed
+            ? 'The security check expired. Please solve a new one and submit again.'
+            : 'Could not submit your appeal. Check your connection and try again.';
       });
     }
   }
@@ -303,6 +332,14 @@ class _AppealScreenState extends State<AppealScreen> {
               validator: _validateEmail,
             ),
 
+            if (_captchaRequired) ...[
+              const SizedBox(height: 16),
+              CaptchaChallengeField(
+                key: ValueKey('appeal-captcha-$_captchaVersion'),
+                onVerified: (id) => setState(() => _captchaId = id),
+              ),
+            ],
+
             if (_error != null) ...[
               const SizedBox(height: 16),
               Container(
@@ -319,7 +356,9 @@ class _AppealScreenState extends State<AppealScreen> {
             ],
             const SizedBox(height: 24),
             FilledButton(
-              onPressed: _submitting ? null : _submit,
+              onPressed: _submitting || (_captchaRequired && _captchaId == null)
+                  ? null
+                  : _submit,
               style: FilledButton.styleFrom(
                 backgroundColor: AppTheme.primaryGreenDark,
                 padding: const EdgeInsets.symmetric(vertical: 14),

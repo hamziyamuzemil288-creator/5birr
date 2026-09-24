@@ -98,7 +98,7 @@ class _ProviderOrderWaitingScreenState
     try {
       final client = Supabase.instance.client;
       final prov = await client
-          .from('provider_profiles')
+          .from('public_provider_profiles')
           .select('id, registration_fee_paid, status')
           .eq('id', widget.providerId)
           .maybeSingle();

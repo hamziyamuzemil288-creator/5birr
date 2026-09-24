@@ -202,25 +202,24 @@ class _State extends State<ProviderProductFormScreen> {
         }).eq('id', widget.productId!);
         productId = widget.productId!;
       } else {
-        final data = await client
-            .from('products')
-            .insert({
-              'provider_id': _providerId,
-              'name': _nameCtrl.text.trim(),
-              'description': _descCtrl.text.trim().isNotEmpty
+        final created = await client
+            .rpc('create_provider_product', params: {
+              'p_provider_id': _providerId,
+              'p_name': _nameCtrl.text.trim(),
+              'p_description': _descCtrl.text.trim().isNotEmpty
                   ? _descCtrl.text.trim()
                   : null,
-              'price': price,
-              'price_per_unit': perUnitPrice,
-              'unit': unitValue,
-              'quantity': qty,
-              'category_id': _categoryId,
-              'is_available': _isAvailable,
-              if (locationValue != null) 'location': locationValue,
+              'p_price': price,
+              'p_category_id': _categoryId,
+              'p_quantity': qty,
+              'p_price_per_unit': perUnitPrice,
+              'p_unit': unitValue,
+              'p_is_available': _isAvailable,
+              'p_lat': lat,
+              'p_lng': lng,
             })
-            .select()
             .single();
-        productId = data['id'];
+        productId = created['id'] as String;
       }
 
       // Upload new images
