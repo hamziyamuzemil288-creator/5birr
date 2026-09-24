@@ -80,19 +80,33 @@ function appealReply(): string {
 }
 
 // ── Input normalization: tolerant matching for real-world typing ─────────
-// Lowercases, normalizes quotes, expands common chat shorthand, and collapses
-// whitespace. Used for DETECTION only — stored content (ticket answers, etc.)
-// always uses the raw message.
+// Lowercases, normalizes quotes, expands common chat shorthand, fixes common
+// typos/misspells, and collapses whitespace. Used for DETECTION only — stored
+// content (ticket answers, etc.) always uses the raw message.
+// The typo fixes here are also mirrored in tools/test/repo_chat_harness.mjs
+// (run `node tools/test/repo_chat_harness.mjs` after changing them).
 function norm(s: string): string {
   return s
     .toLowerCase()
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
-    .replace(/\b(plz|pls)\b/g, "please")
+    // Typo tolerance — greetings & thanks first (transpositions, missing/doubled
+    // letters), then the shorthand expansions below catch the rest.
+    .replace(/\b(he(ll|lo)l|heello|helo)\b/g, "hello")
+    .replace(/\b(hwo|howw)\b/g, "how")
+    .replace(/\b(yuo|uyo)\b/g, "you")
+    .replace(/\b(tank|tahnk|thnak|thansk|thnks|tks|thx|thnx|tnx|tq)\b/g, "thanks")
+    .replace(/\bthank(?:\s+(?:you|yuo|u))?\b/g, "thanks")
+    .replace(/\bthanks\s+(?:you|yuo|u)\b/g, "thanks")
+    .replace(/\b(pleasse|plesae|plese)\b/g, "please")
+    .replace(/\b(hep|hepl|heelp|halp)\b/g, "help")
+    .replace(/\b(whats|wat|whut|waht)\b/g, "what")
+    // Chat shorthand.
+    .replace(/\bhw\b/g, "how")
+    .replace(/\br\b/g, "are")
+    .replace(/\bplz|pls\b/g, "please")
     .replace(/\bu\b/g, "you")
     .replace(/\bur\b/g, "your")
-    .replace(/\bwat\b|\bwht\b/g, "what")
-    .replace(/\bhw\b/g, "how")
     .replace(/\bi\s+wnt\b/g, "i want")
     .replace(/\s+/g, " ")
     .trim();
@@ -510,7 +524,7 @@ function detectDataQuery(text: string): string | null {
 
 // ── Fast-path helpers ─────────────────────────────────────────────────────
 const GREETING_RE =
-  /^(hi|hii+|hello+|hay|hey+|hy|hallo|hiya|yo|selam|selamta|ሰላም|salam|hola|howdy|greetings|good\s+(morning|afternoon|evening|day)|whats\s*up|what's\s*up|sup|how\s+are\s+you|how\s+are\s+you\s+doing|how\s+is\s+it\s+going|hows\s+it\s+going|nice\s+to\s+meet\s+you|good\s+to\s+see\s+you)[\s!.,?]*$/i;
+  /^(hi|hii+|hello+|hay|hey+|hy|hallo|hiya|yo|selam|selamta|ሰላም|salam|hola|howdy|greetings|good\s+(morning|afternoon|evening|day)|whats?\s*up|what'?s\s*up|sup|how\s+(are|r)\s+(you|u)|how\s+are\s+you\s+doing|how\s+(are|is)\s+it\s+going|hows?\s+it\s+going|how'?s\s+it\s+going|nice\s+to\s+meet\s+you|good\s+to\s+see\s+you|good\s+(day|evening))[\s!.,?]*$/i;
 
 function isGreeting(text: string): boolean {
   return GREETING_RE.test(text.trim());
@@ -553,7 +567,7 @@ const SMALL_TALK_POOLS: { re: RegExp; replies: string[] }[] = [
     replies: [CAPABILITIES_REPLY],
   },
   {
-    re: /^(thanks?|thank\s*(you|u)|appreciate\s*it|great|perfect|awesome|nice\s*one|well\s*done)[\s!,.]*$/,
+    re: /^(thanks?|ty|appreciate\s*it|great|perfect|awesome|nice\s*one|well\s*done)[\s!,.]*$/,
     replies: [
       "You're very welcome! 😊 Anything else I can help with?",
       "Happy to help! Is there anything else?",
