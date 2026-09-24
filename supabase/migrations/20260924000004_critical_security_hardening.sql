@@ -384,7 +384,42 @@ GRANT EXECUTE ON FUNCTION public.consume_captcha(uuid, text) TO anon, authentica
 
 -- Ensure the enforcement toggle exists without weakening an explicit owner
 -- choice. The RPC above fails closed if the value is absent or malformed.
+-- Seed via a migration-only, name-lookup trigger bypass (same technique as
+-- 20260924000003); the exact prior trigger set is restored before commit.
+BEGIN;
+CREATE TEMP TABLE _hardening_settings_triggers AS
+  SELECT tgname
+  FROM pg_trigger
+  WHERE tgrelid = 'public.system_settings'::regclass
+    AND NOT tgisinternal
+    AND tgenabled = 'O';
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOR t IN SELECT tgname FROM _hardening_settings_triggers LOOP
+    EXECUTE format('ALTER TABLE public.system_settings DISABLE TRIGGER %I', t);
+  END LOOP;
+EXCEPTION
+  WHEN undefined_table THEN NULL;
+END;
+$$;
+
 INSERT INTO public.system_settings (key, value, description)
 VALUES ('captcha_enforced', 'true'::jsonb,
         'Require the tick+math captcha on OTP requests and appeal submissions.')
 ON CONFLICT (key) DO NOTHING;
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOR t IN SELECT tgname FROM _hardening_settings_triggers LOOP
+    EXECUTE format('ALTER TABLE public.system_settings ENABLE TRIGGER %I', t);
+  END LOOP;
+EXCEPTION
+  WHEN undefined_table THEN NULL;
+END;
+$$;
+
+DROP TABLE _hardening_settings_triggers;
+COMMIT;

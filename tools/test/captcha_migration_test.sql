@@ -23,6 +23,23 @@ create table if not exists public.system_settings (
   updated_by uuid,
   updated_at timestamptz not null default now()
 );
+create or replace function public.is_admin() returns boolean
+language sql stable as $$
+  select coalesce(current_setting('test.is_admin', true), 'off') = 'on'
+$$;
+create or replace function public.prevent_system_settings_self_modification()
+returns trigger language plpgsql as $$
+begin
+  if not public.is_admin() then
+    raise exception 'SETTINGS_ARE_ADMIN_ONLY';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trg_system_settings_security on public.system_settings;
+create trigger trg_system_settings_security
+before insert or update or delete on public.system_settings
+for each row execute function public.prevent_system_settings_self_modification();
 
 create or replace function public.get_setting_bool(p_key text)
 returns boolean
@@ -51,6 +68,7 @@ create table if not exists public.appeal_cases (
 );
 
 \ir /tmp/20260924000003_captcha_challenges.sql
+select set_config('test.is_admin', 'on', false);
 
 create or replace function run_captcha_tests()
 returns void
@@ -65,6 +83,20 @@ declare
   v_answer text;
   v_case uuid;
 begin
+  -- The seed must have restored the admin-only settings trigger.
+  if not exists (
+    select 1
+      from pg_trigger
+     where tgname = 'trg_system_settings_security'
+       and tgenabled = 'O'
+  ) then
+    v_fail := v_fail + 1;
+    raise notice 'FAIL migration left settings trigger disabled';
+  else
+    v_pass := v_pass + 1;
+    raise notice 'ok   T0 migration restores settings trigger';
+  end if;
+
   -- T1: request returns a usable public question but never the answer.
   select * into v_challenge from public.request_captcha();
   if v_challenge.captcha_id is not null

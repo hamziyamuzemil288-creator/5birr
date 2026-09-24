@@ -208,7 +208,46 @@ CREATE TRIGGER trg_appeal_captcha
 -- ============================================================
 -- 3. Enforcement toggle (on by default; flip to false to disable)
 -- ============================================================
+-- Seed the default through a migration-only, transaction-scoped bypass.
+-- The settings guard (trg_system_settings_security -> is_admin()) rejects any
+-- write from a migration connection because auth.uid() is NULL there. We
+-- disable every non-internal trigger currently enabled on the table BY NAME
+-- LOOKUP (immune to trigger-name drift), re-enabling exactly the same list —
+-- so application writes remain admin-only after the seed.
+BEGIN;
+CREATE TEMP TABLE _captcha_settings_triggers AS
+  SELECT tgname
+  FROM pg_trigger
+  WHERE tgrelid = 'public.system_settings'::regclass
+    AND NOT tgisinternal
+    AND tgenabled = 'O';
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOR t IN SELECT tgname FROM _captcha_settings_triggers LOOP
+    EXECUTE format('ALTER TABLE public.system_settings DISABLE TRIGGER %I', t);
+  END LOOP;
+EXCEPTION
+  WHEN undefined_table THEN NULL;
+END;
+$$;
+
 INSERT INTO public.system_settings (key, value, description)
 VALUES ('captcha_enforced', 'true'::jsonb,
         'Require the tick+math captcha on OTP requests and appeal submissions (Task 10).')
 ON CONFLICT (key) DO NOTHING;
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOR t IN SELECT tgname FROM _captcha_settings_triggers LOOP
+    EXECUTE format('ALTER TABLE public.system_settings ENABLE TRIGGER %I', t);
+  END LOOP;
+EXCEPTION
+  WHEN undefined_table THEN NULL;
+END;
+$$;
+
+DROP TABLE _captcha_settings_triggers;
+COMMIT;
