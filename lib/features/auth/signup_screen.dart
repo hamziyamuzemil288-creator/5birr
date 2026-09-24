@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -39,6 +41,12 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _kebeleController = TextEditingController();
   final _streetRoadController = TextEditingController();
 
+  // Task 8: optional referral code (providers only) — identifies the
+  // sales/staff person who registered this provider. Never required; the
+  // server resolves it against referral_codes at account creation.
+  final _referralController = TextEditingController();
+  String? _referralHint; // live lookup result: "Referred by: <name>"
+
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
@@ -49,18 +57,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   // the account exists, with the version the user actually saw.
   bool _agreedToTerms = false;
 
-  /// ID document type (Task 4). Kept for the profile record: signup no
-  /// longer collects document IMAGES (Task 7 moved the upload to the first
-  /// protected action after wallet recharge), but the chosen type still
-  /// tells the user (and later screens) which ID to prepare. 'OTHER' never
-  /// has a QR and always routes to manual admin review.
-  String _idDocType = 'NATIONAL_ID';
-  static const _idDocTypes = <String, String>{
-    'NATIONAL_ID': 'National ID',
-    'DRIVING_LICENSE_ID': 'Driving License',
-    'PASSPORT': 'Passport',
-    'OTHER': 'Other (no QR check)',
-  };
+  // Task 9: the document-type choice was removed from signup (it was a
+  // leftover from before the Task 3 correction). Providers now choose the
+  // document type AND upload the document in the same step, at the first
+  // protected action after wallet recharge (see ProviderDocGate).
 
   bool get _isProvider =>
       widget.role == SignupRole.vehicleProvider ||
@@ -98,7 +98,37 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     _confirmPasswordController.dispose();
     _kebeleController.dispose();
     _streetRoadController.dispose();
+    _referralController.dispose();
     super.dispose();
+  }
+
+  Timer? _referralDebounce;
+
+  /// Live lookup: shows "Referred by: <name>" while the code matches an
+  /// active staff code. Failures are silent — the server re-checks at
+  /// signup and an unknown code must never block registration (Task 8).
+  void _lookupReferral() {
+    _referralDebounce?.cancel();
+    final code = _referralController.text.trim();
+    if (code.isEmpty) {
+      if (mounted && _referralHint != null) setState(() => _referralHint = null);
+      return;
+    }
+    _referralDebounce = Timer(const Duration(milliseconds: 450), () async {
+      try {
+        final name = await Supabase.instance.client
+            .rpc('validate_referral_code', params: {'p_code': code});
+        if (!mounted) return;
+        setState(() {
+          _referralHint = (name is String && name.isNotEmpty)
+              ? 'Referred by: $name ✓'
+              : 'Code not recognized — you can still continue without it.';
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _referralHint = null);
+      }
+    });
   }
 
   @override
@@ -333,9 +363,10 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       city: _selectedCity,
       kebele: _kebeleController.text.trim(),
       streetRoad: _streetRoadController.text.trim(),
-      idDocType: _idDocType,
       nationalIdNumber:
           _isProvider ? _nationalIdController.text.trim() : null,
+      referralCode:
+          _isProvider ? _referralController.text.trim() : null,
     );
 
     final verified = await context.push<bool>(
@@ -361,7 +392,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               city: draft.city,
               kebele: draft.kebele,
               streetRoad: draft.streetRoad,
-              idDocType: draft.idDocType,
+              referralCode: draft.referralCode,
             );
       } else {
         await ref.read(authProvider.notifier).signUp(
@@ -558,26 +589,24 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
             },
           ),
           const SizedBox(height: 16),
-          const Text('ID document type', style: AppTheme.sectionHeader),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: _idDocTypes.entries
-                .map((e) => ChoiceChip(
-                      label: Text(e.value, style: const TextStyle(fontSize: 12)),
-                      selected: _idDocType == e.key,
-                      onSelected: (_) => setState(() => _idDocType = e.key),
-                    ))
-                .toList(),
+          // Task 8: optional referral code — identifies the sales/staff
+          // person who registered this provider. Empty = self-registered;
+          // an unknown code never blocks registration (kept as "Other").
+          BirrTextField(
+            label: 'Referral Code (optional)',
+            hint: 'From the sales person who signed you up',
+            controller: _referralController,
+            textCapitalization: TextCapitalization.characters,
+            textInputAction: TextInputAction.next,
+            onChanged: (_) => _lookupReferral(),
           ),
-          const SizedBox(height: 4),
-          Text(
-            _idDocType == 'OTHER'
-                ? 'Verified manually by our team later.'
-                : 'If your document has a QR code, it can be verified automatically later.',
-            style: AppTheme.caption,
-          ),
+          if (_referralHint != null) ...[
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text(_referralHint!, style: AppTheme.caption),
+            ),
+          ],
           const SizedBox(height: 16),
         ],
         BirrTextField(

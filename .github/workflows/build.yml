@@ -1,9 +1,10 @@
 name: Build Release AAB
 
+# Dispatch-only (Task 9): the Play-ready AAB must never build as a side
+# effect of pushing code. Run it explicitly from the Actions tab when a
+# release build is actually wanted.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   build:

@@ -25,8 +25,10 @@ class SignupDraft {
   final String? city;
   final String? kebele;
   final String? streetRoad;
-  final String idDocType; // provider flows only ('OTHER' skips the agent)
   final String? nationalIdNumber; // provider flows only
+  // Task 8: optional referral code (provider flows only). Parked through OTP
+  // verification like every other field; blank/unknown never blocks signup.
+  final String? referralCode;
 
   const SignupDraft({
     required this.rolePath,
@@ -37,8 +39,8 @@ class SignupDraft {
     this.city,
     this.kebele,
     this.streetRoad,
-    this.idDocType = 'NATIONAL_ID',
     this.nationalIdNumber,
+    this.referralCode,
   });
 }
 

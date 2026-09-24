@@ -471,6 +471,19 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     return s['is_active'] == true;
   }
 
+  // ── Task 8: referral-code manager ────────────────────────────────────────
+  // Codes are issued per staff person (this screen); a person may hold
+  // several. Each provider signup that uses a code records the person's
+  // id + name on the provider row (see referral_tracking migration).
+  Future<void> _showReferralCodes(Map<String, dynamic> staff) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => _ReferralCodesSheet(staff: staff),
+    );
+    if (mounted) _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -578,6 +591,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                 onSelected: (v) {
                                   if (v == 'edit') _openEditor(s);
                                   if (v == 'perf') _showPerformance(s);
+                                  if (v == 'referrals') _showReferralCodes(s);
                                   if (v == 'revoke') _revoke(s);
                                   if (v == 'link') _linkAccount(s);
                                 },
@@ -585,6 +599,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
+                                  const PopupMenuItem(
+                                      value: 'referrals',
+                                      child: Text('Referral codes')),
                                   if (_canManage(s) && s['user_id'] == null)
                                     const PopupMenuItem(
                                         value: 'link',
@@ -604,6 +621,194 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                         },
                       ),
                     ),
+    );
+  }
+}
+
+/// Task 8: per-staff referral-code sheet — lists the person's codes with
+/// usage counts, issues new ones, and toggles active state. Deletion is
+/// omitted from the sheet (registrations keep the denormalized name, but an
+/// accidental delete would orphan future lookups); use deactivate instead.
+class _ReferralCodesSheet extends StatefulWidget {
+  final Map<String, dynamic> staff;
+  const _ReferralCodesSheet({required this.staff});
+  @override
+  State<_ReferralCodesSheet> createState() => _ReferralCodesSheetState();
+}
+
+class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
+  List<Map<String, dynamic>> _codes = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final rows = await Supabase.instance.client.rpc('admin_referral_codes');
+      _codes = (rows as List)
+          .whereType<Map<String, dynamic>>()
+          .where((r) => r['staff_id'] == widget.staff['id'])
+          .toList();
+    } catch (e) {
+      _error = e.toString();
+    }
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _issue() async {
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('New code for ${widget.staff['name']}'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(
+            labelText: 'Code',
+            hintText: 'letters, digits, . _ - only',
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Issue')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final code = controller.text.trim();
+    if (code.isEmpty) return;
+    try {
+      await Supabase.instance.client.rpc('admin_issue_referral_code', params: {
+        'p_staff_id': widget.staff['id'],
+        'p_code': code,
+      });
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString());
+      }
+    }
+  }
+
+  Future<void> _toggle(Map<String, dynamic> code) async {
+    try {
+      await Supabase.instance.client.rpc('admin_set_referral_code_active',
+          params: {
+            'p_code_id': code['id'],
+            'p_active': !(code['is_active'] == true),
+          });
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Referral codes — ${widget.staff['name']} '
+                    '(${widget.staff['staff_code']})',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Providers who sign up with a code are attributed to '
+              '${widget.staff['name']} in Registration History.',
+              style: AppTheme.caption,
+            ),
+            const SizedBox(height: 12),
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_error != null)
+              Text(_error!,
+                  style: const TextStyle(
+                      color: AppTheme.error, fontSize: 12))
+            else if (_codes.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('No codes issued yet.',
+                    style: TextStyle(color: AppTheme.textMuted)),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _codes.length,
+                  itemBuilder: (_, i) {
+                    final c = _codes[i];
+                    final active = c['is_active'] == true;
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        title: Text('${c['code']}',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700)),
+                        subtitle: Text(
+                          'used ${c['uses'] ?? 0} · ${active ? 'active' : 'inactive'}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        trailing: Switch(
+                          value: active,
+                          onChanged: (_) => _toggle(c),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _issue,
+                icon: const Icon(Icons.add),
+                label: const Text('Issue new code'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

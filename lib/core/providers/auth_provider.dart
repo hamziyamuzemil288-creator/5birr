@@ -285,7 +285,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
     String? city,
     String? kebele,
     String? streetRoad,
-    String idDocType = 'NATIONAL_ID',
+    // Task 8: optional referral code identifying the sales/staff person who
+    // registered this provider. Resolved server-side by handle_new_user()
+    // against referral_codes; blank/unknown codes never block registration.
+    String? referralCode,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -301,13 +304,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'national_id': ownerNationalId,
           'provider_type': providerType,
           'business_name': businessName,
-          // Task 7: ID document type is recorded now; the actual image is
-          // uploaded at the first protected action (upload product / claim
-          // order) after wallet recharge.
-          'id_doc_type': idDocType,
           if (city != null && city.isNotEmpty) 'city': city,
           if (kebele != null && kebele.isNotEmpty) 'kebele': kebele,
           if (streetRoad != null && streetRoad.isNotEmpty) 'street_road': streetRoad,
+          if (referralCode != null && referralCode.trim().isNotEmpty)
+            'referral_code': referralCode.trim(),
         },
       );
 

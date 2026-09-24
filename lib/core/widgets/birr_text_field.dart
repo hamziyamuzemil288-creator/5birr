@@ -15,6 +15,8 @@ class BirrTextField extends StatelessWidget {
   final FocusNode? focusNode;
   final TextInputAction? textInputAction;
   final VoidCallback? onEditingComplete;
+  final TextCapitalization? textCapitalization;
+  final ValueChanged<String>? onChanged;
 
   const BirrTextField({
     super.key,
@@ -31,6 +33,8 @@ class BirrTextField extends StatelessWidget {
     this.focusNode,
     this.textInputAction,
     this.onEditingComplete,
+    this.textCapitalization,
+    this.onChanged,
   });
 
   @override
@@ -45,6 +49,9 @@ class BirrTextField extends StatelessWidget {
       focusNode: focusNode,
       textInputAction: textInputAction,
       onEditingComplete: onEditingComplete,
+      onChanged: onChanged,
+      textCapitalization:
+          textCapitalization ?? TextCapitalization.none,
       style: const TextStyle(fontSize: 15, color: AppTheme.textPrimary),
       decoration: InputDecoration(
         labelText: label,

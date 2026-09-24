@@ -19,11 +19,18 @@ class ProviderDocGate {
 
   SupabaseClient get _client => Supabase.instance.client;
 
-  /// True when the signed-in provider has no documents missing. Everything
-  /// except SUSPECTED_FRAUD counts: AUTO_APPROVED (QR agent) and
-  /// MANUAL_REVIEW (queued for admin) both satisfy the gate — a document
-  /// awaiting review must not block the provider from working.
-  static const _required = ['NATIONAL_ID', 'DRIVING_LICENSE'];
+  /// True when the signed-in provider has at least one accepted identity
+  /// document (Task 9: the provider CHOOSES the type at upload time —
+  /// National ID / Driving License / Passport — so the gate accepts any one
+  /// of those types). Everything except SUSPECTED_FRAUD counts:
+  /// AUTO_APPROVED (QR agent) and MANUAL_REVIEW (queued for admin) both
+  /// satisfy the gate — a document awaiting review must not block the
+  /// provider from working.
+  static const acceptedDocTypes = <String, String>{
+    'NATIONAL_ID': 'National ID',
+    'DRIVING_LICENSE': 'Driving License',
+    'PASSPORT': 'Passport',
+  };
 
   Future<bool> isSatisfied({String? userId}) async {
     final uid = userId ?? _client.auth.currentUser?.id;
@@ -33,13 +40,14 @@ class ProviderDocGate {
           .from('user_documents')
           .select('document_type, verification_status')
           .eq('user_id', uid);
-      final have = <String>{};
       for (final r in rows as List) {
         final status = (r['verification_status'] as String?) ?? 'MANUAL_REVIEW';
         if (status == 'SUSPECTED_FRAUD') continue;
-        have.add(r['document_type'] as String);
+        if (acceptedDocTypes.containsKey(r['document_type'] as String)) {
+          return true;
+        }
       }
-      return _required.every(have.contains);
+      return false;
     } catch (_) {
       // A failed check must not permanently lock the provider out: fail
       // open here, the server-side RPC provider_docs_satisfied() re-checks
@@ -50,8 +58,9 @@ class ProviderDocGate {
 
   /// Blocking reason shown before opening the upload sheet.
   static const blockingMessage =
-      'Verify your identity documents to continue. Your wallet is safe — '
-      'this is a one-time ID check (National ID + Driving License).';
+      'Verify your identity to continue. Choose the document type you have '
+      'and upload it — a one-time ID check. If it has a QR code, it is '
+      'verified automatically.';
 
   /// Runs the upload + QR-verification flow inline. Returns true when the
   /// gate is satisfied (either already, or after successful uploads).
@@ -79,15 +88,19 @@ class _DocUploadSheet extends StatefulWidget {
 }
 
 class _DocUploadSheetState extends State<_DocUploadSheet> {
-  File? _nationalId;
-  File? _license;
+  // Step 1: pick the document type. Step 2: pick the file and upload.
+  // Task 9: the type choice lives HERE, immediately before the upload —
+  // never at signup.
+  int _step = 0;
+  String? _selectedType;
+  File? _file;
   bool _uploading = false;
   String? _error;
   String? _outcome;
 
   final _picker = ImagePicker();
 
-  Future<void> _pick(bool isNationalId) async {
+  Future<void> _pick() async {
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
       maxWidth: 1920,
@@ -96,18 +109,15 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
     );
     if (picked == null) return;
     setState(() {
-      if (isNationalId) {
-        _nationalId = File(picked.path);
-      } else {
-        _license = File(picked.path);
-      }
+      _file = File(picked.path);
       _error = null;
     });
   }
 
   Future<void> _submit() async {
-    if (_nationalId == null || _license == null) {
-      setState(() => _error = 'Both documents are required.');
+    final docType = _selectedType;
+    if (_file == null || docType == null) {
+      setState(() => _error = 'Choose a document type and select the file.');
       return;
     }
     setState(() {
@@ -119,25 +129,21 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
       final userId = client.auth.currentUser!.id;
 
       await DocumentUploadService.instance.uploadAndRecord(
-        file: _nationalId!,
+        file: _file!,
         userId: userId,
-        documentType: 'NATIONAL_ID',
-      );
-      await DocumentUploadService.instance.uploadAndRecord(
-        file: _license!,
-        userId: userId,
-        documentType: 'DRIVING_LICENSE',
+        documentType: docType,
       );
 
-      // QR verification agent (Task 4) on the National ID. Best-effort:
-      // any failure keeps the MANUAL_REVIEW default — never blocks.
+      // QR verification agent (Task 4) on the uploaded document.
+      // Best-effort: any failure keeps the MANUAL_REVIEW default — never
+      // blocks.
       String? outcome;
       try {
         final docs = await client
             .from('user_documents')
             .select('id')
             .eq('user_id', userId)
-            .eq('document_type', 'NATIONAL_ID')
+            .eq('document_type', docType)
             .order('uploaded_at', ascending: false)
             .limit(1);
         if ((docs as List?)?.isNotEmpty ?? false) {
@@ -146,7 +152,7 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
               .invoke('document-verify', body: {'document_id': docId});
           final status = (res.data as Map<String, dynamic>?)?['status'];
           if (status == 'AUTO_APPROVED') {
-            outcome = 'ID verified automatically — you are all set.';
+            outcome = 'Document verified automatically — you are all set.';
           } else if (status == 'SUSPECTED_FRAUD') {
             outcome =
                 'We could not verify your document automatically. It was '
@@ -164,7 +170,7 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
       if (!mounted) return;
       setState(() {
         _uploading = false;
-        _outcome = outcome ?? 'Documents received. You can continue.';
+        _outcome = outcome ?? 'Document received. You can continue.';
       });
       await Future<void>.delayed(const Duration(seconds: 2));
       if (mounted) Navigator.pop(context, true);
@@ -180,7 +186,7 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Verify your documents'),
+      title: Text(_step == 0 ? 'Choose document type' : 'Upload your document'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -188,9 +194,24 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
           children: [
             const Text(ProviderDocGate.blockingMessage),
             const SizedBox(height: 16),
-            _slot('National ID (with QR side)', _nationalId, true),
-            const SizedBox(height: 12),
-            _slot('Driving License', _license, false),
+            if (_step == 0) ...[
+              for (final e in ProviderDocGate.acceptedDocTypes.entries) ...[
+                _typeOption(e.key, e.value),
+                const SizedBox(height: 8),
+              ],
+            ] else ...[
+              _slot(),
+              TextButton.icon(
+                onPressed: _uploading
+                    ? null
+                    : () => setState(() {
+                          _step = 0;
+                          _file = null;
+                        }),
+                icon: const Icon(Icons.arrow_back, size: 16),
+                label: const Text('Change document type'),
+              ),
+            ],
             if (_outcome != null) ...[
               const SizedBox(height: 12),
               Text(_outcome!,
@@ -210,19 +231,50 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
           onPressed: _uploading ? null : () => Navigator.pop(context, false),
           child: const Text('Later'),
         ),
-        FilledButton(
-          onPressed: (_uploading || _nationalId == null || _license == null)
-              ? null
-              : _submit,
-          child: Text(_uploading ? 'Uploading…' : 'Upload & verify'),
-        ),
+        if (_step == 1)
+          FilledButton(
+            onPressed: (_uploading || _file == null) ? null : _submit,
+            child: Text(_uploading ? 'Uploading…' : 'Upload & verify'),
+          ),
       ],
     );
   }
 
-  Widget _slot(String label, File? file, bool isNationalId) {
+  Widget _typeOption(String key, String label) {
     return InkWell(
-      onTap: _uploading ? null : () => _pick(isNationalId),
+      // Single tap selects the type AND advances to the upload step —
+      // the choice happens right before the upload, in the same flow.
+      onTap: () => setState(() {
+        _selectedType = key;
+        _step = 1;
+        _error = null;
+      }),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.cardBorder),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.radio_button_unchecked,
+              color: AppTheme.textMuted,
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Text(label, style: const TextStyle(fontSize: 14)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _slot() {
+    return InkWell(
+      onTap: _uploading ? null : _pick,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         width: double.infinity,
@@ -234,13 +286,15 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
         child: Row(
           children: [
             Icon(
-              file == null ? Icons.add_a_photo_outlined : Icons.check_circle,
-              color: file == null ? AppTheme.textMuted : AppTheme.success,
+              _file == null ? Icons.add_a_photo_outlined : Icons.check_circle,
+              color: _file == null ? AppTheme.textMuted : AppTheme.success,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                file == null ? label : 'Selected ✓',
+                _file == null
+                    ? 'Take or choose the ${ProviderDocGate.acceptedDocTypes[_selectedType] ?? 'document'} image'
+                    : 'Selected ✓',
                 style: const TextStyle(fontSize: 13),
               ),
             ),
