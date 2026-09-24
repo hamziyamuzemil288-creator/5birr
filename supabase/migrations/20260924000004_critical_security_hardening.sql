@@ -80,8 +80,10 @@ SELECT
   p.id,
   p.business_name,
   p.business_description,
-  p.business_address,
-  p.business_address AS address_text,
+  -- City-level location only: kebele/street_road/business_address are
+  -- address data and stay private to the owner/admins (P0 fix, hardened
+  -- after the live probe showed the first revision still exposed them).
+  p.city AS address_text,
   p.location_lat,
   p.location_lng,
   p.service_category,
@@ -93,8 +95,6 @@ SELECT
   p.status,
   p.category_id,
   p.city,
-  p.kebele,
-  p.street_road,
   p.registration_fee_paid,
   p.created_at
 FROM public.provider_profiles AS p

@@ -193,21 +193,17 @@ END $$;
 -- Public view has no identity columns.
 DO $$
 DECLARE
-  has_national_id boolean;
-  has_user_id boolean;
+  leaked text;
 BEGIN
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'public_provider_profiles'
-      AND column_name = 'owner_national_id'
-  ) INTO has_national_id;
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'public_provider_profiles'
-      AND column_name = 'user_id'
-  ) INTO has_user_id;
-  IF has_national_id OR has_user_id THEN
-    RAISE EXCEPTION 'public provider view exposes identity columns';
+  SELECT string_agg(column_name, ',') INTO leaked
+  FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'public_provider_profiles'
+    AND column_name IN (
+      'owner_national_id', 'national_id', 'user_id', 'owner_name',
+      'kebele', 'street_road', 'business_address'
+    );
+  IF leaked IS NOT NULL THEN
+    RAISE EXCEPTION 'public provider view exposes restricted columns: %', leaked;
   END IF;
 END $$;
 
