@@ -17,8 +17,6 @@ name: Build Debug APK
 # red-failing for hours on an already-successful build.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   # Job-level: the quota-fallback step attaches the APK to a GitHub Release.
