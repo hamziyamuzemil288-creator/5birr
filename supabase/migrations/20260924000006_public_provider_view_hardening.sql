@@ -1,13 +1,17 @@
 -- Follow-up to 20260924000004: the hardened public_provider_profiles view must
 -- ship as a NEW version because db push tracks applied migrations by version
 -- string only — editing 20260924000004 in place left the leaky first revision
--- live. This re-creates the view with city-level location only.
+-- live. The live view still carries kebele/street_road/business_address, and
+-- CREATE OR REPLACE VIEW cannot drop columns (SQLSTATE 42P16), so it must be
+-- dropped and recreated.
 --
 -- Restricted out (verified by the live probe + regression harness):
 --   owner_national_id, national_id, user_id, owner_name,
 --   kebele, street_road, business_address
 
-CREATE OR REPLACE VIEW public.public_provider_profiles
+DROP VIEW IF EXISTS public.public_provider_profiles;
+
+CREATE VIEW public.public_provider_profiles
 WITH (security_barrier = true)
 AS
 SELECT
