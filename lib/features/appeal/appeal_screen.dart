@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -14,14 +16,14 @@ import '../../core/widgets/captcha_challenge_field.dart';
 /// Collects an evidence photo, a written report and contact details and stores
 /// the case in `appeal_cases` (photo in the private `user-documents` bucket).
 /// Admins review and resolve cases from Admin → Appeals.
-class AppealScreen extends StatefulWidget {
+class AppealScreen extends ConsumerStatefulWidget {
   const AppealScreen({super.key});
 
   @override
-  State<AppealScreen> createState() => _AppealScreenState();
+  ConsumerState<AppealScreen> createState() => _AppealScreenState();
 }
 
-class _AppealScreenState extends State<AppealScreen> {
+class _AppealScreenState extends ConsumerState<AppealScreen> {
   static const _bucket = 'user-documents';
 
   final _formKey = GlobalKey<FormState>();
@@ -36,10 +38,36 @@ class _AppealScreenState extends State<AppealScreen> {
   String? _error;
   String? _caseId;
 
+  // Task 14: chat escalations open this form pre-tagged with context
+  // (?about=rider|provider|dispute|account|general&source=chat) so the case
+  // lands with the right review context.
+  String _about = 'general';
+  bool _fromChat = false;
+
+  static const _aboutLabels = {
+    'rider': 'Ride / driver issue',
+    'provider': 'Provider / selling issue',
+    'dispute': 'Buyer–seller dispute',
+    'account': 'Account status (ban / suspension / approval)',
+    'general': 'Something else',
+  };
+
   @override
   void initState() {
     super.initState();
     _loadCaptchaRequirement();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Read the deep-link query params once the router state is available.
+    final qp = GoRouterState.of(context).uri.queryParameters;
+    final about = qp['about'];
+    if (about != null && _aboutLabels.containsKey(about)) {
+      _about = about;
+    }
+    _fromChat = qp['source'] == 'chat';
   }
 
   Future<void> _loadCaptchaRequirement() async {
@@ -120,6 +148,16 @@ class _AppealScreenState extends State<AppealScreen> {
     try {
       final client = Supabase.instance.client;
 
+      // Task 14: chat-escalated appeals carry their context into the stored
+      // description so the case lands with the right review context — the
+      // appeals table has no dedicated column, so we prefix the text that
+      // admins/staff already read on every case.
+      final aboutLabel = _aboutLabels[_about] ?? 'Something else';
+      final descriptionText = _fromChat
+          ? '[Appeal via Help Chat — tagged: $aboutLabel] '
+              '${_descriptionCtrl.text.trim()}'
+          : _descriptionCtrl.text.trim();
+
       // 1. Upload the evidence photo (private bucket, same one signup uses).
       final path =
           '${user.id}/appeal_${DateTime.now().millisecondsSinceEpoch}.jpg';
@@ -135,7 +173,7 @@ class _AppealScreenState extends State<AppealScreen> {
           .insert({
             'user_id': user.id,
             'photo_path': path,
-            'description': _descriptionCtrl.text.trim(),
+            'description': descriptionText,
             'phone': _phoneCtrl.text.trim(),
             'email': _emailCtrl.text.trim().isEmpty
                 ? null
@@ -226,6 +264,33 @@ class _AppealScreenState extends State<AppealScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Task 14: context banner when opened from the chat escalation —
+            // shows what the case will be tagged as.
+            if (_fromChat)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.teal.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.teal.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.support_agent,
+                        size: 20, color: AppTheme.teal),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Sent from Help Chat — this appeal will be tagged as: '
+                        '${_aboutLabels[_about] ?? 'Something else'}.',
+                        style: const TextStyle(
+                            fontSize: 12.5, color: AppTheme.textPrimary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(

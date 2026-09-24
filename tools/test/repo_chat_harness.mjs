@@ -1,11 +1,12 @@
 // Local verification harness for the repo-chat conversation logic.
 // Mirrors the exact normalization and fast-path regexes from
-// supabase/functions/repo-chat/index.ts. No dependencies are required.
+// supabase/functions/repo-chat/index.ts. Only node built-ins are used.
 //
 // Run: node tools/test/repo_chat_harness.mjs
 //
 // When changing norm(), GREETING_RE, or SMALL_TALK_POOLS in repo-chat, mirror
 // them here and keep the chatter regression battery below intact.
+import { readFileSync } from "node:fs";
 
 let pass = 0, fail = 0;
 function check(name, cond, extra = "") {
@@ -32,6 +33,11 @@ function norm(s) {
     .replace(/\b(tank|tahnk|thnak|thansk|thnks|tks|thx|thnx|tnx|tq)\b/g, "thanks")
     .replace(/\bthank(?:\s+(?:you|yuo|u))?\b/g, "thanks")
     .replace(/\bthanks\s+(?:you|yuo|u)\b/g, "thanks")
+    // (Task 14 fix) alternation precedence: the previous form
+    // \b(?:many|so\s+much)\s+thanks\b could never match because the group
+    // binds to \s+thanks inside the alternation — split the variants.
+    .replace(/\bmany\s+thanks\b/g, "thanks")
+    .replace(/\bso\s+much\s+thanks\b/g, "thanks")
     .replace(/\b(pleasse|plesae|plese)\b/g, "please")
     .replace(/\b(hep|hepl|heelp|halp)\b/g, "help")
     .replace(/\b(whats|wat|whut|waht)\b/g, "what")
@@ -82,7 +88,7 @@ const SMALL_TALK_POOLS = [
     replies: ["Goodbye! Come back any time."],
   },
   {
-    re: /^(?:im|i\s+am|i\s+m|am|feeling|its|it\s+is)?\s*(?:fine|good|great|okay|ok|well|alright|not\s+bad|pretty\s+good|very\s+good|doing\s+(?:good|great|fine|well|okay)|cant\s+complain|asleep|alive)[\s!.,?]*(?:and\s+(?:you|u))?[\b\s!.,?]*$/,
+    re: /^(?:im|i\s+am|i\s+m|am|feeling|its|it\s+is)?\s*(?:fine|good|great|okay|ok|well|alright|not\s+bad|pretty\s+good|very\s+good|doing\s+(?:good|great|fine|well|okay)|cant\s+complain|asleep|alive)[\s!.,?]*(?:and\s+(?:you|u))?[\s!.,?]*$/,
     replies: ["Glad to hear it! What can I help with?"],
   },
   {
@@ -168,6 +174,92 @@ check("canned fee question still detected", cannedPatterns.test(norm("ok how do 
 check("canned mixed question still detected", cannedPatterns.test(norm("thanks, now tell me about fees")));
 check("issue detection", ISSUE_RE.test("seller not responding") && ISSUE_RE.test("where is my order"));
 check("appeal detection", APPEAL_RE.test("I was flagged as spam") && APPEAL_RE.test("my account was banned"));
+
+// ── Task 14: contact-info ban + appeal escalation ────────────────────────
+// Mirror the escalation classifier from supabase/functions/repo-chat/index.ts.
+const DISPUTE_RE =
+  /\b(scammed?|ripped|fraud|stole|stolen|money\s*(lost|stuck|gone)|where\s*(is|are)\s*(my|the)\s*(money|refund)|not\s*refunded?|won'?t\s*refund|false\s*(advert|claim|listing)|fake\s*(product|seller|provider|driver)|\bis\s*(a\s*)?fake\b|counterfeit|never\s*(delivered|sent|arrived)|order\s*never)\b/i;
+const COMPLAINT_RE =
+  /\b(complain(t|)|report\s*(a|an|the)?\s*(seller|provider|driver|user|person|rider|him|her|them)|bad\s*(service|behavior|attitude)|rude|harass|insult|threat|unprofessional|late\s*delivery|damaged|broken\s*(item|product)|wrong\s*(item|order)|not\s*(responding|answering|picking)|no\s*response|unresponsive|ignored?|ghosted|silent)\b/i;
+const ACCOUNT_RE =
+  /\b(banned?|unban|suspend(ed|sion)?|flagged|blocked|locked\s*out|closed\s*(my|the)\s*account|rejected|approval|approved\?)\b/i;
+const RIDER_RE =
+  /\b(ride|driver|trip|taxi|pickup|fare)\b/i;
+
+// The function escalates ( Appeal Page instead of contacts ) when any of
+// these fire; plain "not responding" complaints stay on the ticket flow.
+function needsEscalation(q) {
+  return (
+    APPEAL_RE.test(q) ||
+    DISPUTE_RE.test(q) ||
+    ACCOUNT_RE.test(q) ||
+    (COMPLAINT_RE.test(q) && RIDER_RE.test(q))
+  );
+}
+
+// Mirror classifyAppeal's tag selection.
+function classifyAppeal(q, isProvider) {
+  if (DISPUTE_RE.test(q) || COMPLAINT_RE.test(q)) {
+    if (RIDER_RE.test(q)) return "rider";
+    if (isProvider) return "provider";
+    return "dispute";
+  }
+  if (ACCOUNT_RE.test(q)) return "account";
+  if (isProvider) return "provider";
+  return "general";
+}
+
+const escalationCases = [
+  ["I was scammed by a seller", true, "dispute"],
+  ["this is fraud, where is my money", true, "dispute"],
+  ["the product is fake", true, "dispute"],
+  ["my driver was rude to me", true, "rider"],
+  ["the driver never picked me up, I want to report him", true, "rider"],
+  ["I was banned wrongly", true, "account"],
+  ["my account got suspended for no reason", true, "account"],
+  ["I want to appeal", true, "general"],
+  // Plain "not responding" stays on the guided ticket flow.
+  ["seller not responding", false, null],
+  ["no response from the seller about my order", false, null],
+  // Normal help questions never escalate.
+  ["how do I recharge my wallet", false, null],
+  ["how can I track my order", false, null],
+];
+for (const [input, shouldEscalate, tag] of escalationCases) {
+  const q = norm(input);
+  const esc = needsEscalation(q);
+  check(
+    `escalation: ${JSON.stringify(input)} → ${shouldEscalate ? "appeal" : "in-app flow"}`,
+    esc === shouldEscalate,
+  );
+  if (shouldEscalate && tag) {
+    check(`escalation tag: ${JSON.stringify(input)} → ${tag}`, classifyAppeal(q, false) === tag);
+  }
+}
+check("provider context tags provider appeals", classifyAppeal(norm("buyer scammed me"), true) === "provider");
+
+// Contact-info ban: the Edge Function and the chat screen must never carry
+// support contact details. The Telebirr payment account (same digits) is the
+// recharge destination, not a contact channel — every occurrence in the
+// function must be inside a Telebirr recharge instruction.
+const fnSource = readFileSync(
+  new URL("../../supabase/functions/repo-chat/index.ts", import.meta.url),
+  "utf8",
+);
+const screenSource = readFileSync(
+  new URL("../../lib/features/help_chat/help_chat_screen.dart", import.meta.url),
+  "utf8",
+);
+for (const forbidden of ["wa.me", "muktarbiya329", "@gmail.com", "SUPPORT_PHONE", "SUPPORT_EMAIL", "SUPPORT_WHATSAPP", "mailto:"])
+  check(`repo-chat has no contact leak: ${forbidden}`, !fnSource.includes(forbidden));
+for (const forbidden of ["0917686990", "wa.me", "muktarbiya329", "@gmail.com", "tel:", "mailto:", "WhatsApp"])
+  check(`chat screen has no contact leak: ${forbidden}`, !screenSource.includes(forbidden));
+
+const numberLines = fnSource.split("\n").filter((l) => l.includes("0917686990"));
+check(
+  "the only number in repo-chat is the Telebirr payment account",
+  numberLines.length > 0 && numberLines.every((l) => /telebirr/i.test(l)),
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

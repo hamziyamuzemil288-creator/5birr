@@ -126,7 +126,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           loc == '/admin-login' ||
           loc == '/staff/login' ||
           loc == '/terms' ||
-          loc == '/update-password';
+          loc == '/update-password' ||
+          // Task 13 fix: signup hands off to email verification BEFORE the
+          // account exists, so the OTP screen is reached with no session.
+          // Without this entry the redirect bounced every signup straight
+          // to /login — the code-entry screen never mounted and the OTP
+          // email was never requested (the reported "no OTP at signup" bug).
+          loc == '/otp-verify';
       final isSignupRoute = loc.startsWith('/signup/');
       final isApprovalRoute = _isApprovalRoute(loc);
 

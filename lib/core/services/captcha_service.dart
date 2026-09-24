@@ -65,6 +65,81 @@ class CaptchaService {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Login gate (Task 13 item 2): the password sign-in itself is a protected
+// action. The gate lives in the `login-gate` Edge Function (service role):
+// CAPTCHA enforcement + per-account failure lockout that clients cannot
+// bypass or reset.
+// ---------------------------------------------------------------------------
+extension LoginGate on CaptchaService {
+  /// Server check BEFORE the credential attempt: consumes [captchaId] when
+  /// CAPTCHA is enforced and refuses when the account is temporarily locked
+  /// (too many recent failures). Throws:
+  ///  • [LoginLockedException] — locked; message carries the retry window
+  ///  • [CaptchaException]     — challenge missing/failed
+  /// A gate outage fails CLOSED (the login is refused) — never open.
+  Future<void> gateLogin({required String email, String? captchaId}) async {
+    final res = await _client.functions.invoke('login-gate', body: {
+      'action': 'gate',
+      'email': email.trim().toLowerCase(),
+      'captcha_id': captchaId,
+    });
+    final data = res.data as Map<String, dynamic>?;
+    if (data == null) {
+      throw const CaptchaException(
+          'Sign-in is temporarily unavailable. Try again shortly.');
+    }
+    if (data['ok'] == true) return;
+
+    final code = data['error']?.toString() ?? 'UNKNOWN';
+    switch (code) {
+      case 'temporarily_locked':
+        final secs = (data['retry_after_seconds'] as num?)?.toInt() ?? 900;
+        throw LoginLockedException(secs);
+      case 'captcha_required':
+        throw const CaptchaException(
+            'Complete the security check before signing in.');
+      case 'captcha_failed':
+        throw const CaptchaException(
+            'That security check is not valid. Solve a new one.');
+      default:
+        throw CaptchaException(
+            'Sign-in is temporarily unavailable. Try again shortly.');
+    }
+  }
+
+  /// Reports the sign-in outcome. Never throws — a bookkeeping failure must
+  /// not mask the real login result.
+  Future<void> recordLoginAttempt(
+      {required String email, required bool success}) async {
+    try {
+      await _client.functions.invoke('login-gate', body: {
+        'action': 'record',
+        'email': email.trim().toLowerCase(),
+        'success': success,
+      });
+    } catch (_) {
+      // Fire-and-forget.
+    }
+  }
+}
+
+/// The account is locked after repeated failures. [retryAfterSeconds] is the
+/// server's authoritative cool-off window.
+class LoginLockedException implements Exception {
+  final int retryAfterSeconds;
+  const LoginLockedException(this.retryAfterSeconds);
+
+  String get message {
+    final mins = (retryAfterSeconds / 60).ceil();
+    return 'Too many failed attempts. Try again in '
+        '${mins <= 1 ? 'a minute' : '$mins minutes'}.';
+  }
+
+  @override
+  String toString() => message;
+}
+
 class CaptchaException implements Exception {
   final String message;
 

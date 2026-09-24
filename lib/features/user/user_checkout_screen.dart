@@ -257,8 +257,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         } catch (_) {
           idIssue =
               'Your order was placed, but the National ID photo could not be '
-              'uploaded. Please contact support so your identity can be '
-              'verified (WhatsApp 0917686990).';
+              'uploaded. Open Profile → Verify Document (or Help & Support) '
+              'to retry so your identity can be verified.';
         }
       }
 

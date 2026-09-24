@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/widgets/birr_bottom_nav.dart';
+import '../../core/widgets/verification_notice.dart';
 import 'user_home_screen.dart';
 import 'user_search_screen.dart';
 import 'user_orders_screen.dart';
@@ -50,7 +51,18 @@ class _UserDashboardState extends ConsumerState<UserDashboard> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _navIndex, children: _screens),
+      // Task 13 item 3: brief non-blocking "Verify your account" notice
+      // after registration (auto-dismisses; the persistent menu entry lives
+      // in Profile → Verify Document). Pure UI — the Task 9 gate is
+      // untouched and still sits on the first protected action.
+      body: Column(
+        children: [
+          const VerificationNotice(),
+          Expanded(
+            child: IndexedStack(index: _navIndex, children: _screens),
+          ),
+        ],
+      ),
       bottomNavigationBar: BirrBottomNav(
         currentIndex: _navIndex,
         onTap: (i) => setState(() => _navIndex = i),

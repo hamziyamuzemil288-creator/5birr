@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/captcha_service.dart';
+import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../auth/admin_gate.dart';
@@ -21,6 +23,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
   String? _error;
+  // Task 13 item 2: the login page is an attack surface too — enforce the
+  // same server-side CAPTCHA as signup/OTP/appeals, plus the failure lockout.
+  bool _captchaRequired = true; // conservative default until the server says
+  String? _captchaId;
+
+  @override
+  void initState() {
+    super.initState();
+    // A lookup failure defaults to true (fail closed), matching the service.
+    CaptchaService.instance.isRequired().then((required) {
+      if (mounted) setState(() => _captchaRequired = required);
+    });
+  }
 
   @override
   void dispose() {
@@ -31,15 +46,40 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_captchaRequired && _captchaId == null) {
+      setState(() =>
+          _error = 'Complete the security check before signing in.');
+      return;
+    }
     setState(() {
       _isLoading = true;
       _error = null;
     });
+    final email = _emailController.text.trim();
     try {
-      await ref.read(authProvider.notifier).signIn(
-            email: _emailController.text.trim(),
-            password: _passwordController.text,
-          );
+      // 1. Server gate BEFORE the credential check: consumes the CAPTCHA and
+      //    enforces the failure lockout. Fail closed on any gate problem.
+      await CaptchaService.instance
+          .gateLogin(email: email, captchaId: _captchaId);
+      try {
+        // 2. The credential check itself.
+        await ref.read(authProvider.notifier).signIn(
+              email: email,
+              password: _passwordController.text,
+            );
+        // signedIn is picked up by the auth listener; still clear the
+        // failure window server-side so one typo never bites later.
+        await CaptchaService.instance.recordLoginAttempt(
+          email: email,
+          success: true,
+        );
+      } catch (signInError) {
+        await CaptchaService.instance.recordLoginAttempt(
+          email: email,
+          success: false,
+        );
+        rethrow;
+      }
       if (mounted) {
         // Router redirect will handle navigation
       }
@@ -54,6 +94,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   String _friendlyError(String raw) {
+    // Gate/lockout messages are already written for the user.
+    if (raw.contains('Too many failed attempts') ||
+        raw.contains('security check')) {
+      return raw;
+    }
+    if (raw.contains('temporarily_locked')) {
+      return 'Too many failed attempts. Try again in 15 minutes.';
+    }
     if (raw.contains('Invalid login credentials')) {
       return 'Invalid email or password.';
     }
@@ -293,6 +341,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             child: const Text('Forgot Password?'),
                           ),
                         ),
+                        // Task 13 item 2: same tick+math CAPTCHA as signup,
+                        // enforced server-side by the login-gate function.
+                        if (_captchaRequired) ...[
+                          CaptchaChallengeField(
+                            onVerified: (id) => setState(() => _captchaId = id),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         if (_error != null) ...[
                           const SizedBox(height: 8),
                           Container(

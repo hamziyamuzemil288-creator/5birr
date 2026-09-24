@@ -14,17 +14,17 @@ if (LLM_PROVIDER !== "none") {
   console.warn(`LLM_PROVIDER "${LLM_PROVIDER}" is not supported in this build; using "none".`);
 }
 
-// ── Human support contact (shown whenever the agent can't help) ──────────
-const SUPPORT_WHATSAPP_DISPLAY = "0917686990";
-const SUPPORT_WHATSAPP_URL = "https://wa.me/251917686990"; // +251 91 768 6990
-const SUPPORT_EMAIL = "muktarbiya329@gmail.com";
-const SUPPORT_PHONE = SUPPORT_WHATSAPP_DISPLAY;
+// ── Contact info policy (Task 14) ────────────────────────────────────────
+// The bot NEVER emits personal/direct contact details — no phone numbers,
+// no WhatsApp links, no email addresses — under any circumstance. Every
+// unresolved situation escalates to the in-app Appeal Page instead (the
+// form already collects the user's own contact details and evidence; CEO
+// and assigned staff see and answer the case via the Task 12 roles/staff
+// system). Deep links are in-app routes only.
 
-// ── Order/payment issue escalation (Behaviors 2/3/4) ─────────────────────
-// A user whose other party is not responding gets a guided ticket flow; a
-// PROVIDER gets the direct support phone number instead; a USER whose
-// earlier ticket has waited 10+ hours without a response gets the phone +
-// email fallback proactively.
+// ── Escalation to the Appeal Page (Task 14) ─────────────────────────────
+// Complaints / reports / disputes / anything the bot cannot resolve are
+// handed to the appeal flow with context so the case lands correctly.
 
 interface ProviderContext {
   isProvider: boolean;
@@ -72,10 +72,77 @@ function appealReply(): string {
   return (
     "I'm sorry you're dealing with that — let's get it in front of our team properly.\n\n" +
     "The appeal form lets you attach a photo as evidence and describe exactly what " +
-    "happened. Our support team reviews every appeal and contacts you on the phone " +
-    "number you provide.\n\n" +
+    "happened. Our team reviews every appeal and follows up with you inside the app.\n\n" +
     "Tap \"Submit an appeal\" below to get started — or tell me a bit more here if " +
     "you'd prefer."
+  );
+}
+
+// ── Context-aware escalation (Task 14): different parties have different
+// underlying issues. Detect WHO is speaking and WHAT KIND of problem it is,
+// so the appeal form opens pre-tagged and the case lands with the right
+// review context instead of a generic report.
+const DISPUTE_RE =
+  /\b(scammed?|ripped|fraud|stole|stolen|money\s*(lost|stuck|gone)|where\s*(is|are)\s*(my|the)\s*(money|refund)|not\s*refunded?|won'?t\s*refund|false\s*(advert|claim|listing)|fake\s*(product|seller|provider|driver)|\bis\s*(a\s*)?fake\b|counterfeit|never\s*(delivered|sent|arrived)|order\s*never)\b/i;
+const COMPLAINT_RE =
+  /\b(complain(t|)|report\s*(a|an|the)?\s*(seller|provider|driver|user|person|rider|him|her|them)|bad\s*(service|behavior|attitude)|rude|harass|insult|threat|unprofessional|late\s*delivery|damaged|broken\s*(item|product)|wrong\s*(item|order)|not\s*(responding|answering|picking)|no\s*response|unresponsive|ignored?|ghosted|silent)\b/i;
+// TODO(post-build): the double-nested group above is intentionally kept
+// identical to the tested harness copy; do not "simplify" without re-running
+// tools/test/repo_chat_harness.mjs.
+const ACCOUNT_RE =
+  /\b(banned?|unban|suspend(ed|sion)?|flagged|blocked|locked\s*out|closed\s*(my|the)\s*account|rejected|approval|approved\?)\b/i;
+const RIDER_RE =
+  /\b(ride|driver|trip|taxi|pickup|fare)\b/i;
+
+function isDisputeIntent(text: string): boolean {
+  return DISPUTE_RE.test(text);
+}
+
+function isComplaintIntent(text: string): boolean {
+  return COMPLAINT_RE.test(text);
+}
+
+function isAccountIntent(text: string): boolean {
+  return ACCOUNT_RE.test(text);
+}
+
+function isRiderIntent(text: string): boolean {
+  return RIDER_RE.test(text);
+}
+
+interface AppealContext {
+  about: "rider" | "provider" | "dispute" | "account" | "general";
+}
+
+/** Classify an escalation: WHO/WHAT the appeal is about, so the appeal form
+ *  opens pre-tagged. Providers keep their provider context; riders get the
+ *  rider tag; money/dispute language outranks general complaints. */
+function classifyAppeal(text: string, isProvider: boolean): AppealContext {
+  if (isDisputeIntent(text) || isComplaintIntent(text)) {
+    if (isRiderIntent(text)) return { about: "rider" };
+    if (isProvider) return { about: "provider" };
+    return { about: "dispute" };
+  }
+  if (isAccountIntent(text)) return { about: "account" };
+  if (isProvider) return { about: "provider" };
+  return { about: "general" };
+}
+
+/** The escalation reply: one authoritative hand-off to the Appeal Page. */
+function escalationReply(ctx: AppealContext): string {
+  const aboutLine = {
+    rider: "It will be tagged as a ride/driver issue.",
+    provider: "It will be tagged with your provider context.",
+    dispute: "It will be tagged as a buyer–seller dispute.",
+    account: "It will be tagged as an account/status issue.",
+    general: "",
+  }[ctx.about];
+  return (
+    "I can't resolve this myself, so let's put it in front of our team the right way.\n\n" +
+    "Tap \"Submit an appeal\" below — the form lets you attach a photo as evidence, " +
+    "describe exactly what happened, and include how the team should reach you. " +
+    (aboutLine ? aboutLine + " " : "") +
+    "Our team reviews every appeal and follows up with you inside the app."
   );
 }
 
@@ -107,6 +174,11 @@ function norm(s: string): string {
     .replace(/\b(tank|tahnk|thnak|thansk|thnks|tks|thx|thnx|tnx|tq)\b/g, "thanks")
     .replace(/\bthank(?:\s+(?:you|yuo|u))?\b/g, "thanks")
     .replace(/\bthanks\s+(?:you|yuo|u)\b/g, "thanks")
+    // (Task 14 fix) alternation precedence: the previous form
+    // \b(?:many|so\s+much)\s+thanks\b could never match because the group
+    // binds to \s+thanks inside the alternation — split the variants.
+    .replace(/\bmany\s+thanks\b/g, "thanks")
+    .replace(/\bso\s+much\s+thanks\b/g, "thanks")
     .replace(/\b(pleasse|plesae|plese)\b/g, "please")
     .replace(/\b(hep|hepl|heelp|halp)\b/g, "help")
     .replace(/\b(whats|wat|whut|waht)\b/g, "what")
@@ -295,15 +367,13 @@ function ticketThankYou(draft: TicketDraft): string {
 }
 
 const PROVIDER_DIRECT_REPLY =
-  "Sorry you're dealing with this. As a provider you can reach our support team " +
-  `directly by phone or WhatsApp at ${SUPPORT_PHONE} — they'll sort it out with you right away.`;
-
+  "Sorry you're dealing with this. Let's get it to our team properly: tap " +
+  "\"Submit an appeal\" below — it will be tagged with your provider context, " +
+  "and the team reviews it right away.";
 const FALLBACK_REPLY =
-  "We're sorry your issue is still unresolved — our team has not yet responded to your " +
-  "submitted ticket. Please reach us directly:\n\n" +
-  `• Phone / WhatsApp: ${SUPPORT_PHONE}\n` +
-  `• Email: ${SUPPORT_EMAIL}\n\n` +
-  "We're sorry for the wait.";
+  "We're sorry your issue is still unresolved — our team has not yet responded to " +
+  "your submitted ticket. To add details or evidence, submit an appeal below and " +
+  "it will be linked to your case. We're sorry for the wait.";
 
 /** 10-hour no-response fallback: proactively hand out the direct contacts
  *  (once per ticket) when a user's submitted HELP_CHAT ticket has been OPEN
@@ -381,6 +451,15 @@ const INTENT_ROUTES: Record<string, { label: string; route: string }[]> = {
   greeting: [],
   smalltalk: [],
   appeal: [{ label: "Submit an appeal", route: "/appeal" }],
+  // Task 14: escalations carry context via query params — the appeal form
+  // opens pre-tagged so the case lands with the right review context.
+  // The /appeal route is validated in chat_deep_links.dart and handled by
+  // AppealScreen (reads `about` + `source` from the query string).
+  appeal_rider: [{ label: "Submit an appeal", route: "/appeal?about=rider&source=chat" }],
+  appeal_provider: [{ label: "Submit an appeal", route: "/appeal?about=provider&source=chat" }],
+  appeal_dispute: [{ label: "Submit an appeal", route: "/appeal?about=dispute&source=chat" }],
+  appeal_account: [{ label: "Submit an appeal", route: "/appeal?about=account&source=chat" }],
+  appeal_general: [{ label: "Submit an appeal", route: "/appeal?about=general&source=chat" }],
 };
 
 // Log the assistant turn server-side and return the response payload with
@@ -388,7 +467,12 @@ const INTENT_ROUTES: Record<string, { label: string; route: string }[]> = {
 async function respond(
   userId: string,
   reply: string,
-  opts: { handoff?: boolean; intent?: string | null } = {},
+  opts: {
+    handoff?: boolean;
+    intent?: string | null;
+    // Optional override; defaults to INTENT_ROUTES[intent].
+    links?: { label: string; route: string }[];
+  } = {},
 ): Promise<Response> {
   let logId = "";
   try {
@@ -409,7 +493,7 @@ async function respond(
   return json({
     reply,
     handoff: opts.handoff === true,
-    links: (opts.intent && INTENT_ROUTES[opts.intent]) || [],
+    links: opts.links ?? ((opts.intent && INTENT_ROUTES[opts.intent]) || []),
     log_id: logId,
   });
 }
@@ -620,7 +704,7 @@ const SMALL_TALK_POOLS: { re: RegExp; replies: string[] }[] = [
   {
     // The user reporting they're fine — the natural answer to the
     // assistant's own "how are you?". Optional "and you" tail folded in.
-    re: /^(?:im|i\s+am|i\s+m|am|feeling|its|it\s+is)?\s*(?:fine|good|great|okay|ok|well|alright|not\s+bad|pretty\s+good|very\s+good|doing\s+(?:good|great|fine|well|okay)|cant\s+complain|asleep|alive)[\s!.,?]*(?:and\s+(?:you|u))?[\s!.,?]*$/,
+    re: /^(?:im|i\s+am|i\s+m|am|feeling|its|it\s+is)?\s*(?:fine|good|great|okay|ok|well|alright|not\s+bad|pretty\s+good|very\s+good|doing\s+(?:good|great|fine|well|okay)|cant\s+complain|asleep|alive)[\s!.,?]*(?:and\s+(?:you|u))?[\s!.,?]*$/,
     replies: [
       "Glad to hear it! 😊 What can I help you with today?",
       "Happy to hear that! Anything I can help you with?",
@@ -790,13 +874,9 @@ function cannedIntent(text: string): string | null {
 }
 
 // ── Human handoff (returned whenever the agent can't help) ───────────────
-function handoffReply(): string {
-  return (
-    "I'm not able to help with that directly, but our support team is happy to help!\n\n" +
-    `• WhatsApp: ${SUPPORT_WHATSAPP_DISPLAY} (${SUPPORT_WHATSAPP_URL})\n` +
-    `• Email: ${SUPPORT_EMAIL}\n\n` +
-    "You can tap either option below to reach them."
-  );
+// Task 14: NO contact details, ever. The in-app appeal flow IS the handoff.
+function handoffReply(ctx: AppealContext = { about: "general" }): string {
+  return escalationReply(ctx);
 }
 
 // Keyword fallback for short/keyword-style queries that embedding search
@@ -910,6 +990,9 @@ Deno.serve(async (req) => {
     rememberMessage(user.id, question);
     const nq = norm(question);
     const session = getSession(user.id);
+    // Who is speaking (provider vs regular user) — computed once, used by
+    // both the Task 14 escalation classifier and the ticket-flow branch.
+    const providerCtx = await loadProviderContext(user.id);
     if (isGreeting(nq)) {
       return respond(user.id, pickReply(user.id, GREETING_REPLIES), {
         intent: "greeting",
@@ -920,8 +1003,26 @@ Deno.serve(async (req) => {
       if (talk) {
         return respond(user.id, talk, { intent: "smalltalk" });
       }
-      if (isAppealIntent(nq)) {
-        return respond(user.id, appealReply(), { intent: "appeal" });
+      // Appeal/spam-report intent AND dispute/scam/fraud/account/rider
+      // shapes escalate straight to the Appeal Page (Task 14) — classified
+      // by who is speaking so the form opens pre-tagged. Plain
+      // "other party not responding" complaints still take the guided
+      // ticket flow below (its structured questions feed support_tickets,
+      // which the CEO/assigned staff answer) — both channels are in-app,
+      // and neither ever emits contact details.
+      const appealCtx = classifyAppeal(nq, providerCtx.isProvider);
+      const needsEscalation =
+        isAppealIntent(nq) ||
+        isDisputeIntent(nq) ||
+        isAccountIntent(nq) ||
+        (isComplaintIntent(nq) && isRiderIntent(nq));
+      if (needsEscalation) {
+        clearSession(user.id); // a fresh escalation never resumes a stale draft
+        const intent = `appeal_${appealCtx.about}`;
+        return respond(user.id, appealReply(), {
+          intent,
+          links: INTENT_ROUTES[intent],
+        });
       }
     }
 
@@ -936,18 +1037,23 @@ Deno.serve(async (req) => {
     }
 
     // 4b. Guided ticket flow takes over once an order/payment issue is
-    // detected — but PROVIDERS skip it (Behavior 3: direct phone number).
-    // Greetings keep priority above, so small talk never starts a ticket.
-    const providerCtx = await loadProviderContext(user.id);
+    // detected — but only for the guided "other party not responding" flow
+    // (its ticket schema). Anything with a rider/dispute/account shape was
+    // already escalated above. Providers skip the guided flow (their issues
+    // go to the appeal form with provider context — no direct contacts).
     const issueDetected = looksLikeIssue(nq) || session !== undefined;
 
     if (providerCtx.isProvider) {
       clearSession(user.id);
-      if (issueDetected)
+      if (issueDetected) {
+        // Task 14: providers escalate through the appeal form with provider
+        // context — no direct contact details.
         return respond(user.id, PROVIDER_DIRECT_REPLY, {
           handoff: true,
-          intent: "support",
+          intent: "appeal_provider",
+          links: INTENT_ROUTES.appeal_provider,
         });
+      }
     } else {
       if (session) {
         const draft: TicketDraft = session;
@@ -992,9 +1098,10 @@ Deno.serve(async (req) => {
           ? respond(user.id, ticketThankYou(draft), { intent: "ticket" })
           : respond(
               user.id,
-              "I couldn't submit your issue just now. Please reach our support " +
-                `team directly: ${SUPPORT_PHONE} (phone / WhatsApp) or ${SUPPORT_EMAIL}.`,
-              { handoff: true, intent: "ticket" },
+              "I couldn't submit your issue just now. Tap \"Submit an appeal\" " +
+                "below instead — the appeal form reaches the same team and " +
+                "works reliably.",
+              { handoff: true, intent: "ticket", links: INTENT_ROUTES.appeal_dispute },
             );
       }
 
@@ -1041,10 +1148,22 @@ Deno.serve(async (req) => {
     return respond(
       user.id,
       answer.reply,
-      { handoff: answer.handoff, intent: answer.handoff ? "support" : null },
+      // Task 14: an unresolved retrieval miss escalates to the Appeal Page
+      // (in-app deep link), never to contact details.
+      {
+        handoff: answer.handoff,
+        intent: answer.handoff ? "appeal_general" : null,
+        links: answer.handoff ? INTENT_ROUTES.appeal_general : undefined,
+      },
     );
   } catch (e) {
     console.error("repo-chat failed:", e);
-    return json({ reply: handoffReply(), handoff: true });
+    // Task 14: even the crash path must not leak contacts — escalate to the
+    // appeal flow with a generic tag.
+    return json({
+      reply: escalationReply({ about: "general" }),
+      handoff: true,
+      links: INTENT_ROUTES.appeal_general,
+    });
   }
 });

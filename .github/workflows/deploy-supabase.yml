@@ -228,6 +228,13 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy staff-login --no-verify-jwt
 
+      # Task 13 item 2: server-side login gate — CAPTCHA enforcement +
+      # per-account failure lockout before the password credential check.
+      # Called by the Flutter login screen like send-otp (anon/user JWT).
+      - name: Deploy function login-gate
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy login-gate
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |

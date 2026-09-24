@@ -18,9 +18,13 @@ screen, or from Profile → Help & Support.
   or *Book a ride*).
 - **Report a problem**: if you tell the assistant something went wrong with
   an order, a payment, or another party, it collects the details and sends
-  them to the support team as a ticket, then the team follows up by phone.
-- **Hand you to a human** whenever it can't help: support WhatsApp, phone,
-  and email are shown in the chat.
+  them to the support team as a ticket. For disputes, scams, account
+  bans/suspensions, or ride/driver issues, it takes you straight to the
+  **Submit an appeal** form — pre-tagged with the issue type so the right
+  team context reviews it.
+- **Escalate anything it can't solve** through the in-app appeal form. The
+  assistant never shares phone numbers or email addresses; every follow-up
+  happens inside the app.
 
 ## Feedback
 

@@ -1,17 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
 
@@ -25,6 +23,7 @@ class _State extends State<UserRideRequestScreen>
     with WidgetsBindingObserver {
   final _pickupCtrl = TextEditingController();
   final _destCtrl = TextEditingController();
+  final _pickupFocus = FocusNode();
   final _destFocus = FocusNode();
   Position? _pickupPos;
   // Pickup fallback when GPS is unavailable: set by typing an address
@@ -42,22 +41,32 @@ class _State extends State<UserRideRequestScreen>
   String? _fareError;
   double? _fareEstimate;
   String? _error;
-  LocationStatus? _locStatus;
-  // Destination inline suggestions (Photon/OSM, free, no API key).
-  List<PhotonPlace> _destSuggestions = const [];
+  LocationStatus? _locStatus;  // Inline place suggestions (GeocodingService: Photon/OSM, GPS-biased).
+  List<PlaceResult> _destSuggestions = const [];
+  List<PlaceResult> _pickupSuggestions = const [];
+  bool _pickupFieldFocused = false;
   bool _destFieldFocused = false;
   bool _suppressDestSearch = false;
+  bool _suppressPickupSearch = false;
   int _destReqId = 0;
+  int _pickupReqId = 0;
   Timer? _destDebounce;
+  Timer? _pickupDebounce;
+
+  // Task 13 item 1: the pickup map lives on THIS screen so "Current
+  // Location" re-centers it on the live GPS fix (previously the fix only
+  // relabeled the text field and the screen stayed text-only).
+  final MapController _mapController = MapController();
+  bool _mapReady = false;
+  LatLng? _pendingCenter;
+  // Known/registered places near the latest GPS fix, shown as chips.
+  List<PlaceResult> _nearbyPois = const [];
+  // Last successful GPS fix, kept as search bias even after a manual pickup.
+  Position? _lastFix;
+
   // Set before openLocationSettings(): the next app resume re-runs the
   // GPS fix once instead of requiring a second manual tap.
   bool _afterResumePending = false;
-
-  // ---- TEMPORARY on-screen diagnostics (remove after debugging) ----
-  // Shows the live GPS/search state on the screen itself so failures are
-  // visible on a real device without ADB/logcat access.
-  String _dbgGps = '—';
-  String _dbgPhoton = '—';
 
   /// Latest inputs sent to calculate_fare_estimate — dedupes and skips
   /// stale responses when the user changes points quickly.
@@ -67,6 +76,8 @@ class _State extends State<UserRideRequestScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pickupFocus.addListener(_onPickupFocusChanged);
+    _pickupCtrl.addListener(_onPickupChanged);
     _destFocus.addListener(_onDestFocusChanged);
     _destCtrl.addListener(_onDestChanged);
     // Categories render immediately; GPS resolves in the background so the
@@ -78,6 +89,10 @@ class _State extends State<UserRideRequestScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pickupFocus.removeListener(_onPickupFocusChanged);
+    _pickupFocus.dispose();
+    _pickupCtrl.removeListener(_onPickupChanged);
+    _pickupDebounce?.cancel();
     _destFocus.removeListener(_onDestFocusChanged);
     _destFocus.dispose();
     _destCtrl.removeListener(_onDestChanged);
@@ -156,43 +171,44 @@ class _State extends State<UserRideRequestScreen>
   /// Background GPS resolution for pickup (asks permission on first use;
   /// failures surface inline via the pickup section, not silently).
   Future<void> _resolvePickupLocation() async {
-    setState(() => _dbgGps = 'requesting… (init)');
     final r = await LocationService.instance.getCurrentPositionDetailed();
     if (!mounted) return;
-    setState(() {
-      _locStatus = r.status;
-      _dbgGps = _dbgDescribeLocationResult(r);
-    });
+    setState(() => _locStatus = r.status);
     if (r.success) _applyPickupPosition(r.position!);
   }
 
-  /// TEMP diagnostics: one-line human summary of a location attempt.
-  String _dbgDescribeLocationResult(LocationResult r) {
-    switch (r.status) {
-      case LocationStatus.ready:
-        final p = r.position!;
-        return 'ready (${p.latitude.toStringAsFixed(4)}, '
-            '${p.longitude.toStringAsFixed(4)})';
-      case LocationStatus.serviceDisabled:
-        return 'serviceDisabled';
-      case LocationStatus.denied:
-        return 'denied';
-      case LocationStatus.deniedForever:
-        return 'deniedForever';
-      case LocationStatus.error:
-        final msg = (r.errorMessage ?? 'unknown').replaceAll('\n', ' ');
-        return 'error: ${msg.length > 60 ? msg.substring(0, 60) : msg}';
-    }
-  }
-
-  /// Applies a GPS fix to the pickup state, clearing any manual override.
+  /// Applies a GPS fix to the pickup state, clearing any manual override,
+  /// re-centers the embedded map and loads nearby places (Task 13: the fix
+  /// must visibly move the map, not just relabel the text field).
   void _applyPickupPosition(Position position) {
     setState(() {
       _pickupPos = position;
+      _lastFix = position;
       _pickupManual = null; // GPS re-take clears any manual override
     });
     _pickupCtrl.text = 'Current Location';
+    _moveCamera(LatLng(position.latitude, position.longitude));
+    _loadNearbyPois(position);
     _refreshFare();
+  }
+
+  /// Camera move that is safe at any time: applies immediately once the map
+  /// is ready, otherwise queues until onMapReady fires (move() on an
+  /// unattached controller throws).
+  void _moveCamera(LatLng center, {double zoom = 16}) {
+    if (_mapReady) {
+      _mapController.move(center, zoom);
+    } else {
+      _pendingCenter = center;
+    }
+  }
+
+  /// Known/registered places around the GPS fix (best-effort chips).
+  Future<void> _loadNearbyPois(Position p) async {
+    final pois = await GeocodingService.instance
+        .nearbyPlaces(GeoPoint(p.latitude, p.longitude));
+    if (!mounted) return;
+    setState(() => _nearbyPois = pois);
   }
 
   @override
@@ -205,7 +221,51 @@ class _State extends State<UserRideRequestScreen>
     }
   }
 
-  // ---- Destination inline suggestions (Photon / OpenStreetMap) ----
+  // ---- Pickup suggestions (GeocodingService, GPS-biased) ----
+
+  void _onPickupFocusChanged() {
+    setState(() => _pickupFieldFocused = _pickupFocus.hasFocus);
+  }
+
+  /// Debounced autocomplete for the typed pickup, biased to the user's
+  /// actual position (Task 13: proximity-ranked results, not generic ones).
+  void _onPickupChanged() {
+    if (_suppressPickupSearch) return;
+    final q = _pickupCtrl.text.trim();
+    _pickupDebounce?.cancel();
+    if (q.length < 3 || !_pickupFieldFocused) {
+      if (mounted && _pickupSuggestions.isNotEmpty) {
+        setState(() => _pickupSuggestions = const []);
+      }
+      return;
+    }
+    _pickupDebounce = Timer(const Duration(milliseconds: 450), () {
+      _searchPickupSuggestions(q);
+    });
+  }
+
+  Future<void> _searchPickupSuggestions(String query) async {
+    final reqId = ++_pickupReqId;
+    final results = await GeocodingService.instance
+        .searchPlaces(query, biasPoint: _searchBias(), limit: 5);
+    if (!mounted || reqId != _pickupReqId) return;
+    setState(() => _pickupSuggestions = results);
+  }
+
+  void _selectPickupSuggestion(PlaceResult place) {
+    setState(() {
+      _pickupManual = LatLng(place.lat, place.lng);
+      _pickupSuggestions = const [];
+      _error = null;
+    });
+    _pickupFocus.unfocus();
+    _suppressPickupSearch = true;
+    _pickupCtrl.text = place.label;
+    _suppressPickupSearch = false;
+    _refreshFare();
+  }
+
+  // ---- Destination inline suggestions (GeocodingService, GPS-biased) ----
 
   void _onDestFocusChanged() {
     setState(() => _destFieldFocused = _destFocus.hasFocus);
@@ -232,18 +292,13 @@ class _State extends State<UserRideRequestScreen>
 
   Future<void> _searchDestSuggestions(String query) async {
     final reqId = ++_destReqId;
-    setState(() => _dbgPhoton = 'searching "$query"…');
-    final results = await PhotonService.autocomplete(query);
+    final results = await GeocodingService.instance
+        .searchPlaces(query, biasPoint: _searchBias(), limit: 5);
     if (!mounted || reqId != _destReqId) return;
-    setState(() {
-      _destSuggestions = results;
-      _dbgPhoton = results.isEmpty
-          ? '0 results for "$query"'
-          : '${results.length} results';
-    });
+    setState(() => _destSuggestions = results);
   }
 
-  void _selectDestSuggestion(PhotonPlace place) {
+  void _selectDestSuggestion(PlaceResult place) {
     setState(() {
       _destLatLng = LatLng(place.lat, place.lng);
       _destSuggestions = const [];
@@ -254,6 +309,13 @@ class _State extends State<UserRideRequestScreen>
     _destCtrl.text = place.label;
     _suppressDestSearch = false;
     _refreshFare();
+  }
+
+  /// Search bias: the latest GPS fix when available (proximity ranking);
+  /// null lets the service fall back to its city-center bias table.
+  GeoPoint? _searchBias() {
+    final fix = _lastFix;
+    return fix == null ? null : GeoPoint(fix.latitude, fix.longitude);
   }
 
   /// Effective pickup point: the latest explicit choice wins — a typed or
@@ -292,12 +354,12 @@ class _State extends State<UserRideRequestScreen>
     _refreshFare();
     // Reverse geocode into a readable label (best-effort, same as dest).
     try {
-      final placemarks = await placemarkFromCoordinates(
-          picked.latitude, picked.longitude);
+      final rev = await GeocodingService.instance
+          .reverseGeocode(picked.latitude, picked.longitude);
       if (!mounted) return;
-      final address =
-          _formatPlacemark(placemarks.isNotEmpty ? placemarks.first : null);
-      if (address.isNotEmpty) _pickupCtrl.text = address;
+      if (rev != null && rev.address.isNotEmpty) {
+        _pickupCtrl.text = rev.address;
+      }
     } catch (_) {
       // Coordinate text remains as the label.
     }
@@ -309,12 +371,15 @@ class _State extends State<UserRideRequestScreen>
     final text = _pickupCtrl.text.trim();
     if (text.isEmpty) return false;
     try {
-      final locations = await locationFromAddress(text);
-      if (locations.isEmpty) return false;
-      final loc = locations.first;
+      // GPS-biased forward search; the service carries its own platform-
+      // geocoder fallback, so no separate locationFromAddress call here.
+      final bias = _searchBias();
+      final point = bias != null
+          ? await GeocodingService.instance.geocodeNear(text, bias)
+          : await GeocodingService.instance.geocode(text);
+      if (point == null) return false;
       if (!mounted) return true;
-      setState(() =>
-          _pickupManual = LatLng(loc.latitude, loc.longitude));
+      setState(() => _pickupManual = LatLng(point.lat, point.lng));
       return true;
     } catch (_) {
       return false;
@@ -330,11 +395,13 @@ class _State extends State<UserRideRequestScreen>
     final text = _destCtrl.text.trim();
     if (text.isEmpty) return false;
     try {
-      final locations = await locationFromAddress(text);
-      if (locations.isEmpty) return false;
-      final loc = locations.first;
+      final bias = _searchBias();
+      final point = bias != null
+          ? await GeocodingService.instance.geocodeNear(text, bias)
+          : await GeocodingService.instance.geocode(text);
+      if (point == null) return false;
       if (!mounted) return true;
-      setState(() => _destLatLng = LatLng(loc.latitude, loc.longitude));
+      setState(() => _destLatLng = LatLng(point.lat, point.lng));
       return true;
     } catch (_) {
       return false;
@@ -369,11 +436,10 @@ class _State extends State<UserRideRequestScreen>
   Future<void> _reverseGeocode(LatLng point) async {
     setState(() => _geocoding = true);
     try {
-      final placemarks =
-          await placemarkFromCoordinates(point.latitude, point.longitude);
+      final rev = await GeocodingService.instance
+          .reverseGeocode(point.latitude, point.longitude);
       if (!mounted) return;
-      final address =
-          _formatPlacemark(placemarks.isNotEmpty ? placemarks.first : null);
+      final address = rev?.address ?? '';
       setState(() {
         _suppressDestSearch = true;
         if (address.isNotEmpty) _destCtrl.text = address;
@@ -384,17 +450,6 @@ class _State extends State<UserRideRequestScreen>
       // Reverse geocoding is best-effort; the coordinate text remains.
       if (mounted) setState(() => _geocoding = false);
     }
-  }
-
-  String _formatPlacemark(Placemark? p) {
-    if (p == null) return '';
-    return [
-      p.street,
-      p.subLocality,
-      p.locality,
-      p.administrativeArea,
-      p.country,
-    ].where((s) => s != null && s.trim().isNotEmpty).join(', ');
   }
 
   Future<void> _submit() async {
@@ -472,6 +527,106 @@ class _State extends State<UserRideRequestScreen>
                     ),
                     const SizedBox(height: 16),
                   ],
+                  // Task 13 item 1: live pickup map on the ride screen itself.
+                  // "Use current location" centers this map on the real GPS
+                  // fix; the pin shows the effective pickup point.
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: SizedBox(
+                      height: 200,
+                      width: double.infinity,
+                      child: Stack(
+                        children: [
+                          FlutterMap(
+                            mapController: _mapController,
+                            options: MapOptions(
+                              initialCenter: _initialMapCenter(),
+                              initialZoom: 15,
+                              onMapReady: () {
+                                _mapReady = true;
+                                final pending = _pendingCenter;
+                                if (pending != null) {
+                                  _pendingCenter = null;
+                                  _mapController.move(pending, 16);
+                                }
+                              },
+                            ),
+                            children: [
+                              const ResilientTileLayer(),
+                              if (_pickupPoint != null)
+                                MarkerLayer(
+                                  markers: [
+                                    Marker(
+                                      point: _pickupPoint!,
+                                      width: 36,
+                                      height: 36,
+                                      alignment: Alignment.topCenter,
+                                      child: const Icon(Icons.location_pin,
+                                          color: AppTheme.primaryGreen,
+                                          size: 36),
+                                    ),
+                                  ],
+                                ),
+                              const RichAttributionWidget(
+                                attributions: [
+                                  TextSourceAttribution(
+                                      '© OpenStreetMap contributors'),
+                                ],
+                              ),
+                            ],
+                          ),
+                          Positioned(
+                            right: 10,
+                            bottom: 10,
+                            child: SizedBox(
+                              width: 38,
+                              height: 38,
+                              child: FloatingActionButton(
+                                heroTag: 'rideMapRecenter',
+                                onPressed: _resolvePickupLocation,
+                                backgroundColor: AppTheme.primaryGreen,
+                                foregroundColor: Colors.white,
+                                child: const Icon(Icons.my_location, size: 20),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // Known/registered places near the GPS fix (Task 13).
+                  if (_nearbyPois.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 40,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _nearbyPois.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (context, i) {
+                          final poi = _nearbyPois[i];
+                          return ActionChip(
+                            avatar: const Icon(Icons.place_outlined,
+                                size: 16, color: AppTheme.primaryGreen),
+                            label: Text(
+                              poi.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            backgroundColor:
+                                AppTheme.primaryGreen.withOpacity(0.06),
+                            side: BorderSide(
+                                color: AppTheme.primaryGreen.withOpacity(0.3)),
+                            labelStyle: const TextStyle(
+                                fontSize: 12, color: AppTheme.textPrimary),
+                            onPressed: () => _selectPickupSuggestion(poi),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
                   const Text('Pickup Location',
                       style: TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w600)),
@@ -479,22 +634,19 @@ class _State extends State<UserRideRequestScreen>
                   BirrTextField(
                     label: 'Pickup',
                     controller: _pickupCtrl,
-                    hint: 'Tap to use current location',
+                    focusNode: _pickupFocus,
+                    hint: 'Type an address, or use current location',
                   ),
                   const SizedBox(height: 4),
                   Row(
                     children: [
                       TextButton.icon(
                     onPressed: () async {
-                      setState(() => _dbgGps = 'requesting… (tap)');
                       final r =
                           await LocationService.instance
                               .getCurrentPositionDetailed();
                       if (!mounted) return;
-                      setState(() {
-                        _locStatus = r.status;
-                        _dbgGps = _dbgDescribeLocationResult(r);
-                      });
+                      setState(() => _locStatus = r.status);
                       if (r.success) {
                         _applyPickupPosition(r.position!);
                       } else if (r.status == LocationStatus.deniedForever ||
@@ -529,6 +681,41 @@ class _State extends State<UserRideRequestScreen>
                         'Location is off — enable it in settings so drivers can find you',
                         style:
                             TextStyle(fontSize: 12, color: AppTheme.warning),
+                      ),
+                    ),
+                  // Pickup inline suggestions (GPS-biased, proximity-ranked).
+                  if (_pickupFieldFocused && _pickupSuggestions.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surface,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: AppTheme.textMuted.withOpacity(0.25)),
+                      ),
+                      constraints: const BoxConstraints(maxHeight: 200),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        itemCount: _pickupSuggestions.length,
+                        itemBuilder: (context, i) {
+                          final place = _pickupSuggestions[i];
+                          return ListTile(
+                            dense: true,
+                            visualDensity: VisualDensity.compact,
+                            leading: const Icon(Icons.place_outlined,
+                                size: 20, color: AppTheme.primaryGreen),
+                            title: Text(
+                              place.label,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppTheme.textPrimary),
+                            ),
+                            onTap: () => _selectPickupSuggestion(place),
+                          );
+                        },
                       ),
                     ),
                   const SizedBox(height: 16),
@@ -584,23 +771,6 @@ class _State extends State<UserRideRequestScreen>
                           ),
                         ),
                     ],
-                  ),
-                  // TEMPORARY on-screen diagnostics — remove after debugging.
-                  Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.only(top: 4),
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: AppTheme.textMuted.withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      'DIAG v33b · GPS: $_dbgGps · Photon: $_dbgPhoton · '
-                      'field: ${_destFieldFocused ? 'focused' : 'not focused'}, '
-                      '${_destCtrl.text.length} chars',
-                      style: const TextStyle(
-                          fontSize: 10, color: AppTheme.textMuted),
-                    ),
                   ),
                   if (_destFieldFocused && _destSuggestions.isNotEmpty)
                     Container(
@@ -751,81 +921,6 @@ class _State extends State<UserRideRequestScreen>
   }
 }
 
-/// One Photon autocomplete result (OpenStreetMap-backed, free, no key).
-class PhotonPlace {
-  final double lat;
-  final double lng;
-  final String label;
-  const PhotonPlace({required this.lat, required this.lng, required this.label});
-}
-
-/// Minimal Photon (https://photon.komoot.io) autocomplete client.
-/// Debouncing and the <3-char guard live with the callers.
-class PhotonService {
-  PhotonService._();
-
-  static const _endpoint = 'https://photon.komoot.io/api/';
-
-  static String _label(Map<String, dynamic> p) {
-    final name = p['name'];
-    final street = p['street'];
-    final city = p['city'];
-    final state = p['state'];
-    final country = p['country'];
-    final head = (name is String && name.trim().isNotEmpty)
-        ? name
-        : (street is String ? street : '');
-    final tail = [city, state, country]
-        .whereType<String>()
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toSet() // de-dupe (city often equals the name)
-        .join(', ');
-    return [head, tail].where((s) => s.isNotEmpty).join(', ');
-  }
-
-  /// Returns up to [limit] suggestions for [query], or an empty list on
-  /// any network/parse failure (suggestions must never block booking).
-  static Future<List<PhotonPlace>> autocomplete(String query,
-      {int limit = 5}) async {
-    final q = query.trim();
-    if (q.length < 3) return const [];
-    try {
-      final uri = Uri.parse(_endpoint).replace(queryParameters: {
-        'q': q,
-        'limit': '$limit',
-      });
-      final res = await http.get(uri).timeout(const Duration(seconds: 6));
-      if (res.statusCode != 200) return const [];
-      final body = jsonDecode(res.body);
-      final features = body['features'];
-      if (features is! List) return const [];
-      final places = <PhotonPlace>[];
-      for (final f in features) {
-        if (f is! Map) continue;
-        final geometry = f['geometry'];
-        final coords = geometry is Map ? geometry['coordinates'] : null;
-        if (coords is! List || coords.length < 2) continue;
-        final lng = (coords[0] as num?)?.toDouble();
-        final lat = (coords[1] as num?)?.toDouble();
-        if (lat == null || lng == null) continue;
-        final props = f['properties'];
-        final label = props is Map ? _label(Map<String, dynamic>.from(props)) : '';
-        places.add(PhotonPlace(
-          lat: lat,
-          lng: lng,
-          label: label.isNotEmpty
-              ? label
-              : '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
-        ));
-      }
-      return places;
-    } catch (_) {
-      return const [];
-    }
-  }
-}
-
 /// Full-screen OpenStreetMap location picker with address search.
 /// Search a place, drag the map, or tap to drop a pin; confirm returns the
 /// picked [LatLng]. Shared by pickup and destination picking.
@@ -848,10 +943,13 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
   final _searchCtrl = TextEditingController();
   LatLng? _picked;
   bool _recentering = false;
-  List<PhotonPlace> _results = const [];
+  List<PlaceResult> _results = const [];
   bool _searching = false;
   int _reqId = 0;
   Timer? _debounce;
+  // Latest camera center reported by the map (onPositionChanged) — the
+  // search bias. This flutter_map version exposes no center getter.
+  late LatLng _cameraCenter = widget.initialCenter;
   // True once FlutterMap has attached to _mapController (onMapReady).
   // move() on an unattached controller throws or silently no-ops, so
   // requests that arrive early are queued in _pendingCenter and applied
@@ -941,10 +1039,20 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
     });
   }
 
+  /// Current visible map center — the search bias (Task 13: results are
+  /// ranked around where the user is actually looking, not globally).
+  LatLng get _currentCenter =>
+      _mapReady ? _cameraCenter : widget.initialCenter;
+
   Future<void> _runSearch(String query) async {
     final reqId = ++_reqId;
     setState(() => _searching = true);
-    final results = await PhotonService.autocomplete(query);
+    final c = _currentCenter;
+    final results = await GeocodingService.instance.searchPlaces(
+      query,
+      biasPoint: GeoPoint(c.latitude, c.longitude),
+      limit: 5,
+    );
     if (!mounted || reqId != _reqId) return;
     setState(() {
       _searching = false;
@@ -952,7 +1060,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
     });
   }
 
-  void _selectPlace(PhotonPlace place) {
+  void _selectPlace(PlaceResult place) {
     final point = LatLng(place.lat, place.lng);
     setState(() {
       _picked = point;
@@ -983,6 +1091,11 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                   _pendingCenter = null;
                   _mapController.move(pending, 15);
                 }
+              },
+              onPositionChanged: (_, __) {
+                // Track the camera center for search bias; hasGesture-only
+                // would miss programmatic moves, so update on every event.
+                _cameraCenter = _mapController.camera.center;
               },
               onTap: (_, point) => setState(() => _picked = point),
             ),

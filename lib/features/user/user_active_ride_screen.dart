@@ -270,30 +270,10 @@ class _State extends State<UserActiveRideScreen> {
                   if (points.isEmpty)
                     Marker(
                       point: center,
-                      width: 48,
-                      height: 48,
+                      width: 96,
+                      height: 64,
                       alignment: Alignment.topCenter,
-                      child: Column(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.location_searching,
-                            color: AppTheme.textMuted, size: 30),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                                color: AppTheme.cardBorder, width: 0.5),
-                          ),
-                          child: Text(
-                            claimed
-                                ? 'Waiting for driver location…'
-                                : 'Searching for a driver…',
-                            style: const TextStyle(
-                                fontSize: 9, color: AppTheme.textMuted),
-                          ),
-                        ),
-                      ]),
+                      child: SearchingPin(claimed: claimed),
                     ),
                 ],
               ),
@@ -505,5 +485,58 @@ class _State extends State<UserActiveRideScreen> {
       default:
         return status;
     }
+  }
+}
+
+/// Status pin shown on the map while no GPS fix / driver location exists
+/// (the "Searching for a driver…" / "Waiting for driver location…" chip).
+///
+/// Replaces an inline Column inside a 48×48 marker box that stacked a 30px
+/// icon + a text chip (~47px) — a guaranteed 29px RenderFlex overflow on
+/// every device while the ride is unclaimed (screenshot bug). Icon and chip
+/// are height-pinned (34 + 4 + 20 = 58 ≤ 64) and the text scales down inside
+/// the chip, so it fits at any text scale or locale.
+///
+/// Public so the overflow regression test can render it directly; only
+/// meant for use inside the Active Ride screen.
+class SearchingPin extends StatelessWidget {
+  final bool claimed;
+  const SearchingPin({super.key, required this.claimed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          height: 34,
+          child: Icon(Icons.location_searching,
+              color: AppTheme.textMuted, size: 30),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          height: 20,
+          width: 88,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+          ),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              claimed
+                  ? 'Waiting for driver location…'
+                  : 'Searching for a driver…',
+              maxLines: 1,
+              softWrap: false,
+              style: const TextStyle(fontSize: 9, color: AppTheme.textMuted),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }

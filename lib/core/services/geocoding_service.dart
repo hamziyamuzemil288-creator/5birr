@@ -71,16 +71,22 @@ class GeocodingService {
   Future<List<PlaceResult>> searchPlaces(
     String query, {
     String? biasCity,
+    GeoPoint? biasPoint,
     int limit = 6,
   }) async {
     final q = query.trim();
     if (q.length < 3) return const [];
-    final cacheKey = 'search:$q:${biasCity ?? ''}';
+    final cacheKey = 'search:$q:${biasCity ?? ''}:${biasPoint ?? ''}';
     final cached = _cache[cacheKey];
     if (cached is List<PlaceResult>) return cached;
 
-    // Photon: lat/lon bias toward the active city center when known.
-    final bias = biasCity != null ? _cityBias[biasCity] : null;
+    // Task 13: prefer the user's live GPS position for bias (proximity-
+    // ranked results), falling back to the active city center when the fix
+    // is unavailable. Photon's lat/lon params are soft ranking, so results
+    // still match the typed text first and nearby ones rank higher.
+    final (double, double)? bias = biasPoint != null
+        ? (biasPoint.lat, biasPoint.lng)
+        : (biasCity != null ? _cityBias[biasCity] : null);
     final params = {
       'q': q,
       'limit': '$limit',
@@ -151,6 +157,74 @@ class GeocodingService {
       }
     } catch (_) {}
     return null;
+  }
+
+  /// Forward geocode a TYPED pickup/destination with the user's GPS position
+  /// as bias (Task 13: proximity-ranked forward search for the ride screen).
+  /// Same fallbacks as [geocode]; null on no match.
+  Future<GeoPoint?> geocodeNear(String address, GeoPoint near) async {
+    final q = address.trim();
+    if (q.isEmpty) return null;
+    final cacheKey = 'fwdn:$q:${near.lat},${near.lng}';
+    final cached = _cache[cacheKey];
+    if (cached is GeoPoint) return cached;
+
+    final places = await searchPlaces(q, biasPoint: near, limit: 1);
+    if (places.isNotEmpty) {
+      _cachePut(cacheKey, places.first.point);
+      return places.first.point;
+    }
+    // Platform geocoder as last resort (platform geocoders are already
+    // network-proximate, so no explicit bias is possible).
+    try {
+      final found = await platform.locationFromAddress(q).timeout(_httpTimeout);
+      if (found.isNotEmpty) {
+        final p = found.first;
+        final point = GeoPoint(p.latitude, p.longitude);
+        _cachePut(cacheKey, point);
+        return point;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Nearby known/registered places (POIs) around a live GPS point — the
+  /// chips shown after "Current Location" centers the map (Task 13).
+  ///
+  /// Uses Photon's /reverse around a radius; verified live that /reverse
+  /// accepts lat/lon/radius/limit (zoom is REJECTED — an earlier version
+  /// sent zoom and got an error body with zero features, the reported
+  /// "Photon: 0 results" class of bug). distance_sort keeps the closest
+  /// POIs first. Returns [] on any failure — chips are best-effort.
+  Future<List<PlaceResult>> nearbyPlaces(GeoPoint at, {int limit = 8}) async {
+    final cacheKey = 'near:${at.lat.toStringAsFixed(4)},${at.lng.toStringAsFixed(4)}';
+    final cached = _cache[cacheKey];
+    if (cached is List<PlaceResult>) return cached;
+
+    try {
+      await _throttle();
+      final uri = Uri.parse('$_photonUrl/reverse').replace(queryParameters: {
+        'lat': '${at.lat}',
+        'lon': '${at.lng}',
+        'radius': '2', // km — walkable/driverable neighborhood
+        'limit': '$limit',
+        'distance_sort': 'true',
+        'lang': 'en',
+      });
+      final data = await _getJson(uri) as Map<String, dynamic>;
+      final features = (data['features'] as List? ?? []);
+      final results = features
+          .map((f) => PlaceResult.fromPhoton(f as Map<String, dynamic>))
+          .where((p) => p.label.isNotEmpty && p.label != 'Place')
+          .take(limit)
+          .toList();
+      _cachePut(cacheKey, results);
+      return results;
+    } catch (_) {
+      // Nominatim fallback (same free OSM data). Search for nothing — a
+      // generic query would return unrelated places — so just degrade.
+      return const [];
+    }
   }
 
   // ------------------------------------------------------------------

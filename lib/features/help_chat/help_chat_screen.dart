@@ -1,20 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'chat_deep_links.dart';
 
-/// Human-support contact points shown whenever the assistant can't help.
-/// Mirrors the constants in supabase/functions/repo-chat/index.ts.
-const String _kSupportPhoneDisplay = '0917686990';
-const String _kSupportWhatsAppUrl = 'https://wa.me/251917686990';
-const String _kSupportEmail = 'muktarbiya329@gmail.com';
+// Task 14: the chat NEVER shows personal/direct contact details. Escalation
+// goes to the in-app Appeal Page via server-provided deep links — the old
+// Call/Message/Email buttons and their contact constants were removed.
 
 class _Msg {
   final String role; // 'user' | 'assistant'
   final String content;
-  final bool handoff; // true → render tappable phone/WhatsApp/email actions
+  final bool handoff; // true → escalation bubble (links come from the server)
   final List<String> options; // tappable quick replies (ticket flow)
   final List<({String label, String route})>
       links; // tappable in-app deep links
@@ -175,25 +172,6 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
     }
   }
 
-  Future<void> _launchSupportLink(String raw) async {
-    final uri = Uri.tryParse(raw);
-    if (uri == null) return;
-    try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open $raw — the address is copied in the message above.')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open $raw — the address is shown in the message above.')),
-        );
-      }
-    }
-  }
-
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
@@ -204,19 +182,6 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
         );
       }
     });
-  }
-
-  /// Tappable contact chip rendered under handoff messages.
-  Widget _supportButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return FilledButton.tonalIcon(
-      onPressed: onTap,
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
-    );
   }
 
   /// Tappable quick-reply chip shown under the latest assistant message.
@@ -297,33 +262,9 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
                                         ))
                                     .toList()),
                             ],
-                            if (m.handoff) ...[
-                              const SizedBox(height: 10),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  _supportButton(
-                                    icon: Icons.call,
-                                    label: 'Call $_kSupportPhoneDisplay',
-                                    onTap: () => _launchSupportLink(
-                                        'tel:$_kSupportPhoneDisplay'),
-                                  ),
-                                  _supportButton(
-                                    icon: Icons.chat,
-                                    label: 'WhatsApp $_kSupportPhoneDisplay',
-                                    onTap: () =>
-                                        _launchSupportLink(_kSupportWhatsAppUrl),
-                                  ),
-                                  _supportButton(
-                                    icon: Icons.email_outlined,
-                                    label: 'Email us',
-                                    onTap: () => _launchSupportLink(
-                                        'mailto:$_kSupportEmail'),
-                                  ),
-                                ],
-                              ),
-                            ],
+                            // Task 14: no Call/Message/Email buttons — an
+                            // escalation bubble relies on the server-provided
+                            // in-app deep links above (Submit an appeal).
                           ],
                         ),
                       ),

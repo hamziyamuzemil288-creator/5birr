@@ -42,4 +42,11 @@ const List<ChatDeepLink> kKnownRoutes = [
   ChatDeepLink('Favorites', '/user/favorites'),
   // Appeals (user-submitted appeal / spam-report form)
   ChatDeepLink('Submit an appeal', '/appeal'),
+  // Task 14: chat escalations open the appeal form pre-tagged with context
+  // (the AppealScreen reads `about` + `source=chat` from the query string).
+  ChatDeepLink('Submit an appeal', '/appeal?about=rider&source=chat'),
+  ChatDeepLink('Submit an appeal', '/appeal?about=provider&source=chat'),
+  ChatDeepLink('Submit an appeal', '/appeal?about=dispute&source=chat'),
+  ChatDeepLink('Submit an appeal', '/appeal?about=account&source=chat'),
+  ChatDeepLink('Submit an appeal', '/appeal?about=general&source=chat'),
 ];

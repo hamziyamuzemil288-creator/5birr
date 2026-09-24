@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/provider_doc_gate.dart';
 
 class UserProfileScreen extends ConsumerWidget {
   const UserProfileScreen({super.key});
@@ -139,6 +140,15 @@ class UserProfileScreen extends ConsumerWidget {
                   _divider(),
                   _menuTile(Icons.history, 'Ride History', AppTheme.info,
                       onTap: () => context.push('/user/ride-history')),
+                  _divider(),
+                  // Task 13 item 3: persistent, non-blocking entry point to
+                  // the document upload flow — the same ProviderDocGate sheet
+                  // the protected-action gate opens (Task 9 gate unchanged).
+                  _menuTile(Icons.badge_outlined, 'Verify Document',
+                      AppTheme.gold,
+                      onTap: () async {
+                    await ProviderDocGate.instance.ensureDocuments(context);
+                  }),
                   _divider(),
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),

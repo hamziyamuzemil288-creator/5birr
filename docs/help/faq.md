@@ -1,9 +1,10 @@
 # Help Center
 
 Welcome! These short guides cover the main things people ask about.
-If you can't find what you need, our support team is happy to help:
-reach us on WhatsApp at **0917686990** or by email at
-**muktarbiya329@gmail.com**.
+If you can't find what you need, open the in-app assistant (the floating
+chat bubble) — it can answer questions, check your account status, and
+escalate any problem to the team through the **Submit an appeal** form,
+where you can attach evidence and say how the team should reach you.
 
 ## Creating an account
 
@@ -182,14 +183,13 @@ screen or in the app.
 Open **Help & Support** from your profile and tell the assistant about the
 problem. It will collect the details (the provider's name, their city, your
 phone number, and the order number if you have it) and submit a ticket to
-our support team, who will contact you. Providers can reach support
-directly at **0917686990**.
+our support team, who will follow up inside the app.
 
 **Nobody responded to my ticket — what now?**
 If your submitted issue hasn't been answered within about 10 hours, the
-assistant will proactively share our direct contact details — phone
-**0917686990** and email **muktarbiya329@gmail.com** — so you can reach us
-directly. You can also use them at any time.
+assistant will ask you to add details or evidence through the **Submit an
+appeal** form, which goes straight to the review team. All follow-up
+happens inside the app.
 
 **How do I delete my account?**
 Account deletion is described in the account section of your profile. If
