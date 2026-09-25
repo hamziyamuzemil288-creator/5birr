@@ -7,6 +7,25 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import 'document_upload_service.dart';
 
+/// Tri-state result of a document check.
+///
+/// The distinction exists because the old bool-only API made two very
+/// different situations look identical to the UI — "you are verified" and
+/// "we could not check" both returned true, and the caller's only possible
+/// reaction was to do nothing. That silence is what made the "Verify your
+/// account" button look dead.
+enum DocCheckStatus {
+  /// An accepted document is on file.
+  satisfied,
+
+  /// No accepted document yet — the upload flow should open.
+  required,
+
+  /// The check itself failed (network, RLS, missing table). Distinct from
+  /// [satisfied]: we do not actually know.
+  checkFailed,
+}
+
 /// Document-verification gate (Task 7 item 3): providers no longer upload
 /// documents at signup. Instead the FIRST protected action — uploading a
 /// product/vehicle, or claiming/accepting an order — requires the docs.
@@ -32,9 +51,9 @@ class ProviderDocGate {
     'PASSPORT': 'Passport',
   };
 
-  Future<bool> isSatisfied({String? userId}) async {
+  Future<DocCheckStatus> checkStatus({String? userId}) async {
     final uid = userId ?? _client.auth.currentUser?.id;
-    if (uid == null) return false;
+    if (uid == null) return DocCheckStatus.required;
     try {
       final rows = await _client
           .from('user_documents')
@@ -44,16 +63,22 @@ class ProviderDocGate {
         final status = (r['verification_status'] as String?) ?? 'MANUAL_REVIEW';
         if (status == 'SUSPECTED_FRAUD') continue;
         if (acceptedDocTypes.containsKey(r['document_type'] as String)) {
-          return true;
+          return DocCheckStatus.satisfied;
         }
       }
-      return false;
+      return DocCheckStatus.required;
     } catch (_) {
-      // A failed check must not permanently lock the provider out: fail
-      // open here, the server-side RPC provider_docs_satisfied() re-checks
-      // on protected writes.
-      return true;
+      return DocCheckStatus.checkFailed;
     }
+  }
+
+  Future<bool> isSatisfied({String? userId}) async {
+    final status = await checkStatus(userId: userId);
+    // A failed check must not permanently lock the provider out: fail open
+    // here, the server-side RPC provider_docs_satisfied() re-checks on
+    // protected writes. This is gate behaviour, not UI feedback — the entry
+    // points use checkStatus() so the user is told when a check fails.
+    return status != DocCheckStatus.required;
   }
 
   /// Blocking reason shown before opening the upload sheet.
@@ -69,7 +94,26 @@ class ProviderDocGate {
   /// (private user-documents bucket + user_documents row), then the
   /// document-verify Edge Function for QR-capable ID types.
   Future<bool> ensureDocuments(BuildContext context) async {
-    if (await isSatisfied()) return true;
+    // Every branch below gives the user visible feedback. The previous
+    // version began with `if (await isSatisfied()) return true;`, so tapping
+    // "Verify your account" (or the profile menu entry) on an already-verified
+    // account returned instantly having opened nothing and said nothing —
+    // indistinguishable from a dead button.
+    final status = await checkStatus();
+
+    switch (status) {
+      case DocCheckStatus.satisfied:
+        final addAnother = await _showAlreadyVerified(context);
+        if (addAnother != true || !context.mounted) return true;
+      case DocCheckStatus.checkFailed:
+        // The gate itself fails OPEN, so protected actions still work. But a
+        // failed check is not a passed check, and silently opening the upload
+        // sheet would be misleading — say what happened and offer a retry.
+        final retry = await _showCheckFailed(context);
+        if (retry != true || !context.mounted) return true;
+      case DocCheckStatus.required:
+        break;
+    }
 
     final ok = await showDialog<bool>(
       context: context,
@@ -77,6 +121,63 @@ class ProviderDocGate {
       builder: (_) => const _DocUploadSheet(),
     );
     return ok == true;
+  }
+
+  /// Confirms the account is verified and offers to add another document.
+  /// Returns true when the caller should proceed to the upload sheet.
+  Future<bool?> _showAlreadyVerified(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.verified_user,
+            color: AppTheme.primaryGreen, size: 32),
+        title: const Text('Account verified'),
+        content: Text(
+          'You already have an accepted ID document on file'
+          ' (${acceptedDocTypes.values.join(', ')}), so your provider actions '
+          'are unlocked.',
+          style: const TextStyle(fontSize: 14, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Add another'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Reports a failed check and offers a retry. Returns true when the caller
+  /// should proceed to the upload sheet anyway.
+  Future<bool?> _showCheckFailed(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.cloud_off_outlined,
+            color: AppTheme.error, size: 32),
+        title: const Text('Could not check your documents'),
+        content: const Text(
+          'We could not reach the server to confirm your verification '
+          'status. Your provider actions are not blocked by this.',
+          style: TextStyle(fontSize: 14, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Try again'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
