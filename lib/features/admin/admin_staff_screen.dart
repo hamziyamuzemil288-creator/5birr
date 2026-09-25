@@ -29,6 +29,13 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   bool _isSuperAdmin = false;
   bool _isCeo = false;
 
+  /// Editor submit state — rendered INSIDE the sheet. Errors must surface
+  /// here: ScaffoldMessenger snackbars fire on the Scaffold BEHIND the modal
+  /// bottom sheet, where the sheet hides them (the silent "nothing happens"
+  /// staff-creation bug).
+  String? _sheetError;
+  bool _submitting = false;
+
   /// UX: which collapsible category groups are expanded in the editor.
   /// Kept across sheet re-openings so the CEO's choices persist.
   final Set<String> _expandedCategoryGroups = {};
@@ -180,6 +187,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     String branch =
         (existing?['branch'] as String?) ?? (isSuper ? 'ADMIN' : 'ADMIN');
     final canSetSuper = _isCeo && existing == null;
+    // Fresh sheet: never show a stale error/spinner from a previous attempt.
+    _sheetError = null;
+    _submitting = false;
 
     // UX: category checklist grouped by the category's own sector so the
     // CEO expands only the vehicle or service groups that are relevant.
@@ -416,16 +426,46 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     ],
                   ),
                 ],
+                // In-sheet error banner — see _showSheetError. Without this
+                // the operator sees nothing at all when submit fails.
+                if (_sheetError != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.error.withValues(alpha: 0.08),
+                      border:
+                          Border.all(color: AppTheme.error.withValues(alpha: 0.4)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.error_outline,
+                            color: AppTheme.error, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _sheetError!,
+                            style: const TextStyle(
+                                fontSize: 12.5, color: AppTheme.error),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 const SizedBox(height: 16),
                 PrimaryButton(
                   label: existing == null ? 'Create staff' : 'Save changes',
+                  isLoading: _submitting,
                   onPressed: () async {
+                    setSheetState(() => _sheetError = null);
                     if (nameController.text.trim().isEmpty ||
                         codeController.text.trim().isEmpty) {
-                      ScaffoldMessenger.of(sheetContext).showSnackBar(
-                        const SnackBar(
-                            content: Text('Name and staff ID are required')),
-                      );
+                      _showSheetError(
+                          setSheetState, 'Name and staff ID are required');
                       return;
                     }
                     // Pre-submit validation mirrors staff-create-gateway so
@@ -434,28 +474,23 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       final password = passwordController.text;
                       if (password.length < kStaffPasswordMinLength ||
                           password.length > kStaffPasswordMaxLength) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          const SnackBar(
-                              content:
-                                  Text('Password must be 10–200 characters.')),
-                        );
+                        _showSheetError(setSheetState,
+                            'Password must be 10–200 characters.');
                         return;
                       }
                       if (password != confirmPasswordController.text) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          const SnackBar(
-                              content: Text('The passwords do not match.')),
-                        );
+                        _showSheetError(
+                            setSheetState, 'The passwords do not match.');
                         return;
                       }
                       final username =
                           usernameController.text.trim().toLowerCase();
                       if (!kStaffUsernamePattern.hasMatch(username)) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          const SnackBar(
-                              content: Text(
-                                  'Username must be 3–32 characters: lowercase letters or digits, with dots, underscores or dashes inside.')),
-                        );
+                        _showSheetError(
+                            setSheetState,
+                            'Username must be 3–32 characters: lowercase '
+                            'letters or digits, with dots, underscores or '
+                            'dashes inside.');
                         return;
                       }
                       final staffCodeValue = codeController.text.trim();
@@ -463,24 +498,21 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           staffCodeValue.length > 60 ||
                           nameController.text.trim().length < 2 ||
                           nameController.text.trim().length > 100) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          const SnackBar(
-                              content: Text(
-                                  'Name must be 2–100 characters and staff ID 2–60 characters.')),
-                        );
+                        _showSheetError(
+                            setSheetState,
+                            'Name must be 2–100 characters and staff ID '
+                            '2–60 characters.');
                         return;
                       }
                       final salesTargetValue =
                           double.tryParse(targetController.text) ?? 0;
                       if (salesTargetValue < 0) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          const SnackBar(
-                              content: Text(
-                                  'Sales target must be zero or a positive number.')),
-                        );
+                        _showSheetError(setSheetState,
+                            'Sales target must be zero or a positive number.');
                         return;
                       }
                     }
+                    setSheetState(() => _submitting = true);
                     try {
                       final client = Supabase.instance.client;
                       if (existing == null && _isCeo) {
@@ -497,6 +529,11 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           isSuperAdmin: isSuper,
                           branch: isSuper ? 'ADMIN' : branch,
                           assignedCategories: selectedCats,
+                        ).timeout(
+                          const Duration(seconds: 25),
+                          onTimeout: () => throw Exception(
+                              'The request timed out. Check your connection '
+                              'and try again.'),
                         );
                       } else if (existing == null) {
                         await client.rpc('create_staff', params: {
@@ -523,12 +560,17 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                         Navigator.pop(sheetContext, true);
                     } catch (e) {
                       if (sheetContext.mounted) {
-                        ScaffoldMessenger.of(sheetContext).showSnackBar(
-                          SnackBar(
-                              content: Text(e
-                                  .toString()
-                                  .replaceFirst('PostgrestException(', ''))),
+                        _showSheetError(
+                          setSheetState,
+                          e
+                              .toString()
+                              .replaceFirst('PostgrestException(', '')
+                              .replaceFirst('Exception: ', ''),
                         );
+                      }
+                    } finally {
+                      if (sheetContext.mounted) {
+                        setSheetState(() => _submitting = false);
                       }
                     }
                   },
@@ -540,6 +582,18 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       ),
     );
     if (result == true) _load();
+  }
+
+  /// Surface a failure INSIDE the editor sheet. A snackbar via
+  /// ScaffoldMessenger renders on the Scaffold behind the modal bottom sheet
+  /// and is invisible to the operator — which is exactly the silent "Create
+  /// staff does nothing" bug. All editor feedback goes through this.
+  void _showSheetError(
+      void Function(void Function()) setSheetState, String message) {
+    setSheetState(() {
+      _sheetError = message;
+      _submitting = false;
+    });
   }
 
   /// One collapsible category group inside the editor (vehicle / service /
