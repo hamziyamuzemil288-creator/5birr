@@ -737,7 +737,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
 
     final typed = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => _TypedConfirmDialog(
+      builder: (dialogContext) => TypedConfirmDialog(
         title: 'Delete $name permanently?',
         body: 'This removes their staff entry AND their login account. '
             'It cannot be undone, and their username becomes available again.\n\n'
@@ -999,11 +999,16 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
 
 /// A confirmation the user has to finish by typing [confirmWord].
 ///
+/// Public (rather than private to this file) so the overflow regression test
+/// can drive the real widget. A test against a copy of the layout would not
+/// catch the layout regressing.
+
+///
 /// Used for irreversible actions where a stray tap must not be enough. The
 /// dialog pops with the typed word, so the caller can compare it against what
 /// it expects — a cancelled dialog returns null.
-class _TypedConfirmDialog extends StatefulWidget {
-  const _TypedConfirmDialog({
+class TypedConfirmDialog extends StatefulWidget {
+  const TypedConfirmDialog({
     required this.title,
     required this.body,
     required this.confirmWord,
@@ -1016,10 +1021,10 @@ class _TypedConfirmDialog extends StatefulWidget {
   final String actionLabel;
 
   @override
-  State<_TypedConfirmDialog> createState() => _TypedConfirmDialogState();
+  State<TypedConfirmDialog> createState() => TypedConfirmDialogState();
 }
 
-class _TypedConfirmDialogState extends State<_TypedConfirmDialog> {
+class TypedConfirmDialogState extends State<TypedConfirmDialog> {
   final _controller = TextEditingController();
 
   @override
@@ -1032,6 +1037,14 @@ class _TypedConfirmDialogState extends State<_TypedConfirmDialog> {
   Widget build(BuildContext context) {
     final ready = _controller.text.trim().toUpperCase() == widget.confirmWord;
     return AlertDialog(
+      // `scrollable: true` makes the DIALOG ITSELF scroll its content.
+      // `isScrollControlled: true` at the showDialog call site is not enough
+      // on its own: it only relaxes the height cap, and the title plus a
+      // paragraph plus a TextField still exceeded it at a 1.8–2.0 text scale
+      // ("BOTTOM OVERFLOWED BY 31 PIXELS", then by 101 and 216). Making it a
+      // property of the widget rather than of the call site means no caller
+      // can forget it.
+      scrollable: true,
       title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
