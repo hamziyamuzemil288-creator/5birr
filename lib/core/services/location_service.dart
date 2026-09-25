@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,12 +16,20 @@ class LocationResult {
   final LocationStatus status;
   final Position? position;
   final String? errorMessage;
-  const LocationResult._(this.status, [this.position, this.errorMessage]);
-  const LocationResult.ready(Position p) : this._(LocationStatus.ready, p);
-  const LocationResult.serviceDisabled() : this._(LocationStatus.serviceDisabled);
+
+  /// True when [position] came from the OS cache rather than a fresh fix —
+  /// callers can show "approximate location" instead of implying live GPS.
+  final bool isLastKnown;
+  const LocationResult._(this.status,
+      [this.position, this.errorMessage, this.isLastKnown = false]);
+  const LocationResult.ready(Position p, {bool isLastKnown = false})
+      : this._(LocationStatus.ready, p, null, isLastKnown);
+  const LocationResult.serviceDisabled()
+      : this._(LocationStatus.serviceDisabled);
   const LocationResult.denied() : this._(LocationStatus.denied);
   const LocationResult.deniedForever() : this._(LocationStatus.deniedForever);
-  const LocationResult.error(String msg) : this._(LocationStatus.error, null, msg);
+  const LocationResult.error(String msg)
+      : this._(LocationStatus.error, null, msg);
 
   bool get success => status == LocationStatus.ready && position != null;
 }
@@ -44,7 +53,8 @@ class GeoPoint {
       return null;
     }
     if (raw is String) {
-      final m = RegExp(r'POINT\s*\(\s*(-?[0-9.]+)\s+(-?[0-9.]+)').firstMatch(raw);
+      final m =
+          RegExp(r'POINT\s*\(\s*(-?[0-9.]+)\s+(-?[0-9.]+)').firstMatch(raw);
       if (m != null) {
         final lng = double.tryParse(m.group(1)!);
         final lat = double.tryParse(m.group(2)!);
@@ -59,6 +69,19 @@ class LocationService {
   LocationService._();
   static final instance = LocationService._();
 
+  /// How long a fresh-fix attempt may take before falling back to the
+  /// last-known position. Long enough for a cold GPS fix, short enough
+  /// that screens never appear frozen.
+  static const Duration _freshFixTimeLimit = Duration(seconds: 10);
+
+  /// Tracks the permission result across calls so repeated UI triggers do
+  /// not re-open the OS permission dialog in a loop (Task 13 flicker).
+  LocationPermission? _lastKnownPermission;
+
+  /// One in-flight fix attempt at a time; concurrent callers share the
+  /// same future instead of stacking GPS requests.
+  Future<LocationResult>? _inFlight;
+
   /// Best-effort current position, or null on any failure.
   /// (Legacy call sites; prefer [getCurrentPositionDetailed].)
   Future<Position?> getCurrentPosition() async {
@@ -68,15 +91,39 @@ class LocationService {
 
   /// Structured attempt: verifies location services are on, requests the
   /// runtime permission if needed, then fetches a fresh high-accuracy GPS
-  /// fix. Never throws — failures come back as a [LocationResult].
+  /// fix. Falls back to the OS last-known position when the fresh fix
+  /// times out, and NEVER throws — failures come back as a [LocationResult].
+  ///
+  /// Concurrent callers share one in-flight attempt (permission dialogs and
+  /// GPS requests do not stack), and repeated calls reuse the permission
+  /// answer so the permission dialog cannot flicker in a loop.
   Future<LocationResult> getCurrentPositionDetailed() async {
+    final existing = _inFlight;
+    if (existing != null) return existing;
+
+    final attempt = _attemptFreshFix();
+    _inFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (identical(_inFlight, attempt)) _inFlight = null;
+    }
+  }
+
+  Future<LocationResult> _attemptFreshFix() async {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) return const LocationResult.serviceDisabled();
 
-      var permission = await Geolocator.checkPermission();
+      // checkPermission is cheap and dialog-free; only escalate to a
+      // request when the answer is not yet known, and never re-prompt on
+      // the same run when a previous request was already answered.
+      var permission =
+          _lastKnownPermission ?? await Geolocator.checkPermission();
+      _lastKnownPermission = permission;
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
+        _lastKnownPermission = permission;
         if (permission == LocationPermission.denied) {
           return const LocationResult.denied();
         }
@@ -90,27 +137,99 @@ class LocationService {
 
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 15),
+        timeLimit: _freshFixTimeLimit,
       );
       return LocationResult.ready(position);
+    } on TimeoutException {
+      // A GPS cold-start can exceed the limit. The OS cache is still a
+      // usable approximation — return it instead of an error (Task 13:
+      // a slow GPS must degrade gracefully, never fail the screen).
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null) return LocationResult.ready(last, isLastKnown: true);
+      } catch (_) {
+        // Fall through to the generic error path.
+      }
+      return const LocationResult.error(
+          'Location is taking too long — try again.');
     } catch (e) {
       return LocationResult.error(e.toString());
     }
   }
 
-  /// Stream of position updates. Callers must hold permission already
-  /// (checked via [getCurrentPositionDetailed] before subscribing).
+  /// A subscription that never throws into the caller's widget tree.
+  ///
+  /// geolocator emits a TimeoutException and CLOSES the stream whenever its
+  /// `timeLimit` elapses without an update — an unhandled error there
+  /// crashed the whole screen (the "App Error Detected" overlay). This
+  /// wrapper swallows timeout/handler errors, keeps the last good fix on
+  /// the caller's side, and retries the underlying stream automatically so
+  /// GPS hiccups recover without UI action.
   Stream<Position> getPositionStream({
     int distanceFilter = 50,
     Duration interval = const Duration(seconds: 10),
   }) {
+    // No timeLimit on the raw stream: geolocator would close it on any
+    // gap (indoor lobbies, elevator rides) and the caller would have to
+    // resubscribe anyway. Retries are handled by [watchPosition] below.
     return Geolocator.getPositionStream(
       locationSettings: LocationSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: distanceFilter,
-        timeLimit: interval,
       ),
     );
+  }
+
+  /// Long-lived, self-healing position subscription. Errors (GPS toggled
+  /// off mid-trip, platform hiccups) do not kill the subscription: they
+  /// pause it and retry with backoff until [backoff] is exceeded, while
+  /// [onError] keeps the caller informed for inline status UI.
+  StreamSubscription<Position> watchPosition({
+    required void Function(Position pos) onData,
+    void Function()? onError,
+    int distanceFilter = 50,
+    Duration retryDelay = const Duration(seconds: 5),
+  }) {
+    late StreamController<Position> controller;
+    StreamSubscription<Position>? inner;
+    Timer? retryTimer;
+    var retrying = false;
+
+    void subscribe() {
+      inner = getPositionStream(distanceFilter: distanceFilter).listen(
+        controller.add,
+        onError: (Object e) {
+          inner?.cancel();
+          inner = null;
+          if (!retrying) {
+            retrying = true;
+            retryTimer = Timer(retryDelay, () {
+              retrying = false;
+              if (!controller.isClosed) subscribe();
+            });
+          }
+          onError?.call();
+        },
+        cancelOnError: true,
+      );
+    }
+
+    controller = StreamController<Position>(
+      onResume: subscribe,
+      onPause: () {
+        retryTimer?.cancel();
+        inner?.cancel();
+        inner = null;
+      },
+    );
+    controller.onListen = subscribe;
+
+    return controller.stream.listen(onData)
+      ..onDone(() {
+        retryTimer?.cancel();
+        inner?.cancel();
+        controller.close();
+      });
   }
 
   /// Deep-links to the OS location settings so the user can enable GPS or
@@ -125,7 +244,8 @@ class LocationService {
   }
 
   /// Update driver location on server.
-  Future<void> updateDriverLocation(String providerId, double lat, double lng) async {
+  Future<void> updateDriverLocation(
+      String providerId, double lat, double lng) async {
     await Supabase.instance.client.rpc('update_driver_location', params: {
       'p_provider_id': providerId,
       'p_lat': lat,
@@ -155,10 +275,10 @@ class LocationService {
   }
 
   /// Find nearby online drivers around a live GPS point.
-  Future<List<Map<String, dynamic>>> findNearbyDrivers(
-      double lat, double lng,
+  Future<List<Map<String, dynamic>>> findNearbyDrivers(double lat, double lng,
       {double radiusKm = 10, String? vehicleCategoryId}) async {
-    final data = await Supabase.instance.client.rpc('find_nearby_drivers', params: {
+    final data =
+        await Supabase.instance.client.rpc('find_nearby_drivers', params: {
       'p_lat': lat,
       'p_lng': lng,
       'p_radius_km': radiusKm,

@@ -30,6 +30,14 @@ class _State extends State<UserActiveRideScreen> {
   bool _directionsLaunching = false;
   LocationStatus? _locStatus;
 
+  /// True when the shown position came from the OS cache (GPS timed out);
+  /// the caption says "approximate" instead of implying a live lock.
+  bool _myLocationApproximate = false;
+
+  /// A camera move requested before FlutterMap attached (onMapReady).
+  bool _mapReady = false;
+  bool _pendingCameraMove = false;
+
   // Real interactive map: controller lets us keep the camera glued to the
   // rider's live position; [_followUser] mirrors the dashboards' behavior.
   final MapController _mapController = MapController();
@@ -86,35 +94,48 @@ class _State extends State<UserActiveRideScreen> {
   }
 
   Future<void> _refreshMyLocation() async {
+    // Use the wrapper, not the raw stream: geolocator's own timeLimit emits
+    // TimeoutException and CLOSES the stream — an unhandled error there
+    // crashed the whole screen. watchPosition swallows/retries instead.
     final r = await LocationService.instance.getCurrentPositionDetailed();
     if (!mounted) return;
     setState(() {
       _locStatus = r.status;
-      if (r.success) _myPos = r.position;
+      if (r.success) {
+        _myPos = r.position;
+        _myLocationApproximate = r.isLastKnown;
+      }
     });
     _moveCameraToMe();
     // Keep the map live: the rider's own pin used to be a one-shot fix that
     // never moved, making the screen feel like a static image.
     if (r.success && _posSub == null) {
-      _posSub = LocationService.instance
-          .getPositionStream(distanceFilter: 15)
-          .listen((pos) {
-        if (!mounted) return;
-        setState(() => _myPos = pos);
-        _moveCameraToMe();
-      });
+      _posSub = LocationService.instance.watchPosition(
+        distanceFilter: 15,
+        onError: () {},
+        onData: (pos) {
+          if (!mounted) return;
+          setState(() {
+            _myPos = pos;
+            _myLocationApproximate = false;
+          });
+          _moveCameraToMe();
+        },
+      );
     }
   }
 
   void _moveCameraToMe() {
     final me = _myPos;
     if (me == null || !_followUser) return;
-    try {
-      _mapController.move(
-          LatLng(me.latitude, me.longitude), _mapController.camera.zoom);
-    } catch (_) {
-      // Map not mounted yet — the next fix will carry the position.
+    if (!_mapReady) {
+      // FlutterMap attaches asynchronously — queue the move for onMapReady
+      // instead of relying on a try/catch that hides real regressions.
+      _pendingCameraMove = true;
+      return;
     }
+    _mapController.move(
+        LatLng(me.latitude, me.longitude), _mapController.camera.zoom);
   }
 
   Future<void> _openSettings() async {
@@ -238,6 +259,13 @@ class _State extends State<UserActiveRideScreen> {
             options: MapOptions(
               initialCenter: center,
               initialZoom: points.length == 1 ? 15 : 13.5,
+              onMapReady: () {
+                _mapReady = true;
+                if (_pendingCameraMove) {
+                  _pendingCameraMove = false;
+                  _moveCameraToMe();
+                }
+              },
               onTap: (_, __) => setState(() => _followUser = false),
             ),
             children: [
@@ -371,7 +399,10 @@ class _State extends State<UserActiveRideScreen> {
                           _locStatus == LocationStatus.serviceDisabled
                       ? 'Enable location'
                       : 'Show my location'),
-                ),
+                )
+              else if (_myLocationApproximate)
+                const Text('approximate location',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
             ],
           ),
           const SizedBox(height: 12),

@@ -58,7 +58,8 @@ class _VehicleProviderDashboardState
           .select()
           .eq('provider_id', prov['id'])
           .maybeSingle();
-      final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
+      final points =
+          await PointsService.instance.getProviderPoints(prov['id'] as String);
       final wallet = await client
           .from('wallets')
           .select('balance')
@@ -112,8 +113,8 @@ class _VehicleProviderDashboardState
         _startLocationUpdates(_providerProfile!['id']);
       } else {
         // Going offline
-        await LocationService.instance.setDriverOnline(
-            _providerProfile!['id'], false);
+        await LocationService.instance
+            .setDriverOnline(_providerProfile!['id'], false);
         _posSub?.cancel();
       }
       _load();
@@ -129,13 +130,16 @@ class _VehicleProviderDashboardState
 
   void _startLocationUpdates(String providerId) {
     _posSub?.cancel();
-    _posSub = LocationService.instance.getPositionStream(
-        distanceFilter: 100, interval: const Duration(seconds: 15))
-        .listen((pos) {
-      LocationService.instance.updateDriverLocation(
-          providerId, pos.latitude, pos.longitude);
-    },
-        onError: (_) {}); // keep last fix if GPS hiccups mid-shift
+    // watchPosition self-heals: a GPS hiccup mid-shift must not close the
+    // stream (the raw geolocator stream would) — it retries automatically.
+    _posSub = LocationService.instance.watchPosition(
+      distanceFilter: 100,
+      onError: () {},
+      onData: (pos) {
+        LocationService.instance
+            .updateDriverLocation(providerId, pos.latitude, pos.longitude);
+      },
+    );
   }
 
   String _onlineBlockedMessage(LocationStatus status) {
@@ -177,8 +181,7 @@ class _VehicleProviderDashboardState
         ],
       ),
       body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppTheme.teal))
+          ? const Center(child: CircularProgressIndicator(color: AppTheme.teal))
           : RefreshIndicator(
               onRefresh: _load,
               child: SingleChildScrollView(
@@ -220,8 +223,7 @@ class _VehicleProviderDashboardState
                                           horizontal: 8, vertical: 3),
                                       decoration: BoxDecoration(
                                         color: Colors.white.withOpacity(0.2),
-                                        borderRadius:
-                                            BorderRadius.circular(12),
+                                        borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Text(
                                           (_providerProfile?['status'] ??
@@ -251,8 +253,7 @@ class _VehicleProviderDashboardState
                                           child: CircularProgressIndicator(
                                               strokeWidth: 2,
                                               color: Colors.white))
-                                      : Text(
-                                          _isOnline ? 'ONLINE' : 'OFFLINE',
+                                      : Text(_isOnline ? 'ONLINE' : 'OFFLINE',
                                           style: const TextStyle(
                                               fontSize: 13,
                                               fontWeight: FontWeight.w700,
@@ -271,7 +272,8 @@ class _VehicleProviderDashboardState
                     // Stats
                     Row(
                       children: [
-                        _stat(Icons.directions_car, 'Vehicles', '$_vehicleCount'),
+                        _stat(
+                            Icons.directions_car, 'Vehicles', '$_vehicleCount'),
                         const SizedBox(width: 12),
                         _stat(Icons.stars_rounded, 'Points', '$_points'),
                         const SizedBox(width: 12),
@@ -301,10 +303,12 @@ class _VehicleProviderDashboardState
                         () => context.push('/vehicle/vehicles/new')),
                     _action(Icons.account_balance_wallet_outlined, 'Wallet',
                         () => context.push('/wallet')),
-                    _action(Icons.person_outline, 'Profile',
+                    _action(
+                        Icons.person_outline,
+                        'Profile',
                         () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Coming soon')),
-                        )),
+                              const SnackBar(content: Text('Coming soon')),
+                            )),
                   ],
                 ),
               ),
@@ -397,8 +401,7 @@ class _VehicleProviderDashboardState
         onTap: onTap,
         leading: Icon(icon, color: AppTheme.teal),
         title: Text(label,
-            style: const TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w500)),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
         trailing: const Icon(Icons.chevron_right,
             color: AppTheme.textMuted, size: 20),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),

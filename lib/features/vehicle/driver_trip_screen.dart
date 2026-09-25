@@ -86,15 +86,17 @@ class _State extends State<DriverTripScreen> {
     if (!r.success) return;
     await _pushDriverLocation();
 
-    _posSub = LocationService.instance
-        .getPositionStream(distanceFilter: 50, interval: const Duration(seconds: 15))
-        .listen(
-      (pos) {
+    // watchPosition self-heals: a GPS hiccup mid-trip must not close the
+    // stream (the raw geolocator stream would) — it retries with the last
+    // fix still on screen.
+    _posSub = LocationService.instance.watchPosition(
+      distanceFilter: 50,
+      onError: () {},
+      onData: (pos) {
         if (!mounted) return;
         setState(() => _driverPos = pos);
         _pushDriverLocation();
       },
-      onError: (_) {}, // stream errors (e.g. service off mid-trip) keep last fix
     );
   }
 
@@ -159,8 +161,7 @@ class _State extends State<DriverTripScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Active Trip')),
       body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppTheme.teal))
+          ? const Center(child: CircularProgressIndicator(color: AppTheme.teal))
           : _ride == null
               ? Center(
                   child: Column(
@@ -213,9 +214,8 @@ class _State extends State<DriverTripScreen> {
         pickupPoint != null ? LatLng(pickupPoint.lat, pickupPoint.lng) : null;
     final destMarker =
         destPoint != null ? LatLng(destPoint.lat, destPoint.lng) : null;
-    final points = [driverMarker, pickupMarker, destMarker]
-        .whereType<LatLng>()
-        .toList();
+    final points =
+        [driverMarker, pickupMarker, destMarker].whereType<LatLng>().toList();
 
     Widget map;
     if (points.isEmpty) {
@@ -319,8 +319,8 @@ class _State extends State<DriverTripScreen> {
               Expanded(
                 child: Text(
                   _gpsStateText(),
-                  style: const TextStyle(
-                      fontSize: 12, color: AppTheme.textMuted),
+                  style:
+                      const TextStyle(fontSize: 12, color: AppTheme.textMuted),
                 ),
               ),
               if (_driverPos == null)
@@ -360,8 +360,7 @@ class _State extends State<DriverTripScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Passenger',
-                    style:
-                        TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                    style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
                 const SizedBox(height: 4),
                 Text(passengerName,
                     style: const TextStyle(
@@ -386,14 +385,15 @@ class _State extends State<DriverTripScreen> {
           // Pickup
           _locationTile(Icons.circle, AppTheme.success, 'Pickup', pickup),
           const SizedBox(height: 8),
-          _locationTile(
-              Icons.location_on, AppTheme.error, 'Destination', dest),
+          _locationTile(Icons.location_on, AppTheme.error, 'Destination', dest),
           const SizedBox(height: 24),
           // Actions based on status
           if (status == 'CLAIMED')
-            _actionButton('DRIVER_ARRIVING', 'HEADING TO PICKUP', AppTheme.teal),
+            _actionButton(
+                'DRIVER_ARRIVING', 'HEADING TO PICKUP', AppTheme.teal),
           if (status == 'DRIVER_ARRIVING' || status == 'ARRIVED')
-            _actionButton('ARRIVED', 'ARRIVED AT PICKUP', AppTheme.primaryGreen),
+            _actionButton(
+                'ARRIVED', 'ARRIVED AT PICKUP', AppTheme.primaryGreen),
           if (status == 'ARRIVED')
             _actionButton('TRIP_STARTED', 'START TRIP', AppTheme.primaryGreen),
           if (status == 'TRIP_STARTED')
@@ -422,8 +422,7 @@ class _State extends State<DriverTripScreen> {
     }
   }
 
-  Widget _locationTile(
-      IconData icon, Color color, String label, String text) {
+  Widget _locationTile(IconData icon, Color color, String label, String text) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -466,8 +465,8 @@ class _State extends State<DriverTripScreen> {
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
           child: Text(label,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w700, fontSize: 15)),
+              style:
+                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
         ),
       ),
     );
