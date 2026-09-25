@@ -67,10 +67,8 @@ class AuthState {
   bool get isUser => roles.contains(AppUserRole.user);
   bool get isPendingApproval =>
       profile != null && profile!.status == 'PENDING_APPROVAL';
-  bool get isApproved =>
-      profile != null && profile!.status == 'APPROVED';
-  bool get isRejected =>
-      profile != null && profile!.status == 'REJECTED';
+  bool get isApproved => profile != null && profile!.status == 'APPROVED';
+  bool get isRejected => profile != null && profile!.status == 'REJECTED';
 }
 
 /// Auth state notifier managing Supabase auth + profile + roles.
@@ -98,8 +96,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         state = const AuthState(isLoading: false);
       } else if (event == AuthChangeEvent.tokenRefreshed && session != null) {
         await _loadUserProfile(session.user);
-      } else if (event == AuthChangeEvent.passwordRecovery &&
-          session != null) {
+      } else if (event == AuthChangeEvent.passwordRecovery && session != null) {
         // The password-reset email was opened on this device. The session
         // is real but must only be used to set a new password — flag the
         // state so the router lands on /update-password.
@@ -128,11 +125,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
           .eq('id', user.id)
           .maybeSingle()
           .timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => throw TimeoutException(
-          'profiles query timed out after 10 seconds',
-        ),
-      );
+            const Duration(seconds: 10),
+            onTimeout: () => throw TimeoutException(
+              'profiles query timed out after 10 seconds',
+            ),
+          );
 
       // A newer load has started — discard this stale result.
       if (seq != _profileLoadSeq) return;
@@ -148,11 +145,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
           .select('role')
           .eq('user_id', user.id)
           .timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => throw TimeoutException(
-          'user_roles query timed out after 10 seconds',
-        ),
-      );
+            const Duration(seconds: 10),
+            onTimeout: () => throw TimeoutException(
+              'user_roles query timed out after 10 seconds',
+            ),
+          );
 
       // Another stale check after the second query.
       if (seq != _profileLoadSeq) return;
@@ -261,7 +258,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'phone': e164 ?? phone,
           if (city != null && city.isNotEmpty) 'city': city,
           if (kebele != null && kebele.isNotEmpty) 'kebele': kebele,
-          if (streetRoad != null && streetRoad.isNotEmpty) 'street_road': streetRoad,
+          if (streetRoad != null && streetRoad.isNotEmpty)
+            'street_road': streetRoad,
         },
       );
 
@@ -328,7 +326,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
           'business_name': businessName,
           if (city != null && city.isNotEmpty) 'city': city,
           if (kebele != null && kebele.isNotEmpty) 'kebele': kebele,
-          if (streetRoad != null && streetRoad.isNotEmpty) 'street_road': streetRoad,
+          if (streetRoad != null && streetRoad.isNotEmpty)
+            'street_road': streetRoad,
           if (referralCode != null && referralCode.trim().isNotEmpty)
             'referral_code': referralCode.trim(),
         },
@@ -390,6 +389,37 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       // _authSub listener will pick up AuthChangeEvent.signedIn
       // and call _loadUserProfile automatically.
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+      rethrow;
+    }
+  }
+
+  /// Task 15: continue with Google (Supabase Auth OAuth provider).
+  ///
+  /// Opens the system browser for the Google consent screen; Supabase
+  /// redirects back into the app via the same deep-link scheme the
+  /// password-recovery flow already registers. The session then arrives
+  /// through _authSub (AuthChangeEvent.signedIn) and the normal profile
+  /// load runs — the account the OAuth trigger creates lands
+  /// PENDING_APPROVAL exactly like an email signup, so the router sends
+  /// the user to /pending-approval. Nothing else changes for OAuth users.
+  ///
+  /// [isSignup] only picks the button copy's context — the OAuth flow is
+  /// identical for signing in and signing up (Supabase upserts the user).
+  Future<void> signInWithGoogle() async {
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      await _svc.client.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: 'io.supabase.com.amistbirr.myapp://login-callback/',
+      );
+      // The browser round-trip continues async; _authSub completes the
+      // sign-in when the deep link returns. Reset the spinner here so a
+      // user who cancels the consent screen is not stuck loading.
+      if (state.isLoading) {
+        state = state.copyWith(isLoading: false);
+      }
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
       rethrow;

@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/captcha_service.dart';
 import '../../core/widgets/captcha_challenge_field.dart';
+import '../../core/widgets/google_sign_in_button.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../auth/admin_gate.dart';
@@ -48,8 +49,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
     if (_captchaRequired && _captchaId == null) {
-      setState(() =>
-          _error = 'Complete the security check before signing in.');
+      setState(() => _error = 'Complete the security check before signing in.');
       return;
     }
     setState(() {
@@ -94,6 +94,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           _captchaId = null;
           _captchaResetVersion++;
           _error = _friendlyError(e.toString());
+        });
+      }
+    }
+  }
+
+  /// Task 15: open the Google consent screen. The session comes back via
+  /// the auth listener (deep link) — failures surface as readable errors.
+  Future<void> _handleGoogleSignIn() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      await ref.read(authProvider.notifier).signInWithGoogle();
+      // The OAuth round-trip continues in the browser; the router navigates
+      // once the deep link delivers the session.
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Could not start Google sign-in. Please try again.';
         });
       }
     }
@@ -195,8 +216,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     if (email.isEmpty ||
                         !email.contains('@') ||
                         !email.contains('.')) {
-                      setSheetState(() =>
-                          sheetError = 'Enter a valid email address');
+                      setSheetState(
+                          () => sheetError = 'Enter a valid email address');
                       return;
                     }
                     setSheetState(() {
@@ -380,6 +401,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             isLoading: _isLoading,
                             onPressed: _handleLogin,
                           ),
+                        ),
+                        // Task 15: Google OAuth — same account pipeline as
+                        // email signups (PENDING_APPROVAL until an admin
+                        // approves); the provider-verified email replaces
+                        // the OTP step for these accounts only.
+                        const SizedBox(height: 12),
+                        GoogleSignInButton(
+                          isLoading: _isLoading,
+                          onPressed: _handleGoogleSignIn,
                         ),
                       ],
                     ),

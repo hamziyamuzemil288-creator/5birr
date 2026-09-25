@@ -10,6 +10,7 @@ import '../../core/services/captcha_service.dart';
 import '../../core/services/city_service.dart';
 import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/captcha_challenge_field.dart';
+import '../../core/widgets/google_sign_in_button.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import 'terms_policy_screen.dart';
@@ -126,7 +127,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     _referralDebounce?.cancel();
     final code = _referralController.text.trim();
     if (code.isEmpty) {
-      if (mounted && _referralHint != null) setState(() => _referralHint = null);
+      if (mounted && _referralHint != null)
+        setState(() => _referralHint = null);
       return;
     }
     _referralDebounce = Timer(const Duration(milliseconds: 450), () async {
@@ -251,8 +253,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                                 activeColor: AppTheme.primaryGreen,
                                 materialTapTargetSize:
                                     MaterialTapTargetSize.shrinkWrap,
-                                onChanged: (v) => setState(
-                                    () => _agreedToTerms = v ?? false),
+                                onChanged: (v) =>
+                                    setState(() => _agreedToTerms = v ?? false),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -263,7 +265,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                                   const Text('I agree to the ',
                                       style: AppTheme.bodyMedium),
                                   GestureDetector(
-                                    onTap: () => context.push('/terms', extra: true),
+                                    onTap: () =>
+                                        context.push('/terms', extra: true),
                                     child: const Text('Terms & Privacy Policy',
                                         style: TextStyle(
                                             fontSize: 14,
@@ -295,6 +298,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                                 ? _handleSubmit
                                 : null,
                           ),
+                        ),
+                        // Task 15: Google OAuth signup — the provider-
+                        // verified email replaces the OTP step for these
+                        // accounts; admin approval still gates the account,
+                        // so this button intentionally ignores the CAPTCHA
+                        // and terms flow (Google users confirm terms via
+                        // the standard approval pipeline).
+                        const SizedBox(height: 12),
+                        GoogleSignInButton(
+                          isLoading: _isLoading,
+                          onPressed: _handleGoogleSignUp,
                         ),
                         const SizedBox(height: 16),
                         // Sign in link
@@ -343,8 +357,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                   child: const Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      CircularProgressIndicator(
-                          color: AppTheme.primaryGreen),
+                      CircularProgressIndicator(color: AppTheme.primaryGreen),
                       SizedBox(height: 16),
                       Text(
                         'Creating account...',
@@ -364,11 +377,32 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   /// Validate the form, then hand the user to email verification. The
   /// account is only created AFTER the 6-digit code is verified — the
   /// server (handle_new_user trigger) refuses signups without one.
+  /// Task 15: Google OAuth signup. The consent screen runs in the browser;
+  /// the deep link returns the session and the OAuth-aware signup trigger
+  /// (20260925000000) creates the account PENDING_APPROVAL, same pipeline
+  /// as email signups minus the OTP email step.
+  Future<void> _handleGoogleSignUp() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      await ref.read(authProvider.notifier).signInWithGoogle();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Could not start Google sign-in. Please try again.';
+        });
+      }
+    }
+  }
+
   Future<void> _handleSubmit() async {
     if (!_formKey.currentState!.validate()) return;
     if (!_agreedToTerms) {
-      setState(() =>
-          _error = 'Please read and accept the Terms & Privacy Policy to continue.');
+      setState(() => _error =
+          'Please read and accept the Terms & Privacy Policy to continue.');
       return;
     }
     if (_captchaRequired && _captchaId == null) {
@@ -392,10 +426,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       city: _selectedCity,
       kebele: _kebeleController.text.trim(),
       streetRoad: _streetRoadController.text.trim(),
-      nationalIdNumber:
-          _isProvider ? _nationalIdController.text.trim() : null,
-      referralCode:
-          _isProvider ? _referralController.text.trim() : null,
+      nationalIdNumber: _isProvider ? _nationalIdController.text.trim() : null,
+      referralCode: _isProvider ? _referralController.text.trim() : null,
       captchaId: _captchaId,
     );
 
@@ -451,8 +483,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content:
-                  Text('Account created. Please sign in to continue.')),
+              content: Text('Account created. Please sign in to continue.')),
         );
         context.go('/login');
         return;
@@ -503,8 +534,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Personal Information',
-            style: AppTheme.sectionHeader),
+        const Text('Personal Information', style: AppTheme.sectionHeader),
         const SizedBox(height: 4),
         const Text(
           'Fill in your details to create your account',
@@ -676,8 +706,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               color: AppTheme.textMuted,
               size: 20,
             ),
-            onPressed: () =>
-                setState(() => _obscureConfirm = !_obscureConfirm),
+            onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
           ),
           validator: (v) {
             if (v == null || v.isEmpty) return 'Please confirm your password';
