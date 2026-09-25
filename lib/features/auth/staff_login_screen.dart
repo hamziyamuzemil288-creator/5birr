@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/services/staff_admin_service.dart';
 import '../../core/services/staff_gateway_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
@@ -94,13 +95,14 @@ class _StaffLoginScreenState extends ConsumerState<StaffLoginScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Use the username and password provided by the CEO.',
+                      'Use the username or email and password provided by '
+                      'the CEO.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: AppTheme.textSecondary),
                     ),
                     const SizedBox(height: 28),
                     BirrTextField(
-                      label: 'Username',
+                      label: 'Username or email',
                       controller: _username,
                       textInputAction: TextInputAction.next,
                       textCapitalization: TextCapitalization.none,
@@ -108,9 +110,8 @@ class _StaffLoginScreenState extends ConsumerState<StaffLoginScreen> {
                         if (value == null || value.trim().isEmpty) {
                           return 'Username is required';
                         }
-                        if (!RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{2,31}$')
-                            .hasMatch(value.trim())) {
-                          return 'Use 3–32 letters, numbers, dots, underscores, or hyphens';
+                        if (!isValidStaffUsername(value)) {
+                          return kStaffUsernameHint;
                         }
                         return null;
                       },

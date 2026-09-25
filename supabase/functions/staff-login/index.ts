@@ -1,4 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  cleanUsername,
+  isValidUsername,
+  syntheticStaffEmail,
+} from "../_shared/staff_identity.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +16,7 @@ const json = (body: unknown, status = 200) =>
     headers: { ...cors, "Content-Type": "application/json" },
   });
 
-const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+// Must mirror staff-create-gateway exactly — see _shared/staff_identity.ts.
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -23,9 +28,9 @@ Deno.serve(async (req) => {
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
-  const username = String(body.username ?? "").trim().toLowerCase();
+  const username = cleanUsername(body.username);
   const password = String(body.password ?? "");
-  if (!usernamePattern.test(username) || password.length < 1 || password.length > 200) {
+  if (!isValidUsername(username) || password.length < 1 || password.length > 200) {
     return json({ error: "invalid_credentials" }, 401);
   }
 
@@ -51,7 +56,7 @@ Deno.serve(async (req) => {
     auth: { persistSession: false },
   });
   const { data: signIn, error: signInError } = await userClient.auth.signInWithPassword({
-    email: `${username}@staff-gateway.invalid`,
+    email: await syntheticStaffEmail(username),
     password,
   });
   if (signInError || !signIn.session || signIn.user?.id !== credential.user_id) {

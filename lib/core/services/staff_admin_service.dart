@@ -4,9 +4,31 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 const int kStaffPasswordMinLength = 10;
 const int kStaffPasswordMaxLength = 200;
 
-/// Server-side username rule (staff-create-gateway): 3–32 chars,
-/// lowercase letters/digits with . _ - inside, starting alphanumeric.
-final RegExp kStaffUsernamePattern = RegExp(r'^[a-z0-9][a-z0-9._-]{2,31}$');
+/// Server-side username rule (staff-create-gateway + staff-login + the
+/// staff_credentials CHECK constraint). A username is EITHER the original
+/// bare form — 3–32 chars, lowercase letters/digits with . _ - inside,
+/// starting alphanumeric — OR an email address.
+///
+/// Both forms are accepted because the account's real login identity is an
+/// email everywhere else in the product, and a staff username that cannot
+/// look like an email is confusing. Bare names keep working unchanged: the
+/// gateway maps that shape to the original synthetic email, so staff created
+/// before this rule are unaffected.
+///
+/// Keep in lockstep with supabase/functions/_shared/staff_identity.ts. This
+/// is a client-side convenience only — the server re-validates.
+final RegExp kStaffUsernamePattern =
+    RegExp(r'^([a-z0-9][a-z0-9._-]{2,31}|[^\s@]+@[^\s@]+\.[^\s@]{2,})$');
+
+/// True when [value] is an acceptable staff username (see
+/// [kStaffUsernamePattern]).
+bool isValidStaffUsername(String value) =>
+    kStaffUsernamePattern.hasMatch(value.trim().toLowerCase());
+
+/// Human-readable form of the [kStaffUsernamePattern] rule, used by the
+/// create-sheet and login validators so both screens say the same thing.
+const String kStaffUsernameHint =
+    'Use an email address, or 3–32 letters, numbers, dots, underscores, or hyphens';
 
 class StaffAdminService {
   const StaffAdminService();

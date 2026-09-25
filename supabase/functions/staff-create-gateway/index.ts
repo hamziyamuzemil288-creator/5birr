@@ -1,4 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  cleanUsername,
+  isValidUsername,
+  syntheticStaffEmail,
+} from "../_shared/staff_identity.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -11,11 +16,8 @@ const json = (body: unknown, status = 200) =>
     headers: { ...cors, "Content-Type": "application/json" },
   });
 
-const usernamePattern = /^[a-z0-9][a-z0-9._-]{2,31}$/;
-
-function cleanUsername(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase();
-}
+// Username rules + the synthetic auth email are shared with staff-login so
+// the two can never disagree (see _shared/staff_identity.ts).
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -65,7 +67,7 @@ Deno.serve(async (req) => {
   const isSuperAdmin = body.is_super_admin === true;
   const branch = String(body.branch ?? "ADMIN");
 
-  if (!usernamePattern.test(username)) {
+  if (!isValidUsername(username)) {
     return json({ error: "invalid_username" }, 400);
   }
   if (name.length < 2 || name.length > 100 || staffCode.length < 2 || staffCode.length > 60) {
@@ -81,7 +83,7 @@ Deno.serve(async (req) => {
     return json({ error: "invalid_sales_target" }, 400);
   }
 
-  const syntheticEmail = `${username}@staff-gateway.invalid`;
+  const syntheticEmail = await syntheticStaffEmail(username);
 
   // GoTrue applies admin-supplied app_metadata AFTER the auth.users INSERT
   // (internal/api/admin.go: UpdateAppMetaData runs post-insert), so the
