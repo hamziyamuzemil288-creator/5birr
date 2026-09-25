@@ -68,9 +68,21 @@ class StaffAdminService {
       case 'unauthorized':
         return 'Your session expired. Please sign in again.';
       case 'staff_account_creation_failed':
-      case 'staff_gateway_setup_failed':
         return 'Could not create the staff account. Please try again; if it '
-            'keeps failing, the username may already be taken.';
+            'keeps failing, contact technical support — the account system '
+            'rejected the creation.';
+      case 'staff_gateway_setup_failed':
+        return 'The staff account was created but linking it failed. Please '
+            'try again with a different staff ID.';
+      case 'staff_email_already_exists':
+        return 'That username is already registered. Choose a different one.';
+      case 'staff_username_taken':
+        return 'That username is already taken. Choose a different one.';
+      case 'super_admin_already_exists':
+        return 'A super admin already exists. Only one is allowed.';
+      case 'staff_gateway_trigger_rejected':
+        return 'The account system is refusing staff creation (trigger '
+            'mismatch). This needs a backend fix — please report it.';
       default:
         return 'Could not create the staff account ($code).';
     }

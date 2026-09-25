@@ -92,6 +92,28 @@ Deno.serve(async (req) => {
     user_metadata: { full_name: name },
   });
   if (createAuthError || !createdAuth.user) {
+    // Observability: the generic 500 hid the real failure (auth trigger
+    // rejection, GoTrue validation, duplicate email...). Surface a stable
+    // code the client can render, and log the detail server-side only.
+    console.error(
+      "createUser failed:",
+      createAuthError?.code ?? "",
+      createAuthError?.status ?? "",
+      createAuthError?.message ?? "",
+    );
+    const code = createAuthError?.code ?? "";
+    const msg = createAuthError?.message ?? "";
+    if (code === "email_exists" || /already.*registered|duplicate/i.test(msg)) {
+      return json({ error: "staff_email_already_exists" }, 409);
+    }
+    if (code === "weak_password" || /password/i.test(msg)) {
+      return json({ error: "password_must_be_10_to_200_characters" }, 400);
+    }
+    if (msg.includes("EMAIL_OTP_REQUIRED")) {
+      // The auth trigger did not recognize this as a trusted gateway
+      // subject — the deployed trigger lacks the staff_gateway bypass.
+      return json({ error: "staff_gateway_trigger_rejected" }, 500);
+    }
     return json({ error: "staff_account_creation_failed" }, 500);
   }
 
@@ -110,6 +132,18 @@ Deno.serve(async (req) => {
 
   if (staffError || !staff) {
     await admin.auth.admin.deleteUser(createdAuth.user.id);
+    // Same observability contract for the RPC half of the flow.
+    console.error("create_staff_gateway rpc failed:", staffError?.message ?? "unknown");
+    const rpcMsg = staffError?.message ?? "";
+    if (rpcMsg.includes("STAFF_USERNAME_TAKEN")) {
+      return json({ error: "staff_username_taken" }, 409);
+    }
+    if (rpcMsg.includes("SUPER_ADMIN_ALREADY_EXISTS")) {
+      return json({ error: "super_admin_already_exists" }, 409);
+    }
+    if (rpcMsg.includes("ONLY_CEO")) {
+      return json({ error: "only_ceo_can_create_staff_gateway" }, 403);
+    }
     return json({ error: "staff_gateway_setup_failed" }, 500);
   }
 
