@@ -9,6 +9,33 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/city_service.dart';
 
+/// Push listings with no known location to the end, preserving the server's
+/// order within each group.
+///
+/// search_products sorts by ST_Distance, which is NULL for a listing that has
+/// no location, and NULLs land wherever the sort puts them — typically
+/// interleaved with genuine nearby hits. A listing that cannot be located is
+/// not a "nearby" result and must not outrank one that is, so it is demoted
+/// here. Once every product carries a location this is a no-op; it exists so
+/// the ranking stays correct while any location-less rows remain (and it
+/// cannot be done in SQL without changing the RPC's result contract).
+///
+/// Public and top-level so the ordering can be unit-tested directly.
+List<Map<String, dynamic>> rankLocationLessLast(
+    List<Map<String, dynamic>> rows) {
+  final located = <Map<String, dynamic>>[];
+  final unlocated = <Map<String, dynamic>>[];
+  for (final r in rows) {
+    final d = r['distance_km'];
+    if (d is num) {
+      located.add(r);
+    } else {
+      unlocated.add(r);
+    }
+  }
+  return [...located, ...unlocated];
+}
+
 class UserSearchScreen extends StatefulWidget {
   const UserSearchScreen({super.key});
   @override
@@ -80,10 +107,13 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
         'p_limit': 30,
         'p_offset': 0,
         'p_city': CityService.instance.activeCity,
-        // City-less ("global") listings are a fallback tail, not peers: with a
-        // position in hand the server ranks them last, and callers that want a
-        // strictly local catalogue pass false.
-        'p_include_global': true,
+        // "Global" (city-less) listings are an explicit FALLBACK, not the
+        // default. With a position in hand the user asked for what is near
+        // them; admitting every city-less listing unconditionally ranks a
+        // listing from another area as a peer of a nearby one, which is what
+        // produced the "unfamiliar place name" results. Only widen to global
+        // when we have no position to narrow with.
+        'p_include_global': pos == null,
         if (pos != null) ...{
           'p_lat': pos.latitude,
           'p_lng': pos.longitude,
@@ -93,7 +123,8 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       });
       if (mounted) {
         setState(() {
-          _results = List<Map<String, dynamic>>.from(data as List);
+          final rows = List<Map<String, dynamic>>.from(data as List);
+          _results = rankLocationLessLast(rows);
           _loading = false;
         });
       }

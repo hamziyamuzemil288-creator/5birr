@@ -169,6 +169,28 @@ class _State extends State<ProviderProductFormScreen> {
       ));
       return;
     }
+    // A listing without a location cannot be found by proximity search:
+    // search_products computes distance_km only when p.location is set, and
+    // its ST_DWithin predicate short-circuits on `p.location IS NULL`, so the
+    // radius filter never even runs. Every location-less listing is therefore
+    // returned to every nearby searcher regardless of distance — the source
+    // of the "unfamiliar place name" results.
+    //
+    // Required on CREATE so that stops accumulating. Not required on EDIT:
+    // blocking an edit of an existing listing until the provider finds GPS
+    // would trap them, and editing without setting a location does not add
+    // any new location-less rows.
+    if (!_isEdit && (_lat == null || _lng == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+          'Set a GPS location before saving — listings without one cannot be '
+          'found by nearby search.',
+        ),
+        backgroundColor: AppTheme.error,
+        duration: Duration(seconds: 4),
+      ));
+      return;
+    }
     setState(() => _saving = true);
     try {
       final client = Supabase.instance.client;
@@ -388,7 +410,7 @@ class _State extends State<ProviderProductFormScreen> {
                             child: Text(
                               _lat != null && _lng != null
                                   ? '${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)}'
-                                  : 'No GPS location set',
+                                  : 'No GPS location set — required to publish',
                               style: const TextStyle(fontSize: 13),
                             ),
                           ),
