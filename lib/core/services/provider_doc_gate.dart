@@ -125,29 +125,15 @@ class ProviderDocGate {
 
   /// Confirms the account is verified and offers to add another document.
   /// Returns true when the caller should proceed to the upload sheet.
+  ///
+  /// The dialog body is [AlreadyVerifiedDialog], a public widget so the
+  /// overflow regression test can drive the real thing — a test against a
+  /// copy of the layout would not catch the layout regressing.
   Future<bool?> _showAlreadyVerified(BuildContext context) {
     return showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        icon: const Icon(Icons.verified_user,
-            color: AppTheme.primaryGreen, size: 32),
-        title: const Text('Account verified'),
-        content: Text(
-          'You already have an accepted ID document on file'
-          ' (${acceptedDocTypes.values.join(', ')}), so your provider actions '
-          'are unlocked.',
-          style: const TextStyle(fontSize: 14, color: AppTheme.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Close'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Add another'),
-          ),
-        ],
+      builder: (_) => AlreadyVerifiedDialog(
+        acceptedTypeNames: acceptedDocTypes.values.toList(),
       ),
     );
   }
@@ -157,26 +143,81 @@ class ProviderDocGate {
   Future<bool?> _showCheckFailed(BuildContext context) {
     return showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        icon: const Icon(Icons.cloud_off_outlined,
-            color: AppTheme.error, size: 32),
-        title: const Text('Could not check your documents'),
-        content: const Text(
-          'We could not reach the server to confirm your verification '
-          'status. Your provider actions are not blocked by this.',
-          style: TextStyle(fontSize: 14, color: AppTheme.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Close'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Try again'),
-          ),
-        ],
+      builder: (_) => const DocumentCheckFailedDialog(),
+    );
+  }
+}
+
+/// "You are already verified" confirmation, shown by
+/// [ProviderDocGate.ensureDocuments].
+///
+/// Public so it can be widget-tested. `scrollable: true` is on the AlertDialog
+/// itself rather than passed via `isScrollControlled` at the showDialog call
+/// site: AlertDialog caps its content height without scrolling it, which is
+/// what overflowed the staff delete confirmation, and making it a property of
+/// the widget means no caller can forget it.
+class AlreadyVerifiedDialog extends StatelessWidget {
+  const AlreadyVerifiedDialog({super.key, required this.acceptedTypeNames});
+
+  final List<String> acceptedTypeNames;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      scrollable: true,
+      icon: const Icon(Icons.verified_user,
+          color: AppTheme.primaryGreen, size: 32),
+      title: const Text('Account verified'),
+      content: Text(
+        'You already have an accepted ID document on file'
+        ' (${acceptedTypeNames.join(', ')}), so your provider actions '
+        'are unlocked.',
+        style: const TextStyle(fontSize: 14, color: AppTheme.textSecondary),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Close'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Add another'),
+        ),
+      ],
+    );
+  }
+}
+
+/// "We could not determine your verification status" notice.
+///
+/// Deliberately not an error: the gate fails OPEN, so a failed check never
+/// blocks a provider. Saying so plainly stops the message reading as "you are
+/// in trouble" when nothing is actually blocked.
+class DocumentCheckFailedDialog extends StatelessWidget {
+  const DocumentCheckFailedDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      scrollable: true,
+      icon: const Icon(Icons.cloud_off_outlined,
+          color: AppTheme.error, size: 32),
+      title: const Text('Could not check your documents'),
+      content: const Text(
+        'We could not reach the server to confirm your verification '
+        'status. Your provider actions are not blocked by this.',
+        style: TextStyle(fontSize: 14, color: AppTheme.textSecondary),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Close'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Try again'),
+        ),
+      ],
     );
   }
 }
