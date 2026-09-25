@@ -54,7 +54,9 @@ for (const t of out.sweep ?? []) {
   console.log(`  ${t.pass ? 'PASS' : 'FAIL'} ${t.path} — ${t.detail}`);
 }
 console.log('\nlive profiles columns:', (out.profiles_columns ?? []).join(', '));
-console.log('\n--- live prevent_role_escalation ---');
-console.log(out.signup_chain_guards?.prevent_role_escalation ?? '(absent)');
-console.log('--- live handle_new_user ---');
+console.log('\n--- live signup-chain guards ---');
+for (const [k, v] of Object.entries(out.signup_chain_guards ?? {})) {
+  console.log(`\n### ${k}\n${v}`);
+}
+console.log('\n--- live handle_new_user ---');
 console.log(out.function_def ?? '(absent)');

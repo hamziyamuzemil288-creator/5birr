@@ -55,7 +55,7 @@ BEGIN
   INSERT INTO auth.users (email, encrypted_password, email_confirmed_at,
                           raw_app_meta_data, raw_user_meta_data)
   VALUES (v_email, crypt('x', gen_salt('bf')), NULL,
-          '{}'::jsonb,
+          jsonb_build_object('provider','email','providers',jsonb_build_array('email')),
           jsonb_build_object('full_name','Sweep A','phone','+251911000001','city','Addis Ababa'));
   SELECT count(*) INTO v_n FROM public.profiles p
     JOIN auth.users u ON u.id = p.id
@@ -118,7 +118,7 @@ BEGIN
   INSERT INTO auth.users (email, encrypted_password, email_confirmed_at,
                           raw_app_meta_data, raw_user_meta_data)
   VALUES (v_email, crypt('x', gen_salt('bf')), NULL,
-          '{}'::jsonb,
+          jsonb_build_object('provider','email','providers',jsonb_build_array('email')),
           jsonb_build_object('full_name','Sweep D Provider',
                              'provider_type','VEHICLE_PROVIDER',
                              'business_name','Sweep D Business',
@@ -134,15 +134,20 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 DELETE FROM auth.users WHERE email LIKE 'hnu-sweep-%@test.local';
 
--- E: Google OAuth signup (provider-verified email) -> must pass on the fix,
--- FAILS on the live lineage (reproduction)
+-- E: Google OAuth signup -> must pass on the fix, FAILS on the live lineage.
+-- FIXTURE FIDELITY: email_confirmed_at is NULL here, because GoTrue confirms
+-- the account in a later UPDATE (internal/api/external.go: signupNewUser
+-- inserts, then user.Confirm(tx)). Only app_metadata->>'provider' exists at
+-- insert time. The previous version of this path set email_confirmed_at =
+-- now(), which is MORE generous than production — that mismatch is exactly
+-- why the local sweep went green while live Google sign-up kept failing.
 DO $$
 DECLARE v_n int;
 BEGIN
   INSERT INTO auth.users (email, encrypted_password, email_confirmed_at,
                           raw_app_meta_data, raw_user_meta_data)
   VALUES ('hnu-sweep-e-' || floor(random()*1e9)::text || '@test.local',
-          crypt('x', gen_salt('bf')), now(),
+          crypt('x', gen_salt('bf')), NULL,
           jsonb_build_object('provider','google','providers',jsonb_build_array('google')),
           jsonb_build_object('full_name','Sweep E Google','avatar_url','x'));
   SELECT count(*) INTO v_n FROM public.profiles p
@@ -155,27 +160,33 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 DELETE FROM auth.users WHERE email LIKE 'hnu-sweep-%@test.local';
 
--- F: staff-gateway shape -> must pass on the fix,
--- FAILS on the live lineage (reproduction)
+-- F: staff gateway -> must pass on the fix, FAILS on the live lineage.
+-- FIXTURE FIDELITY: admin.createUser writes app_metadata = {provider,
+-- providers} ONLY — the staff_gateway flag is applied by a post-insert
+-- UpdateAppMetaData — and email_confirmed_at is set by a post-insert Confirm.
+-- So at trigger time the row carries neither signal. The gateway
+-- pre-authorises the synthetic address first, which is the deployed flow.
 DO $$
-DECLARE v_n int;
+DECLARE v_email text; v_n int;
 BEGIN
+  v_email := 'hnu-sweep-f-' || floor(random()*1e9)::text || '@staff-gateway.invalid';
+  PERFORM public.trust_staff_gateway_email(v_email);
   INSERT INTO auth.users (email, encrypted_password, email_confirmed_at,
                           raw_app_meta_data, raw_user_meta_data)
-  VALUES ('hnu-sweep-f-' || floor(random()*1e9)::text || '@test.local',
-          crypt('x', gen_salt('bf')), now(),
-          jsonb_build_object('staff_gateway','true'),
+  VALUES (v_email, crypt('x', gen_salt('bf')), NULL,
+          jsonb_build_object('provider','email','providers',jsonb_build_array('email')),
           jsonb_build_object('full_name','Sweep F Staff'));
   SELECT count(*) INTO v_n FROM public.profiles p
     JOIN auth.users u ON u.id = p.id
-   WHERE u.email LIKE 'hnu-sweep-f-%@test.local';
+   WHERE u.email = v_email;
   IF v_n = 1 THEN RAISE NOTICE 'PASS F_staff_gateway'; ELSE
     RAISE NOTICE 'FAIL F_staff_gateway (profiles=%)', v_n;
   END IF;
 EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'FAIL F_staff_gateway (%)', SQLERRM;
 END $$;
-DELETE FROM auth.users WHERE email LIKE 'hnu-sweep-%@test.local';
+DELETE FROM auth.users WHERE email LIKE 'hnu-sweep-%@staff-gateway.invalid';
+DELETE FROM public.email_otp_codes WHERE email LIKE 'hnu-sweep-%@staff-gateway.invalid';
 
 -- G: the admin-only guarantee on user_roles must STILL hold for direct
 -- client requests after the fix. Create a confirmed dashboard-shaped subject,

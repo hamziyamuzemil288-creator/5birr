@@ -39,8 +39,12 @@ extract_fn() { # $1 function-name  $2 source-file  $3 out-file
   [ -s "$3" ] || { echo "cannot extract $1 from $2"; exit 2; }
 }
 
-extract_fn handle_new_user         "$MIG/20260925120000_handle_new_user_consolidated.sql" "$WORK/handle_new_user.fn"
 extract_fn prevent_role_escalation "$MIG/20260925120000_handle_new_user_consolidated.sql" "$WORK/prevent_role_escalation.fn"
+# The signup gate now lives in its own migration (it must also ship
+# trust_staff_gateway_email, which the staff path needs), so phase 2 applies
+# that file whole rather than extracting a single function out of it.
+GATE_MIG="$MIG/20260925150000_signup_gate_insert_time_signals.sql"
+[ -f "$GATE_MIG" ] || { echo "missing signup-gate migration: $GATE_MIG"; exit 2; }
 
 # Sweep section of the repro (everything from SWEEP-SECTION START on), so the
 # same matrix runs in both phases.
@@ -216,10 +220,11 @@ echo "    pass=$p fail=$f  (reproduction contract: every trusted path FAILS)"
 
 echo
 echo "=== PHASE 2: fix proof (same lineage + consolidated migration) ==="
-sudo -u postgres psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$WORK/handle_new_user.fn" >/dev/null 2>&1 \
-  || { echo "  handle_new_user apply FAILED"; exit 2; }
 sudo -u postgres psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$WORK/prevent_role_escalation.fn" >/dev/null 2>&1 \
   || { echo "  prevent_role_escalation apply FAILED"; exit 2; }
+cp "$GATE_MIG" "$WORK/gate.sql"; chmod a+r "$WORK/gate.sql"
+sudo -u postgres psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$WORK/gate.sql" >/dev/null 2>&1 \
+  || { echo "  signup-gate migration apply FAILED"; sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB" -f "$WORK/gate.sql" 2>&1 | tail -5; exit 2; }
 o=$(run_sweep)
 p=$(echo "$o" | grep -c '^PASS' || true); f=$(echo "$o" | grep -c '^FAIL' || true)
 echo "$o"

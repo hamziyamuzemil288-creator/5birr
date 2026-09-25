@@ -82,6 +82,22 @@ Deno.serve(async (req) => {
   }
 
   const syntheticEmail = `${username}@staff-gateway.invalid`;
+
+  // GoTrue applies admin-supplied app_metadata AFTER the auth.users INSERT
+  // (internal/api/admin.go: UpdateAppMetaData runs post-insert), so the
+  // trigger cannot see staff_gateway while it runs. Pre-authorise the
+  // synthetic address through the one signal that exists at insert time: a
+  // consumed verification row, which is what otp_verified_recently() reads.
+  // The RPC is service-role only and rejects any address outside this
+  // gateway's own synthetic domain.
+  const { error: trustError } = await admin.rpc('trust_staff_gateway_email', {
+    p_email: syntheticEmail,
+  });
+  if (trustError) {
+    console.error('trust_staff_gateway_email failed:', trustError.message);
+    return json({ error: 'staff_gateway_setup_failed' }, 500);
+  }
+
   const { data: createdAuth, error: createAuthError } = await admin.auth.admin.createUser({
     email: syntheticEmail,
     password,
@@ -109,12 +125,24 @@ Deno.serve(async (req) => {
     if (code === "weak_password" || /password/i.test(msg)) {
       return json({ error: "password_must_be_10_to_200_characters" }, 400);
     }
-    if (msg.includes("EMAIL_OTP_REQUIRED")) {
-      // The auth trigger did not recognize this as a trusted gateway
-      // subject — the deployed trigger lacks the staff_gateway bypass.
+    // GoTrue collapses ANY exception raised by the auth trigger into
+    // unexpected_failure / "Database error creating new user" — the trigger's
+    // own message never reaches us, so matching on "EMAIL_OTP_REQUIRED" here
+    // could never fire and every trigger rejection was reported as the
+    // generic code. Match the shapes GoTrue actually returns instead.
+    if (
+      code === "unexpected_failure" ||
+      /database error (creating|saving) new user/i.test(msg)
+    ) {
       return json({ error: "staff_gateway_trigger_rejected" }, 500);
     }
-    return json({ error: "staff_account_creation_failed" }, 500);
+    if (msg.includes("EMAIL_OTP_REQUIRED")) {
+      return json({ error: "staff_gateway_trigger_rejected" }, 500);
+    }
+    return json({
+      error: "staff_account_creation_failed",
+      gotrue_code: code || "unknown",
+    }, 500);
   }
 
   const { data: staff, error: staffError } = await admin.rpc("create_staff_gateway", {
