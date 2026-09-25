@@ -16,6 +16,13 @@ class UserSearchScreen extends StatefulWidget {
 }
 
 class _UserSearchScreenState extends State<UserSearchScreen> {
+  /// Proximity radius for search when the device has a position. search_products
+  /// filters on ST_DWithin, so omitting the radius makes the distance test
+  /// evaluate to NULL and silently drops every located listing — leaving only
+  /// location-less rows, which is what surfaced foreign results. Kept in sync
+  /// with the server-side default in 20260925140000_search_geo_scope.sql.
+  static const double _searchRadiusKm = 50;
+
   final _ctrl = TextEditingController();
   List<Map<String, dynamic>> _results = [];
   bool _loading = false;
@@ -73,10 +80,14 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
         'p_limit': 30,
         'p_offset': 0,
         'p_city': CityService.instance.activeCity,
+        // City-less ("global") listings are a fallback tail, not peers: with a
+        // position in hand the server ranks them last, and callers that want a
+        // strictly local catalogue pass false.
         'p_include_global': true,
         if (pos != null) ...{
           'p_lat': pos.latitude,
           'p_lng': pos.longitude,
+          'p_radius_km': _searchRadiusKm,
           'p_sort_by': 'distance',
         },
       });

@@ -26,8 +26,12 @@ const res = await fetch(`${url}/rest/v1/rpc/assert_handle_new_user_contract`, {
 });
 const text = await res.text();
 
-if (res.status === 404 || /not found|does not exist/i.test(text)) {
-  console.log('LIVE STATE: assert_handle_new_user_contract() NOT present.');
+// Only a 404 (or a PGRST202 "function ... does not exist" naming OUR rpc)
+// means the migration has not been applied. Matching a bare "does not exist"
+// anywhere in the body false-positives when a sweep path fails on a missing
+// helper, which is how this probe once reported a live migration as absent.
+if (res.status === 404) {
+  console.log('LIVE STATE: assert_handle_new_user_contract() NOT present (404).');
   console.log('=> the consolidated migration has NOT been applied to the live database yet.');
   process.exit(3);
 }
@@ -36,7 +40,13 @@ if (!res.ok) {
   process.exit(1);
 }
 
-const out = JSON.parse(text);
+let out;
+try {
+  out = JSON.parse(text);
+} catch {
+  console.log(`unparseable response: ${text.slice(0, 600)}`);
+  process.exit(1);
+}
 console.log('all_pass:', out.all_pass);
 console.log('trigger:', out.trigger_name);
 console.log('\nsweep:');

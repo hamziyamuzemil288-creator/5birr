@@ -176,6 +176,23 @@ PRE
       "$MIG/$f" | sudo -u postgres psql -q -v ON_ERROR_STOP=0 -d "$DB" >/dev/null 2>&1 \
       || { echo "  migration FAILED: $f"; return 9; }
   done
+  # Any migration added after this driver was written (fresh timestamp
+  # versions) is applied too, so the sweep always runs against the true
+  # full lineage rather than a frozen snapshot of it.
+  for f in "$MIG"/*.sql; do
+    b="$(basename "$f")"
+    case "$b" in *.sql) ;; *) continue ;; esac
+    v="${b%%_*}"
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    skip=0
+    for known in "${LINEAGE[@]}"; do [ "$known" = "$b" ] && skip=1; done
+    [ "$skip" -eq 1 ] && continue
+    echo "  + applying post-driver migration: $b"
+    sed 's/^create extension if not exists pg_cron;[[:space:]]*$/-- pg_cron: stubbed locally/' \
+      "$MIG/$b" | sudo -u postgres psql -q -v ON_ERROR_STOP=0 -d "$DB" >/dev/null 2>&1 \
+      || { echo "  migration FAILED: $b"; return 9; }
+  done
+
   # Supabase-equivalent client grants, so the G sweep path exercises the real
   # direct-client INSERT path (schema USAGE + table INSERT reach the trigger).
   # Must run AFTER the migrations (the table does not exist before them).
