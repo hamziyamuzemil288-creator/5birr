@@ -34,11 +34,20 @@ class _VerificationNoticeState extends State<VerificationNotice> {
   Future<void> _check() async {
     // Only relevant for providers (documents gate provider actions); other
     // roles skip the notice entirely.
-    final satisfied = await ProviderDocGate.instance.isSatisfied();
+    //
+    // Deliberately checkStatus() and NOT isSatisfied(). isSatisfied() fails
+    // OPEN — correct for gating, wrong for prompting — so a failed check
+    // returned true and this notice computed `_visible = !true = false`.
+    // The one moment the user most needs to be told something was exactly the
+    // moment the notice stayed hidden and the gate sat open.
+    //
+    // So: show unless we positively know they are verified. A failed check is
+    // not knowledge, and the notice's own text is safe guidance either way.
+    final status = await ProviderDocGate.instance.checkStatus();
     if (!mounted) return;
     setState(() {
       _checking = false;
-      _visible = !satisfied;
+      _visible = status != DocCheckStatus.satisfied;
     });
     if (_visible) {
       _dismissTimer = Timer(const Duration(seconds: 5), () {

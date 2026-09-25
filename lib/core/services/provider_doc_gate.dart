@@ -67,17 +67,32 @@ class ProviderDocGate {
         }
       }
       return DocCheckStatus.required;
-    } catch (_) {
+    } catch (e) {
+      // Previously `catch (_)`, which made three completely different
+      // failures indistinguishable: a missing/renamed column (PostgREST
+      // PGRST204), an RLS denial, and a timeout all returned the same silent
+      // checkFailed. A schema error here is permanent and would otherwise
+      // look identical to a blip forever, so record which it was.
+      debugPrint('ProviderDocGate.checkStatus failed for $uid: '
+          '${e.runtimeType}: $e');
       return DocCheckStatus.checkFailed;
     }
   }
 
+  /// Whether the document gate should let a protected action through.
+  ///
+  /// FAIL-OPEN, and that is deliberate: a transient network error or an
+  /// unreachable server must not lock a provider out of their own business.
+  /// The server-side RPC provider_docs_satisfied() re-checks on protected
+  /// writes, so this is a UX affordance, not the security boundary.
+  ///
+  /// Do NOT use this to decide whether to SHOW the user anything. A failed
+  /// check returns true here, so a caller prompting on `!isSatisfied()` hides
+  /// its own notice precisely when the check is broken — the user is left
+  /// with no prompt and an open gate. Prompting code must use
+  /// [checkStatus] instead; only gating code belongs here.
   Future<bool> isSatisfied({String? userId}) async {
     final status = await checkStatus(userId: userId);
-    // A failed check must not permanently lock the provider out: fail open
-    // here, the server-side RPC provider_docs_satisfied() re-checks on
-    // protected writes. This is gate behaviour, not UI feedback — the entry
-    // points use checkStatus() so the user is told when a check fails.
     return status != DocCheckStatus.required;
   }
 
