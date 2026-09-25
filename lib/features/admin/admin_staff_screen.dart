@@ -29,6 +29,10 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   bool _isSuperAdmin = false;
   bool _isCeo = false;
 
+  /// UX: which collapsible category groups are expanded in the editor.
+  /// Kept across sheet re-openings so the CEO's choices persist.
+  final Set<String> _expandedCategoryGroups = {};
+
   /// Permission vocabulary. The three `view_*` entries are the
   /// reports / expenses / auth-log visibility the hierarchy spec adds;
   /// action permissions stay as before.
@@ -42,6 +46,27 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     'view_reports': 'View reports',
     'view_expenses': 'View expenses',
     'view_auth_logs': 'View auth logs',
+  };
+
+  /// UX: permissions grouped into three purpose labels so the checklist
+  /// reads as three short rows inside one collapsible section instead of a
+  /// nine-item wall. Keys must all exist in _permissionOptions.
+  static const _permissionGroups = <String, List<String>>{
+    'Daily operations': [
+      'sales_transactions',
+      'registrations',
+      'category_management',
+    ],
+    'Support & payments': [
+      'support_chat',
+      'payment_verification',
+    ],
+    'Oversight & reports': [
+      'admin_history',
+      'view_reports',
+      'view_expenses',
+      'view_auth_logs',
+    ],
   };
 
   @override
@@ -79,10 +104,27 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       try {
         final catRows = await client
             .from('categories')
-            .select('id,name,sector')
+            .select('id,name,sector,parent_id')
             .eq('is_active', true)
             .order('sort_order');
         cats = List<Map<String, dynamic>>.from(catRows as List);
+        // Nest subcategories visually under their parent: top-levels first
+        // (by sort_order), then each parent's children right after it. The
+        // editor indents child rows so the CEO sees the hierarchy at a
+        // glance instead of a mixed flat list.
+        int rank(Map<String, dynamic> c) {
+          final parentId = c['parent_id'] as String?;
+          final so = (c['sort_order'] as num?)?.toInt() ?? 0;
+          if (parentId == null) return so * 1000;
+          final parent =
+              cats.where((p) => p['id'] == parentId).toList(growable: false);
+          final parentSo = parent.isNotEmpty
+              ? ((parent.first['sort_order'] as num?)?.toInt() ?? 999)
+              : 999;
+          return parentSo * 1000 + 500 + so;
+        }
+
+        cats.sort((a, b) => rank(a).compareTo(rank(b)));
       } catch (_) {
         // Category listing is optional for the editor; staff ops continue.
       }
@@ -138,6 +180,16 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     String branch =
         (existing?['branch'] as String?) ?? (isSuper ? 'ADMIN' : 'ADMIN');
     final canSetSuper = _isCeo && existing == null;
+
+    // UX: category checklist grouped by the category's own sector so the
+    // CEO expands only the vehicle or service groups that are relevant.
+    final vehicleCats =
+        _categories.where((c) => c['sector'] == 'VEHICLE').toList();
+    final serviceCats =
+        _categories.where((c) => c['sector'] == 'SERVICE').toList();
+    final otherCats = _categories
+        .where((c) => c['sector'] != 'VEHICLE' && c['sector'] != 'SERVICE')
+        .toList();
 
     final result = await showModalBottomSheet<bool>(
       context: context,
@@ -257,16 +309,55 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
                 const SizedBox(height: 12),
-                const Text('Permissions', style: AppTheme.sectionHeader),
-                ..._permissionOptions.entries.map(
-                  (e) => CheckboxListTile(
-                    dense: true,
-                    title: Text(e.value, style: const TextStyle(fontSize: 13)),
-                    value: selected.contains(e.key),
-                    onChanged: (on) => setSheetState(() {
-                      on == true ? selected.add(e.key) : selected.remove(e.key);
+                // UX: grouped collapsible sections replace the long flat
+                // checklists — the CEO expands only what is relevant, and
+                // each header shows how many options are selected.
+                _CollapsibleSection(
+                  icon: Icons.verified_user_outlined,
+                  title: 'Permissions',
+                  subtitle: 'What this staff member can do across the app.',
+                  countLabel: '${selected.length}/${_permissionOptions.length}',
+                  initiallyExpanded: true,
+                  trailing: [_AllNoneButtons(
+                    onAll: () => setSheetState(() {
+                      for (final key in _permissionOptions.keys) {
+                        if (!selected.contains(key)) selected.add(key);
+                      }
                     }),
-                  ),
+                    onNone: () => setSheetState(() {
+                      selected.removeWhere(_permissionOptions.containsKey);
+                    }),
+                  )],
+                  children: [
+                    for (final group in _permissionGroups.entries) ...[
+                      Padding(
+                        padding:
+                            const EdgeInsets.only(left: 16, top: 6, bottom: 2),
+                        child: Text(
+                          group.key.toUpperCase(),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            color: AppTheme.teal,
+                          ),
+                        ),
+                      ),
+                      ...group.value.map(
+                        (key) => CheckboxListTile(
+                          dense: true,
+                          title: Text(_permissionOptions[key]!,
+                              style: const TextStyle(fontSize: 13)),
+                          value: selected.contains(key),
+                          onChanged: (on) => setSheetState(() {
+                            on == true
+                                ? selected.add(key)
+                                : selected.remove(key);
+                          }),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 const SizedBox(height: 8),
                 const Text('Assigned categories',
@@ -274,38 +365,57 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                 const SizedBox(height: 4),
                 Text(
                   'Empty = unrestricted. Sub-admins only act inside their '
-                  'categories.',
+                  'categories. Expand a group to choose.',
                   style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
-                ..._categories.map(
-                  (c) => CheckboxListTile(
-                    dense: true,
-                    title: Text('${c['name']}',
-                        style: const TextStyle(fontSize: 13)),
-                    subtitle: Text('${c['sector']}',
-                        style: const TextStyle(fontSize: 10)),
-                    value: selectedCats.contains(c['id']),
-                    onChanged: (on) => setSheetState(() {
-                      on == true
-                          ? selectedCats.add(c['id'] as String)
-                          : selectedCats.remove(c['id']);
-                    }),
-                  ),
+                const SizedBox(height: 4),
+                _categorySection(
+                  sheetSet: setSheetState,
+                  selectedCats: selectedCats,
+                  title: 'Vehicle categories',
+                  icon: Icons.directions_car_outlined,
+                  cats: vehicleCats,
                 ),
-                if (canSetSuper)
-                  CheckboxListTile(
-                    dense: true,
-                    title: const Text('Super admin (runs the staff program)',
-                        style: TextStyle(fontSize: 13)),
-                    subtitle: const Text(
-                        'ADMIN branch only; created by the CEO',
-                        style: TextStyle(fontSize: 11)),
-                    value: isSuper,
-                    onChanged: (on) => setSheetState(() {
-                      isSuper = on ?? false;
-                      if (isSuper) branch = 'ADMIN';
-                    }),
+                _categorySection(
+                  sheetSet: setSheetState,
+                  selectedCats: selectedCats,
+                  title: 'Service categories',
+                  icon: Icons.room_service_outlined,
+                  cats: serviceCats,
+                ),
+                if (otherCats.isNotEmpty)
+                  _categorySection(
+                    sheetSet: setSheetState,
+                    selectedCats: selectedCats,
+                    title: 'Other categories',
+                    icon: Icons.category_outlined,
+                    cats: otherCats,
                   ),
+                if (canSetSuper) ...[
+                  const SizedBox(height: 8),
+                  _CollapsibleSection(
+                    icon: Icons.shield_outlined,
+                    title: 'Admin roles',
+                    subtitle: 'Special roles above the permission system.',
+                    countLabel: isSuper ? 'Super admin' : 'None',
+                    initiallyExpanded: isSuper,
+                    children: [
+                      CheckboxListTile(
+                        dense: true,
+                        title: const Text('Super admin (runs the staff program)',
+                            style: TextStyle(fontSize: 13)),
+                        subtitle: const Text(
+                            'ADMIN branch only; created by the CEO',
+                            style: TextStyle(fontSize: 11)),
+                        value: isSuper,
+                        onChanged: (on) => setSheetState(() {
+                          isSuper = on ?? false;
+                          if (isSuper) branch = 'ADMIN';
+                        }),
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 16),
                 PrimaryButton(
                   label: existing == null ? 'Create staff' : 'Save changes',
@@ -430,6 +540,55 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       ),
     );
     if (result == true) _load();
+  }
+
+  /// One collapsible category group inside the editor (vehicle / service /
+  /// other). The header always shows the selected count so the CEO can see
+  /// state without expanding; the section reuses _CollapsibleSection.
+  Widget _categorySection({
+    required void Function(void Function()) sheetSet,
+    required List<String> selectedCats,
+    required String title,
+    required IconData icon,
+    required List<Map<String, dynamic>> cats,
+  }) {
+    final selectedInGroup =
+        cats.where((c) => selectedCats.contains(c['id'])).length;
+    return _CollapsibleSection(
+      icon: icon,
+      title: title,
+      subtitle: cats.isEmpty
+          ? 'No categories available in this group.'
+          : '${cats.length} categories · subcategories indented.',
+      countLabel: '$selectedInGroup/${cats.length}',
+      initiallyExpanded: _expandedCategoryGroups.contains(title),
+      onExpansionChanged: (expanded) =>
+          expanded ? _expandedCategoryGroups.add(title) : _expandedCategoryGroups.remove(title),
+      children: [
+        for (final c in cats)
+          CheckboxListTile(
+            dense: true,
+            contentPadding: c['parent_id'] != null
+                ? const EdgeInsets.only(left: 28, right: 4)
+                : const EdgeInsets.symmetric(horizontal: 4),
+            title: Text(
+              '${c['name']}',
+              style: TextStyle(
+                fontSize: c['parent_id'] != null ? 12 : 13,
+                fontWeight: c['parent_id'] != null
+                    ? FontWeight.w400
+                    : FontWeight.w600,
+              ),
+            ),
+            value: selectedCats.contains(c['id']),
+            onChanged: (on) => sheetSet(() {
+              on == true
+                  ? selectedCats.add(c['id'] as String)
+                  : selectedCats.remove(c['id']);
+            }),
+          ),
+      ],
+    );
   }
 
   /// Attach a staff record to a real account by email — the linked user
@@ -730,6 +889,134 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       ),
                     ),
     );
+  }
+}
+
+/// UX: a single collapsible card used by the staff editor. The header row
+/// (icon + title + selected-count chip + chevron) toggles the body, so long
+/// checklists stay collapsed until the CEO expands the group they need.
+class _CollapsibleSection extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+
+  /// Selection summary shown in a small chip on the header (e.g. "2/9").
+  final String? countLabel;
+
+  /// Header-right action buttons (e.g. All / None). Rendered before the
+  /// chevron; keep them compact.
+  final List<Widget> trailing;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+  final ValueChanged<bool>? onExpansionChanged;
+
+  const _CollapsibleSection({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.countLabel,
+    this.trailing = const [],
+    required this.children,
+    this.initiallyExpanded = false,
+    this.onExpansionChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      // Remove the default divider so stacked sections read as one group.
+      data: Theme.of(context).copyWith(
+        dividerColor: Colors.transparent,
+      ),
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        clipBehavior: Clip.antiAlias,
+        child: Theme(
+          data: Theme.of(context).copyWith(
+            expansionTileTheme: Theme.of(context).expansionTileTheme.copyWith(
+                  backgroundColor: Theme.of(context).cardColor,
+                  collapsedBackgroundColor: Theme.of(context).cardColor,
+                  shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+                  collapsedShape:
+                      const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+                ),
+          ),
+          child: ExpansionTile(
+            initiallyExpanded: initiallyExpanded,
+            onExpansionChanged: onExpansionChanged,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+            childrenPadding:
+                const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+            leading: Icon(icon, color: AppTheme.teal, size: 22),
+            title: Text(title,
+                style: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w700)),
+            subtitle: subtitle == null
+                ? null
+                : Text(subtitle!,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textMuted)),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...trailing,
+                if (countLabel != null)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryGreen.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      countLabel!,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.primaryGreen,
+                      ),
+                    ),
+                  ),
+                const Icon(Icons.expand_more, size: 20),
+              ],
+            ),
+            children: children,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Header-right All / None shortcuts for the permissions section.
+class _AllNoneButtons extends StatelessWidget {
+  final VoidCallback onAll;
+  final VoidCallback onNone;
+  const _AllNoneButtons({required this.onAll, required this.onNone});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      TextButton(
+        onPressed: onAll,
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: const Size(0, 32),
+          textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+        ),
+        child: const Text('All'),
+      ),
+      TextButton(
+        onPressed: onNone,
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: const Size(0, 32),
+          textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+        ),
+        child: const Text('None'),
+      ),
+    ]);
   }
 }
 
