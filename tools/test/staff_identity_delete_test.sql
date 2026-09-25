@@ -148,6 +148,7 @@ $$;
 \i :repo_root/supabase/migrations/20260925160000_staff_username_email_format.sql
 \i :repo_root/supabase/migrations/20260925170000_staff_email_identity.sql
 \i :repo_root/supabase/migrations/20260925180000_staff_delete.sql
+\i :repo_root/supabase/migrations/20260925190000_staff_delete_actor_param.sql
 
 -- Re-add the functions create_staff_gateway depends on, whose real bodies
 -- live in earlier migrations that need far more schema than this stub has.
@@ -200,7 +201,7 @@ END $$;
 -- ─────────────────────────────────────────────────────────────────────────
 DO $$
 DECLARE
-  v_ceo_user uuid; v_ceo_staff uuid;
+  v_ceo_user uuid; v_ceo_staff uuid; v_other_user uuid;
   v_legacy_user uuid; v_legacy_staff uuid;
   v_email_user uuid; v_email_staff uuid;
   v_victim_user uuid; v_victim_staff uuid;
@@ -259,10 +260,24 @@ BEGIN
   END;
 
   -- 7. delete_staff refuses a non-CEO.
+  --
+  --    The actor is passed as p_actor_id, NOT via set_config /
+  --    request.jwt.claim.sub. That is deliberate and is the whole point of
+  --    0048: the only caller is the service-role edge function, whose request
+  --    carries no end-user JWT, so auth.uid() is NULL there. The previous
+  --    version of this test set the JWT claim, which made the function's
+  --    auth.uid() check pass and hid a bug that made EVERY real delete fail
+  --    with 403. Driving the actor through the parameter is how the function
+  --    is actually reached, so this is the case that would have caught it.
   INSERT INTO auth.users(id, email) VALUES (gen_random_uuid(), 'boss@staff-gateway.invalid');
   v_ceo_user := (SELECT id FROM auth.users WHERE email='boss@staff-gateway.invalid');
   INSERT INTO public.staff (user_id, name, staff_code, is_ceo)
     VALUES (v_ceo_user, 'Boss', 'CEO1', true);
+
+  INSERT INTO auth.users(id, email) VALUES (gen_random_uuid(), 'other@staff-gateway.invalid');
+  v_other_user := (SELECT id FROM auth.users WHERE email='other@staff-gateway.invalid');
+  INSERT INTO public.staff (user_id, name, staff_code)
+    VALUES (v_other_user, 'Other', 'OTH1');
 
   INSERT INTO auth.users(id, email) VALUES (gen_random_uuid(), 'sub@staff-gateway.invalid');
   v_legacy_user := (SELECT id FROM auth.users WHERE email='sub@staff-gateway.invalid');
@@ -273,25 +288,39 @@ BEGIN
   INSERT INTO public.staff_tasks(staff_id, task_key) VALUES (v_legacy_staff, 'TASK1');
   INSERT INTO public.user_roles(user_id, role) VALUES (v_legacy_user, 'ADMIN');
 
+  -- p_actor_id is a parameter, so a non-CEO must be refused even though the
+  -- caller holds the service role. This is the assertion that stops the new
+  -- parameter from becoming an escalation hole.
   BEGIN
-    PERFORM set_config('request.jwt.claim.sub', v_ceo_user::text, true);
-    -- simulate a NON-ceo caller
-    INSERT INTO auth.users(id, email) VALUES (gen_random_uuid(), 'other@staff-gateway.invalid');
-    PERFORM set_config('request.jwt.claim.sub',
-      (SELECT id::text FROM auth.users WHERE email='other@staff-gateway.invalid'), true);
-    PERFORM public.delete_staff(v_legacy_staff);
-    RAISE EXCEPTION 'FAIL a non-CEO was allowed to delete staff';
+    PERFORM public.delete_staff(v_other_user, v_legacy_staff);
+    RAISE EXCEPTION 'FAIL a non-CEO p_actor_id was allowed to delete staff';
   EXCEPTION WHEN OTHERS THEN
     IF SQLERRM NOT LIKE '%ONLY_CEO_CAN_DELETE_STAFF%' THEN
       RAISE EXCEPTION 'FAIL delete_staff raised the wrong error: %', SQLERRM;
     END IF;
-    RAISE NOTICE 'PASS delete_staff refuses a non-CEO caller';
+    RAISE NOTICE 'PASS delete_staff refuses a non-CEO p_actor_id';
   END;
+
+  -- A NULL p_actor_id must be refused too: is_ceo(NULL) is false, which is
+  -- exactly the state the real gateway was in before 0048.
+  BEGIN
+    PERFORM public.delete_staff(NULL, v_legacy_staff);
+    RAISE EXCEPTION 'FAIL a NULL actor was allowed to delete staff';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE '%ONLY_CEO_CAN_DELETE_STAFF%' THEN
+      RAISE EXCEPTION 'FAIL expected ONLY_CEO_CAN_DELETE_STAFF, got: %', SQLERRM;
+    END IF;
+    RAISE NOTICE 'PASS delete_staff refuses a NULL actor (the pre-0048 state)';
+  END;
+
+  -- The refused attempts must have changed nothing.
+  SELECT count(*) INTO v_count FROM public.staff WHERE id = v_legacy_staff;
+  IF v_count <> 1 THEN RAISE EXCEPTION 'FAIL a refused delete still removed the row'; END IF;
+  RAISE NOTICE 'PASS a refused delete leaves the staff row intact';
 
   -- 8. delete_staff refuses the CEO row, even when called BY the CEO.
   BEGIN
-    PERFORM set_config('request.jwt.claim.sub', v_ceo_user::text, true);
-    PERFORM public.delete_staff((SELECT id FROM public.staff WHERE is_ceo));
+    PERFORM public.delete_staff(v_ceo_user, (SELECT id FROM public.staff WHERE is_ceo));
     RAISE EXCEPTION 'FAIL the CEO row was deletable';
   EXCEPTION WHEN OTHERS THEN
     IF SQLERRM NOT LIKE '%CANNOT_DELETE_CEO%' THEN
@@ -303,8 +332,7 @@ BEGIN
   -- 9. A CEO CAN delete, and it cascades + returns the auth id.
   v_victim_user := v_legacy_user;
   v_victim_staff := v_legacy_staff;
-  PERFORM set_config('request.jwt.claim.sub', v_ceo_user::text, true);
-  v_result := public.delete_staff(v_victim_staff);
+  v_result := public.delete_staff(v_ceo_user, v_victim_staff);
 
   IF (v_result ->> 'auth_user_id') <> v_victim_user::text THEN
     RAISE EXCEPTION 'FAIL delete_staff did not return the auth user id';

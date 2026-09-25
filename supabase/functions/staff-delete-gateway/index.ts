@@ -25,6 +25,11 @@ const json = (body: unknown, status = 200) =>
 // client. Both concerns are why the RPC refuses to do the auth deletion
 // itself.
 //
+// The actor is threaded into public.delete_staff as p_actor_id rather than
+// recovered from auth.uid(): a service-role RPC call carries no end-user
+// JWT, so auth.uid() is NULL inside the function, and a CEO check written
+// against it rejects every caller — including the real CEO.
+//
 // Revoke remains the default, safer action in the UI; this is behind a typed
 // confirmation.
 Deno.serve(async (req) => {
@@ -84,7 +89,14 @@ Deno.serve(async (req) => {
 
   // The RPC deletes the staff row and everything cascading off it, and
   // returns the auth user id for the GoTrue cleanup below.
+  //
+  // p_actor_id is passed EXPLICITLY. delete_staff cannot use auth.uid() here:
+  // it is service_role-only, and a service-role PostgREST request carries no
+  // end-user JWT, so auth.uid() would be NULL and the CEO check inside the
+  // function could never pass. This mirrors create_staff_gateway, which has
+  // taken p_actor_id for the same reason since 0035.
   const { data: result, error: deleteError } = await admin.rpc("delete_staff", {
+    p_actor_id: actor.id,
     p_staff_id: staffId,
   });
   if (deleteError) {
