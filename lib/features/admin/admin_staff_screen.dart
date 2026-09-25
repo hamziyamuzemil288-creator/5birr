@@ -135,8 +135,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     bool isSuper = (existing?['is_super_admin'] as bool?) ?? false;
     // Super Admin rows always live in the ADMIN branch; new entries default
     // to the ADMIN branch, matching the pre-hierarchy behavior.
-    String branch = (existing?['branch'] as String?) ??
-        (isSuper ? 'ADMIN' : 'ADMIN');
+    String branch =
+        (existing?['branch'] as String?) ?? (isSuper ? 'ADMIN' : 'ADMIN');
     final canSetSuper = _isCeo && existing == null;
 
     final result = await showModalBottomSheet<bool>(
@@ -192,16 +192,41 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   TextField(
                     controller: passwordController,
                     obscureText: true,
+                    onChanged: (_) => setSheetState(() {}),
                     decoration: const InputDecoration(
                       labelText: 'Initial password *',
-                      helperText: 'At least 10 characters; never shown again',
+                      helperText: '10–200 characters; never shown again',
+                    ),
+                  ),
+                  // Requirement + live counter so a too-short password is
+                  // caught on the form, not as a server error after submit.
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, left: 4),
+                    child: Text(
+                      'Minimum 10 characters'
+                      '${passwordController.text.isEmpty ? '' : ' — ${passwordController.text.length}/200'}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: passwordController.text.isEmpty ||
+                                passwordController.text.length >=
+                                    kStaffPasswordMinLength
+                            ? AppTheme.textMuted
+                            : AppTheme.error,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: confirmPasswordController,
                     obscureText: true,
-                    decoration: const InputDecoration(labelText: 'Confirm password *'),
+                    decoration: InputDecoration(
+                      labelText: 'Confirm password *',
+                      errorText: confirmPasswordController.text.isEmpty ||
+                              confirmPasswordController.text ==
+                                  passwordController.text
+                          ? null
+                          : 'Passwords do not match',
+                    ),
                   ),
                   const SizedBox(height: 12),
                 ],
@@ -212,7 +237,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     ButtonSegment(
                         value: 'ADMIN',
                         label: Text('Admin'),
-                        icon: Icon(Icons.admin_panel_settings_outlined, size: 16)),
+                        icon: Icon(Icons.admin_panel_settings_outlined,
+                            size: 16)),
                     ButtonSegment(
                         value: 'ME',
                         label: Text('Me'),
@@ -238,14 +264,13 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     title: Text(e.value, style: const TextStyle(fontSize: 13)),
                     value: selected.contains(e.key),
                     onChanged: (on) => setSheetState(() {
-                      on == true
-                          ? selected.add(e.key)
-                          : selected.remove(e.key);
+                      on == true ? selected.add(e.key) : selected.remove(e.key);
                     }),
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('Assigned categories', style: AppTheme.sectionHeader),
+                const Text('Assigned categories',
+                    style: AppTheme.sectionHeader),
                 const SizedBox(height: 4),
                 Text(
                   'Empty = unrestricted. Sub-admins only act inside their '
@@ -272,7 +297,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                     dense: true,
                     title: const Text('Super admin (runs the staff program)',
                         style: TextStyle(fontSize: 13)),
-                    subtitle: const Text('ADMIN branch only; created by the CEO',
+                    subtitle: const Text(
+                        'ADMIN branch only; created by the CEO',
                         style: TextStyle(fontSize: 11)),
                     value: isSuper,
                     onChanged: (on) => setSheetState(() {
@@ -292,6 +318,59 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       );
                       return;
                     }
+                    // Pre-submit validation mirrors staff-create-gateway so
+                    // the operator never sees a raw server exception.
+                    if (existing == null && _isCeo) {
+                      final password = passwordController.text;
+                      if (password.length < kStaffPasswordMinLength ||
+                          password.length > kStaffPasswordMaxLength) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(
+                              content:
+                                  Text('Password must be 10–200 characters.')),
+                        );
+                        return;
+                      }
+                      if (password != confirmPasswordController.text) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(
+                              content: Text('The passwords do not match.')),
+                        );
+                        return;
+                      }
+                      final username =
+                          usernameController.text.trim().toLowerCase();
+                      if (!kStaffUsernamePattern.hasMatch(username)) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Username must be 3–32 characters: lowercase letters or digits, with dots, underscores or dashes inside.')),
+                        );
+                        return;
+                      }
+                      final staffCodeValue = codeController.text.trim();
+                      if (staffCodeValue.length < 2 ||
+                          staffCodeValue.length > 60 ||
+                          nameController.text.trim().length < 2 ||
+                          nameController.text.trim().length > 100) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Name must be 2–100 characters and staff ID 2–60 characters.')),
+                        );
+                        return;
+                      }
+                      final salesTargetValue =
+                          double.tryParse(targetController.text) ?? 0;
+                      if (salesTargetValue < 0) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Sales target must be zero or a positive number.')),
+                        );
+                        return;
+                      }
+                    }
                     try {
                       final client = Supabase.instance.client;
                       if (existing == null && _isCeo) {
@@ -303,23 +382,23 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           password: passwordController.text,
                           confirmPassword: confirmPasswordController.text,
                           permissions: selected,
-                          salesTarget: double.tryParse(targetController.text) ?? 0,
+                          salesTarget:
+                              double.tryParse(targetController.text) ?? 0,
                           isSuperAdmin: isSuper,
                           branch: isSuper ? 'ADMIN' : branch,
                           assignedCategories: selectedCats,
                         );
                       } else if (existing == null) {
-                        await client.rpc('create_staff',
-                            params: {
-                              'p_name': nameController.text.trim(),
-                              'p_staff_code': codeController.text.trim(),
-                              'p_permissions': selected,
-                              'p_sales_target':
-                                  double.tryParse(targetController.text) ?? 0,
-                              'p_is_super_admin': isSuper,
-                              'p_branch': isSuper ? 'ADMIN' : branch,
-                              'p_assigned_categories': selectedCats,
-                            }) as Map<String, dynamic>;
+                        await client.rpc('create_staff', params: {
+                          'p_name': nameController.text.trim(),
+                          'p_staff_code': codeController.text.trim(),
+                          'p_permissions': selected,
+                          'p_sales_target':
+                              double.tryParse(targetController.text) ?? 0,
+                          'p_is_super_admin': isSuper,
+                          'p_branch': isSuper ? 'ADMIN' : branch,
+                          'p_assigned_categories': selectedCats,
+                        }) as Map<String, dynamic>;
                       } else {
                         await client.rpc('update_staff', params: {
                           'p_staff_id': existing['id'],
@@ -330,7 +409,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           'p_assigned_categories': selectedCats,
                         });
                       }
-                      if (sheetContext.mounted) Navigator.pop(sheetContext, true);
+                      if (sheetContext.mounted)
+                        Navigator.pop(sheetContext, true);
                     } catch (e) {
                       if (sheetContext.mounted) {
                         ScaffoldMessenger.of(sheetContext).showSnackBar(
@@ -468,7 +548,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w700)),
               Text('Remaining tasks: ${progress['remaining_tasks'] ?? 0}'),
               Text('Task progress: ${progress['progress_percent'] ?? 0}%'),
-              Text('30-day completed: ${progress['completed_last_30_days'] ?? 0}'),
+              Text(
+                  '30-day completed: ${progress['completed_last_30_days'] ?? 0}'),
               const SizedBox(height: 8),
               Text(
                 'Target: ETB ${staff['sales_target'] ?? 0}',
@@ -566,9 +647,10 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           final perms = ((s['permissions'] as List?) ?? [])
                               .map((e) => e.toString())
                               .toList();
-                          final cats = ((s['assigned_categories'] as List?) ?? [])
-                              .map((e) => e.toString())
-                              .toList();
+                          final cats =
+                              ((s['assigned_categories'] as List?) ?? [])
+                                  .map((e) => e.toString())
+                                  .toList();
                           final catNames = cats
                               .map((id) => _categories
                                   .where((c) => c['id'] == id)
@@ -636,12 +718,10 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                         child: Text('Link account')),
                                   if (_canManage(s))
                                     const PopupMenuItem(
-                                        value: 'edit',
-                                        child: Text('Edit')),
+                                        value: 'edit', child: Text('Edit')),
                                   if (_canManage(s))
                                     const PopupMenuItem(
-                                        value: 'revoke',
-                                        child: Text('Revoke')),
+                                        value: 'revoke', child: Text('Revoke')),
                                 ],
                               ),
                             ),
@@ -735,11 +815,11 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
 
   Future<void> _toggle(Map<String, dynamic> code) async {
     try {
-      await Supabase.instance.client.rpc('admin_set_referral_code_active',
-          params: {
-            'p_code_id': code['id'],
-            'p_active': !(code['is_active'] == true),
-          });
+      await Supabase.instance.client
+          .rpc('admin_set_referral_code_active', params: {
+        'p_code_id': code['id'],
+        'p_active': !(code['is_active'] == true),
+      });
       await _load();
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -790,8 +870,7 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
               )
             else if (_error != null)
               Text(_error!,
-                  style: const TextStyle(
-                      color: AppTheme.error, fontSize: 12))
+                  style: const TextStyle(color: AppTheme.error, fontSize: 12))
             else if (_codes.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 12),
@@ -810,8 +889,8 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
                       margin: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
                         title: Text('${c['code']}',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w700)),
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w700)),
                         subtitle: Text(
                           'used ${c['uses'] ?? 0} · ${active ? 'active' : 'inactive'}',
                           style: const TextStyle(fontSize: 11),
