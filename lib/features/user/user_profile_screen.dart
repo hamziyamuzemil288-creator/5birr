@@ -5,7 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/points_service.dart';
-import '../../core/services/provider_doc_gate.dart';
+import '../../core/widgets/verification_status_tile.dart';
 
 class UserProfileScreen extends ConsumerWidget {
   const UserProfileScreen({super.key});
@@ -144,11 +144,11 @@ class UserProfileScreen extends ConsumerWidget {
                   // Task 13 item 3: persistent, non-blocking entry point to
                   // the document upload flow — the same ProviderDocGate sheet
                   // the protected-action gate opens (Task 9 gate unchanged).
-                  _menuTile(Icons.badge_outlined, 'Verify Document',
-                      AppTheme.gold,
-                      onTap: () async {
-                    await ProviderDocGate.instance.ensureDocuments(context);
-                  }),
+                  //
+                  // Status-aware on purpose. This was a static tile, so a
+                  // verified and an unverified account rendered identically
+                  // and a successful upload left no visible trace anywhere.
+                  const VerificationStatusTile(),
                   _divider(),
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),
