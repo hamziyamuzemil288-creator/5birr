@@ -27,6 +27,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   // same server-side CAPTCHA as signup/OTP/appeals, plus the failure lockout.
   bool _captchaRequired = true; // conservative default until the server says
   String? _captchaId;
+  int _captchaResetVersion = 0;
 
   @override
   void initState() {
@@ -87,6 +88,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          // login-gate consumes the challenge before checking credentials.
+          // Never leave a green, already-consumed challenge on screen after
+          // a failed password attempt or any other completed gate attempt.
+          _captchaId = null;
+          _captchaResetVersion++;
           _error = _friendlyError(e.toString());
         });
       }
@@ -345,6 +351,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         // enforced server-side by the login-gate function.
                         if (_captchaRequired) ...[
                           CaptchaChallengeField(
+                            key: ValueKey(_captchaResetVersion),
                             onVerified: (id) => setState(() => _captchaId = id),
                           ),
                           const SizedBox(height: 8),

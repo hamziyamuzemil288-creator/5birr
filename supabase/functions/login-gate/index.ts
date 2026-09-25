@@ -102,10 +102,16 @@ Deno.serve(async (req: Request) => {
     }
     const count = typeof failures.data === "number" ? failures.data : 0;
     if (count >= MAX_FAILURES) {
-      return json({
-        error: "temporarily_locked",
-        retry_after_seconds: LOCK_WINDOW_MINUTES * 60,
-      });
+      // 429: this is a rate-limit refusal, not a success. The client already
+      // matches the error string in the body, but a refusal must never carry
+      // a 2xx status.
+      return json(
+        {
+          error: "temporarily_locked",
+          retry_after_seconds: LOCK_WINDOW_MINUTES * 60,
+        },
+        429,
+      );
     }
 
     return json({

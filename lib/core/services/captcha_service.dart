@@ -79,18 +79,32 @@ extension LoginGate on CaptchaService {
   ///  • [CaptchaException]     — challenge missing/failed
   /// A gate outage fails CLOSED (the login is refused) — never open.
   Future<void> gateLogin({required String email, String? captchaId}) async {
-    final res = await _client.functions.invoke('login-gate', body: {
-      'action': 'gate',
-      'email': email.trim().toLowerCase(),
-      'captcha_id': captchaId,
-    });
-    final data = res.data as Map<String, dynamic>?;
-    if (data == null) {
-      throw const CaptchaException(
-          'Sign-in is temporarily unavailable. Try again shortly.');
+    try {
+      final res = await _client.functions.invoke('login-gate', body: {
+        'action': 'gate',
+        'email': email.trim().toLowerCase(),
+        'captcha_id': captchaId,
+      });
+      final data = res.data as Map<String, dynamic>?;
+      if (data == null) {
+        throw const CaptchaException(
+            'Sign-in is temporarily unavailable. Try again shortly.');
+      }
+      if (data['ok'] == true) return;
+      _throwLoginGateError(data);
+    } on FunctionsHttpException catch (e) {
+      // supabase_flutter throws before returning FunctionResponse for every
+      // non-2xx response. Map the JSON error here so a rejected CAPTCHA or
+      // lockout never leaks as a raw FunctionsHttpException to the login UI.
+      final details = e.details;
+      final data = details is Map
+          ? Map<String, dynamic>.from(details)
+          : const <String, dynamic>{};
+      _throwLoginGateError(data);
     }
-    if (data['ok'] == true) return;
+  }
 
+  Never _throwLoginGateError(Map<String, dynamic> data) {
     final code = data['error']?.toString() ?? 'UNKNOWN';
     switch (code) {
       case 'temporarily_locked':
@@ -103,7 +117,7 @@ extension LoginGate on CaptchaService {
         throw const CaptchaException(
             'That security check is not valid. Solve a new one.');
       default:
-        throw CaptchaException(
+        throw const CaptchaException(
             'Sign-in is temporarily unavailable. Try again shortly.');
     }
   }
