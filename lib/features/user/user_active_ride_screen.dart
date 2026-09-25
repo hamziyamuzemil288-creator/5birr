@@ -9,8 +9,10 @@ import 'package:latlong2/latlong.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/services/resilient_subscription.dart';
 import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/widgets/realtime_status_banner.dart';
 
 class UserActiveRideScreen extends StatefulWidget {
   const UserActiveRideScreen({super.key});
@@ -20,7 +22,8 @@ class UserActiveRideScreen extends StatefulWidget {
 
 class _State extends State<UserActiveRideScreen> {
   Map<String, dynamic>? _ride;
-  StreamSubscription? _sub;
+  ResilientSubscription<Map<String, dynamic>>? _sub;
+  RealtimeConnState _rideConn = RealtimeConnState.connecting;
   StreamSubscription? _posSub;
   bool _loading = true;
 
@@ -60,12 +63,21 @@ class _State extends State<UserActiveRideScreen> {
     try {
       final ride = await RideService.instance.getMyActiveRide();
       if (ride != null) {
-        _sub = RideService.instance.watchRide(ride['id']).listen((updated) {
-          if (mounted && updated.isNotEmpty) {
-            setState(() => _ride = updated);
-            _parseDriverLocation(updated);
-          }
-        });
+        // Live ride-status channel. A subscribe timeout is transient — retry
+        // quietly rather than dropping the whole tracking screen into the
+        // global crash overlay.
+        _sub = ResilientSubscription(
+          stream: RideService.instance.watchRide(ride['id']),
+          onData: (updated) {
+            if (mounted && updated.isNotEmpty) {
+              setState(() => _ride = updated);
+              _parseDriverLocation(updated);
+            }
+          },
+          onState: (s) {
+            if (mounted) setState(() => _rideConn = s);
+          },
+        );
       }
       if (mounted) {
         setState(() {
@@ -197,7 +209,10 @@ class _State extends State<UserActiveRideScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Active Ride')),
+      appBar: AppBar(
+        title: const Text('Active Ride'),
+        bottom: RealtimeStatusBar(state: _rideConn),
+      ),
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))

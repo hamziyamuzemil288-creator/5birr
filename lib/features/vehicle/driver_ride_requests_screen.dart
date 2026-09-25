@@ -7,6 +7,8 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/services/provider_doc_gate.dart';
+import '../../core/services/resilient_subscription.dart';
+import '../../core/widgets/realtime_status_banner.dart';
 
 class DriverRideRequestsScreen extends StatefulWidget {
   const DriverRideRequestsScreen({super.key});
@@ -15,7 +17,8 @@ class DriverRideRequestsScreen extends StatefulWidget {
 }
 
 class _State extends State<DriverRideRequestsScreen> {
-  StreamSubscription? _rideSub;
+  ResilientSubscription<List<Map<String, dynamic>>>? _rideSub;
+  RealtimeConnState _rideConn = RealtimeConnState.connecting;
   List<Map<String, dynamic>> _requests = [];
   bool _loading = true;
   String? _providerId;
@@ -46,10 +49,18 @@ class _State extends State<DriverRideRequestsScreen> {
     }
     _providerId = prov['id'];
 
-    // Subscribe to new ride requests
-    _rideSub = RideService.instance.watchRideRequests().listen((rides) {
-      if (mounted) setState(() => _requests = rides);
-    });
+    // Subscribe to new ride requests. A subscribe timeout is transient, so it
+    // retries quietly instead of tearing the screen down (see
+    // ResilientSubscription for why this must never reach the crash handler).
+    _rideSub = ResilientSubscription(
+      stream: RideService.instance.watchRideRequests(),
+      onData: (rides) {
+        if (mounted) setState(() => _requests = rides);
+      },
+      onState: (s) {
+        if (mounted) setState(() => _rideConn = s);
+      },
+    );
 
     setState(() => _loading = false);
 
@@ -146,7 +157,10 @@ class _State extends State<DriverRideRequestsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Ride Requests')),
+      appBar: AppBar(
+        title: const Text('Ride Requests'),
+        bottom: RealtimeStatusBar(state: _rideConn),
+      ),
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.teal))

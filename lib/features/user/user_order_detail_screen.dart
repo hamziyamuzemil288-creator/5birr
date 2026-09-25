@@ -212,6 +212,21 @@ class _UserOrderDetailScreenState
             child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: OrderChatService.instance.streamMessages(widget.orderId),
               builder: (context, snap) {
+                // A realtime subscribe failure is not a data error. Show it
+                // inline and keep whatever was already loaded rather than
+                // pretending the conversation is empty.
+                if (snap.hasError && !snap.hasData) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'Chat is reconnecting… messages will reappear shortly.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      ),
+                    ),
+                  );
+                }
                 final msgs = (snap.data ?? const [])
                     .map(OrderChatMessage.fromRow)
                     .toList();
