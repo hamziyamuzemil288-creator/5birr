@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/services/staff_admin_service.dart';
+import '../../core/services/staff_gateway_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -246,7 +247,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   TextField(
                     controller: usernameController,
                     decoration: const InputDecoration(
-                      labelText: 'Username *',
+                      labelText: 'Username or email *',
                       helperText: '3–32 characters; handed to staff offline',
                     ),
                   ),
@@ -485,12 +486,8 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       }
                       final username =
                           usernameController.text.trim().toLowerCase();
-                      if (!kStaffUsernamePattern.hasMatch(username)) {
-                        _showSheetError(
-                            setSheetState,
-                            'Username must be 3–32 characters: lowercase '
-                            'letters or digits, with dots, underscores or '
-                            'dashes inside.');
+                      if (!isValidStaffUsername(username)) {
+                        _showSheetError(setSheetState, kStaffUsernameHint);
                         return;
                       }
                       final staffCodeValue = codeController.text.trim();
@@ -728,6 +725,43 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
+  /// Permanently remove a staff member.
+  ///
+  /// Behind a TYPED confirmation, not just a yes/no dialog: this destroys the
+  /// auth account, so the username is freed for reuse and the history cannot
+  /// be restored. Revoking (the menu item above) remains the default, safer
+  /// action for "this person should not have access any more".
+  Future<void> _deletePermanently(Map<String, dynamic> staff) async {
+    final name = '${staff['name']}';
+    final staffId = '${staff['id']}';
+
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _TypedConfirmDialog(
+        title: 'Delete $name permanently?',
+        body: 'This removes their staff entry AND their login account. '
+            'It cannot be undone, and their username becomes available again.\n\n'
+            'To remove access without deleting, use Revoke instead.',
+        confirmWord: 'DELETE',
+        actionLabel: 'Delete forever',
+      ),
+    );
+    if (typed != 'DELETE' || !mounted) return;
+
+    try {
+      await const StaffGatewayService().deletePermanently(staffId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$name deleted')),
+      );
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
   Future<void> _showPerformance(Map<String, dynamic> staff) async {
     try {
       final client = Supabase.instance.client;
@@ -874,6 +908,12 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           return Card(
                             margin: const EdgeInsets.only(bottom: 10),
                             child: ListTile(
+                              // Tapping the row opens the editor. The ⋮ menu
+                              // already had an Edit item, but burying the only
+                              // way to change someone's roles behind a
+                              // three-dot menu is why "I can create staff but
+                              // not manage them" reads as a missing feature.
+                              onTap: _canManage(s) ? () => _openEditor(s) : null,
                               leading: Icon(
                                 s['is_active'] == true
                                     ? _branchIcon(s)
@@ -916,6 +956,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   if (v == 'perf') _showPerformance(s);
                                   if (v == 'referrals') _showReferralCodes(s);
                                   if (v == 'revoke') _revoke(s);
+                                  if (v == 'delete') _deletePermanently(s);
                                   if (v == 'link') _linkAccount(s);
                                 },
                                 itemBuilder: (_) => [
@@ -935,6 +976,16 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   if (_canManage(s))
                                     const PopupMenuItem(
                                         value: 'revoke', child: Text('Revoke')),
+                                  // Never offered for the CEO row: the server
+                                  // refuses it too, but hiding an action that
+                                  // would always fail is better UX.
+                                  if (_canManage(s) && s['is_ceo'] != true)
+                                    const PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('Delete permanently',
+                                          style: TextStyle(
+                                              color: AppTheme.error)),
+                                    ),
                                 ],
                               ),
                             ),
@@ -942,6 +993,79 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                         },
                       ),
                     ),
+    );
+  }
+}
+
+/// A confirmation the user has to finish by typing [confirmWord].
+///
+/// Used for irreversible actions where a stray tap must not be enough. The
+/// dialog pops with the typed word, so the caller can compare it against what
+/// it expects — a cancelled dialog returns null.
+class _TypedConfirmDialog extends StatefulWidget {
+  const _TypedConfirmDialog({
+    required this.title,
+    required this.body,
+    required this.confirmWord,
+    required this.actionLabel,
+  });
+
+  final String title;
+  final String body;
+  final String confirmWord;
+  final String actionLabel;
+
+  @override
+  State<_TypedConfirmDialog> createState() => _TypedConfirmDialogState();
+}
+
+class _TypedConfirmDialogState extends State<_TypedConfirmDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = _controller.text.trim().toUpperCase() == widget.confirmWord;
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.body,
+              style: const TextStyle(
+                  fontSize: 14, color: AppTheme.textSecondary)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
+              labelText: 'Type ${widget.confirmWord} to confirm',
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          // Disabled until the word matches, so the destructive action is
+          // never one stray tap away.
+          onPressed: ready ? () => Navigator.pop(context, _controller.text.trim().toUpperCase()) : null,
+          style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+          child: Text(widget.actionLabel),
+        ),
+      ],
     );
   }
 }

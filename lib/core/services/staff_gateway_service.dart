@@ -61,4 +61,43 @@ class StaffGatewayService {
       throw Exception(data['error'] ?? 'password_change_failed');
     }
   }
+
+  /// Permanently remove a staff member: the staff row, everything cascading
+  /// off it, and their auth account.
+  ///
+  /// Goes through the Edge Function rather than a direct RPC because the RPC
+  /// is service_role-only and because deleting an auth.users row needs a
+  /// privilege a client must never hold.
+  ///
+  /// This is NOT [revokeStaff]'s safe counterpart — prefer revoking unless
+  /// the person is genuinely being removed. Throws with a readable message so
+  /// the caller can show it verbatim.
+  Future<void> deletePermanently(String staffId) async {
+    final response = await Supabase.instance.client.functions.invoke(
+      'staff-delete-gateway',
+      body: {'staff_id': staffId},
+    );
+    if (response.status != 200) {
+      final data = response.data is Map ? response.data as Map : const {};
+      final code = data['error'] as String? ?? 'delete_failed';
+      throw Exception(_describeDeleteError(code));
+    }
+  }
+
+  String _describeDeleteError(String code) {
+    switch (code) {
+      case 'cannot_delete_ceo':
+        return 'The CEO account cannot be deleted.';
+      case 'only_ceo_can_delete_staff':
+        return 'Only the CEO can delete a staff member.';
+      case 'staff_not_found':
+        return 'That staff member no longer exists.';
+      case 'auth_user_delete_failed':
+        // The staff record is already gone; only the login lingers.
+        return 'The staff record was deleted, but their login could not be '
+            'removed. It can be cleaned up in the Supabase dashboard.';
+      default:
+        return 'Could not delete the staff member. Please try again.';
+    }
+  }
 }

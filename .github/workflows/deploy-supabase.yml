@@ -220,6 +220,12 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy staff-create-gateway
 
+      # Permanent staff removal. Deployed here because the client cannot
+      # delete an auth.users row without the service role key.
+      - name: Deploy function staff-delete-gateway
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy staff-delete-gateway
+
       - name: Deploy function staff-change-password
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy staff-change-password
