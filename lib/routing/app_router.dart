@@ -28,6 +28,7 @@ import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
 import '../features/provider/provider_orders_screen.dart';
 import '../features/provider/provider_business_profile_screen.dart';
+import '../features/provider/provider_subscription_screen.dart';
 import '../features/provider/provider_product_list_screen.dart';
 import '../features/provider/provider_product_form_screen.dart';
 import '../features/vehicle/vehicle_provider_dashboard.dart';
@@ -295,6 +296,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/provider/business', builder: (_, __) => const ProviderBusinessProfileScreen()),
       GoRoute(path: '/provider/orders', builder: (_, __) => const ProviderOrdersScreen()),
       GoRoute(path: '/provider/products', builder: (_, __) => const ProviderProductListScreen()),
+      // Read-only billing view. The charge itself is performed server-side by
+      // subscription-process on an n8n schedule, so this never writes.
+      GoRoute(path: '/provider/subscription', builder: (_, __) => const ProviderSubscriptionScreen()),
       GoRoute(path: '/provider/products/new', builder: (_, __) => const ProviderProductFormScreen()),
       GoRoute(path: '/provider/products/:id', builder: (_, s) => ProviderProductFormScreen(productId: s.pathParameters['id'])),
 

@@ -185,6 +185,8 @@ class _ServiceProviderDashboardState
                         () => context.push('/provider/orders')),
                     _action(Icons.account_balance_wallet_outlined, 'Wallet',
                         () => context.push('/wallet')),
+                    _action(Icons.card_membership, 'Subscription',
+                        () => context.push('/provider/subscription')),
                     _action(Icons.person_outline, 'Profile',
                         () => context.push('/profile')),
                   ],

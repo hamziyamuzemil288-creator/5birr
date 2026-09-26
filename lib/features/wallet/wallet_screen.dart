@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/wallet_service.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/primary_button.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -16,6 +18,11 @@ class _WalletScreenState extends State<WalletScreen> {
   List<Map<String, dynamic>> _rechargeRequests = [];
   bool _loading = true;
   double _lowThreshold = 15;
+  // Set when _load() fails. Without it the screen cleared the spinner and
+  // rendered a confident "Current Balance 0.00 ETB", which reads as "your
+  // wallet is empty" rather than "we could not reach your wallet" — the worst
+  // possible reading for the screen that holds someone's money.
+  String? _error;
 
   @override
   void initState() {
@@ -36,10 +43,16 @@ class _WalletScreenState extends State<WalletScreen> {
           _lowThreshold = threshold;
           _rechargeRequests = requests;
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your wallet');
+        });
+      }
     }
   }
 
@@ -53,6 +66,38 @@ class _WalletScreenState extends State<WalletScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.cloud_off_outlined,
+                            size: 44, color: AppTheme.textMuted),
+                        const SizedBox(height: 12),
+                        Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 14, color: AppTheme.textSecondary),
+                        ),
+                        const SizedBox(height: 16),
+                        PrimaryButton(
+                          label: 'Retry',
+                          icon: Icons.refresh,
+                          onPressed: () {
+                            setState(() {
+                              _loading = true;
+                              _error = null;
+                            });
+                            _load();
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
