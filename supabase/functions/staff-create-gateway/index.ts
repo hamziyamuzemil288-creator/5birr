@@ -4,6 +4,11 @@ import {
   isValidUsername,
   syntheticStaffEmail,
 } from "../_shared/staff_identity.ts";
+import {
+  mapStaffGatewayRpcError,
+  mapStaffTrustError,
+  truncateDetail,
+} from "../_shared/staff_errors.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -97,7 +102,13 @@ Deno.serve(async (req) => {
   });
   if (trustError) {
     console.error('trust_staff_gateway_email failed:', trustError.message);
-    return json({ error: 'staff_gateway_setup_failed' }, 500);
+    // Name the cause: this site used to return the same opaque code as the
+    // create RPC below, so the two halves were indistinguishable from the app.
+    const failure = mapStaffTrustError(trustError.message);
+    return json({
+      error: failure.code,
+      detail: truncateDetail(trustError.message),
+    }, failure.status);
   }
 
   const { data: createdAuth, error: createAuthError } = await admin.auth.admin.createUser({
@@ -162,19 +173,16 @@ Deno.serve(async (req) => {
 
   if (staffError || !staff) {
     await admin.auth.admin.deleteUser(createdAuth.user.id);
-    // Same observability contract for the RPC half of the flow.
+    // Same observability contract for the RPC half of the flow. Every raise
+    // the RPC performs now maps to its own code (see _shared/staff_errors.ts);
+    // the unrecognised ones used to collapse into the generic 500, which is
+    // why STAFF_AUTH_IDENTITY_MISMATCH could only be diagnosed from the logs.
     console.error("create_staff_gateway rpc failed:", staffError?.message ?? "unknown");
-    const rpcMsg = staffError?.message ?? "";
-    if (rpcMsg.includes("STAFF_USERNAME_TAKEN")) {
-      return json({ error: "staff_username_taken" }, 409);
-    }
-    if (rpcMsg.includes("SUPER_ADMIN_ALREADY_EXISTS")) {
-      return json({ error: "super_admin_already_exists" }, 409);
-    }
-    if (rpcMsg.includes("ONLY_CEO")) {
-      return json({ error: "only_ceo_can_create_staff_gateway" }, 403);
-    }
-    return json({ error: "staff_gateway_setup_failed" }, 500);
+    const failure = mapStaffGatewayRpcError(staffError?.message);
+    return json({
+      error: failure.code,
+      detail: truncateDetail(staffError?.message ?? "no staff row returned"),
+    }, failure.status);
   }
 
   return json({

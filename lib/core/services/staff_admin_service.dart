@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Server-side password rule (staff-create-gateway): 10..200 characters.
@@ -62,10 +63,25 @@ class StaffAdminService {
     );
     if (response.status != 201) {
       final data = response.data is Map ? response.data as Map : const {};
-      throw Exception(_friendlyStaffError(
-        data['error']?.toString() ?? 'staff_gateway_creation_failed',
-      ));
+      throw Exception(describeError(data));
     }
+  }
+
+  /// Turns a gateway error body into the message the operator sees.
+  ///
+  /// Public and static so the mapping is unit-testable without a live
+  /// Supabase client. The gateway appends a `detail` field carrying the
+  /// server-side reason on its 5xx responses; appending it here means a
+  /// failure names its own cause instead of requiring the operator to pull
+  /// the Edge Function logs out of the Dashboard.
+  @visibleForTesting
+  static String describeError(Map<dynamic, dynamic> data) {
+    final message = _friendlyStaffError(
+      data['error']?.toString() ?? 'staff_gateway_creation_failed',
+    );
+    final detail = data['detail']?.toString().trim();
+    if (detail == null || detail.isEmpty) return message;
+    return '$message [$detail]';
   }
 
   /// Maps the gateway's stable error codes to operator-readable messages.
@@ -96,6 +112,15 @@ class StaffAdminService {
       case 'staff_gateway_setup_failed':
         return 'The staff account was created but linking it failed. Please '
             'try again with a different staff ID.';
+      case 'staff_auth_identity_mismatch':
+        return 'The staff account was created but its identity could not be '
+            'linked (identity mismatch). This is a backend linkage defect, '
+            'not a problem with your input — please report it.';
+      case 'staff_gateway_domain_not_allowed':
+        return 'The gateway refused to authorise the account address. This '
+            'needs a backend fix — please report it.';
+      case 'invalid_staff_branch':
+        return 'That branch is not recognised. Choose a different branch.';
       case 'staff_email_already_exists':
         return 'That username is already registered. Choose a different one.';
       case 'staff_username_taken':
