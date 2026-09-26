@@ -7,6 +7,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/wallet_service.dart';
 import '../../core/services/payment_methods_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class RechargeScreen extends StatefulWidget {
   const RechargeScreen({super.key});
@@ -145,7 +146,7 @@ class _RechargeScreenState extends State<RechargeScreen> {
       if (mounted) {
         setState(() {
           _submitting = false;
-          _error = 'Submission failed: $e';
+          _error = friendlyError(e, context: 'Could not submit your recharge');
         });
       }
     }

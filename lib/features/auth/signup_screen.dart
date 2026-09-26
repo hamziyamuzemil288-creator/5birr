@@ -13,6 +13,7 @@ import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/google_sign_in_button.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/utils/friendly_error.dart';
 import 'terms_policy_screen.dart';
 import 'otp_verification_screen.dart';
 
@@ -527,7 +528,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     if (raw.contains('EMAIL_OTP_REQUIRED')) {
       return 'Email verification expired. Please verify your email again.';
     }
-    return 'Registration failed: $raw';
+    // See login_screen: the old fallthrough returned 'Registration failed:
+    // $raw' and leaked the raw exception to anyone who could not register.
+    return friendlyError(raw, context: 'Could not create your account');
   }
 
   Widget _buildFormFields() {

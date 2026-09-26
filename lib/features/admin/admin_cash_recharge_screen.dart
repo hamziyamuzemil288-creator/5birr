@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminCashRechargeScreen extends StatefulWidget {
   final String providerId;
@@ -69,7 +70,7 @@ class _State extends State<AdminCashRechargeScreen> {
       if (mounted) {
         setState(() {
           _saving = false;
-          _error = 'Error: $e';
+          _error = friendlyError(e, context: 'Could not record the recharge');
         });
       }
     }
@@ -113,7 +114,7 @@ class _State extends State<AdminCashRechargeScreen> {
       if (mounted) {
         setState(() {
           _saving = false;
-          _error = 'Error: $e';
+          _error = friendlyError(e, context: 'Could not record the recharge');
         });
       }
     }

@@ -10,6 +10,7 @@ import '../../core/services/review_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/order_chat_service.dart';
 import '../../core/utils/order_number_format.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Statuses from which CANCELLED is a legal transition
 /// (see transition_order_status whitelist in 0003_functions.sql).
@@ -390,7 +391,7 @@ class _UserOrderDetailScreenState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not send message: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not send your message'))));
       }
     } finally {
       if (mounted) setState(() => _sendingChat = false);
@@ -436,7 +437,7 @@ class _UserOrderDetailScreenState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not share location: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not share your location'))));
       }
     } finally {
       if (mounted) setState(() => _sendingChat = false);
@@ -491,7 +492,7 @@ class _UserOrderDetailScreenState
       if (mounted) {
         setState(() => _locSharing = false);
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not share location: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not share your location'))));
       }
     }
   }
@@ -524,7 +525,7 @@ class _UserOrderDetailScreenState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Location not available: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not get your location'))));
       }
     } finally {
       if (mounted) setState(() => _directionsLaunching = false);
@@ -562,7 +563,7 @@ class _UserOrderDetailScreenState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Location not available: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not get your location'))));
       }
     } finally {
       if (mounted) setState(() => _directionsLaunching = false);

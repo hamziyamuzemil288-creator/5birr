@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Admin queue for appeal / spam-report cases submitted from the user-side
 /// appeal form (`appeal_cases`). Read + resolve: an admin (or support staff)
@@ -75,7 +76,7 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Could not load appeals: $e';
+        _error = friendlyError(e, context: 'Could not load appeals');
       });
     }
   }
@@ -96,7 +97,7 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not update: $e')));
+          SnackBar(content: Text(friendlyError(e, context: 'Could not update this appeal'))));
     }
   }
 

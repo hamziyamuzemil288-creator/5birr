@@ -3,6 +3,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/payment_methods_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminPaymentMethodsScreen extends StatefulWidget {
   const AdminPaymentMethodsScreen({super.key});
@@ -107,7 +108,7 @@ class _State extends State<AdminPaymentMethodsScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('Error: $e')));
+              .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update payment methods'))));
         }
       }
     }
@@ -121,7 +122,7 @@ class _State extends State<AdminPaymentMethodsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update payment methods'))));
       }
     }
   }
@@ -150,7 +151,7 @@ class _State extends State<AdminPaymentMethodsScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('Error: $e')));
+              .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update payment methods'))));
         }
       }
     }

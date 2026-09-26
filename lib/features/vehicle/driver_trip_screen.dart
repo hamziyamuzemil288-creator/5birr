@@ -13,6 +13,7 @@ import '../../core/services/resilient_subscription.dart';
 import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/realtime_status_banner.dart';
+import '../../core/utils/friendly_error.dart';
 
 class DriverTripScreen extends StatefulWidget {
   const DriverTripScreen({super.key});
@@ -163,7 +164,7 @@ class _State extends State<DriverTripScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update this trip'))));
       }
     }
   }

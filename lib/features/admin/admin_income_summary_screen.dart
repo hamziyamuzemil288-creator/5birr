@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminIncomeSummaryScreen extends StatefulWidget {
   const AdminIncomeSummaryScreen({super.key});
@@ -77,7 +78,7 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       // Surface failures instead of silently rendering a fake zero summary.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not load income data: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not load income data'))));
       }
     }
     if (mounted) setState(() => _loading = false);

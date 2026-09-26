@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminLoginScreen extends ConsumerStatefulWidget {
   const AdminLoginScreen({super.key});
@@ -43,7 +44,7 @@ class _AdminLoginScreenState extends ConsumerState<AdminLoginScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _error = 'Login failed: $e';
+          _error = friendlyError(e, context: 'Could not sign you in');
         });
       }
     }

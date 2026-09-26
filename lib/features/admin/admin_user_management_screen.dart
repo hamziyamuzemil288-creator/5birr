@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/points_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminUserManagementScreen extends StatefulWidget {
   const AdminUserManagementScreen({super.key});
@@ -42,7 +43,7 @@ class _State extends State<AdminUserManagementScreen> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = 'Failed to load registrations: $e';
+          _error = friendlyError(e, context: 'Could not load users');
         });
       }
     }
@@ -69,7 +70,7 @@ class _State extends State<AdminUserManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }
@@ -87,7 +88,7 @@ class _State extends State<AdminUserManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Movement/permission control — adjust what each staff member (Super Admin,
 /// Admin team, Owner team) may see and do. Edits go through the existing
@@ -138,7 +139,7 @@ class _AdminRolePermissionsScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update roles'))));
     }
   }
 

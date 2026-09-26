@@ -10,6 +10,7 @@ import '../../core/services/captcha_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/captcha_challenge_field.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// User-facing appeal / spam-report form.
 ///
@@ -104,7 +105,7 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open the camera: $e')),
+        SnackBar(content: Text(friendlyError(e, context: 'Could not open the camera'))),
       );
     }
   }

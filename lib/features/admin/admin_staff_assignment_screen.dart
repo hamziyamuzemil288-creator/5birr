@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Staff Assignment — true Admin only (the Supabase-registered owner
 /// account). Lists every assignable role, lets the admin pick any user,
@@ -199,7 +200,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -222,7 +223,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -250,7 +251,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -272,7 +273,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -293,7 +294,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -319,7 +320,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -374,7 +375,7 @@ class _AdminStaffAssignmentScreenState
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update staff permissions'))));
     }
   }
 
@@ -426,7 +427,7 @@ class _AdminStaffAssignmentScreenState
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not delete this staff member'))));
     }
   }
 

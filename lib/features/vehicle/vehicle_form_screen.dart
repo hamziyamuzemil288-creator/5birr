@@ -6,6 +6,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
+import '../../core/utils/friendly_error.dart';
 
 class VehicleFormScreen extends StatefulWidget {
   final String? vehicleId;
@@ -137,7 +138,7 @@ class _State extends State<VehicleFormScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not save this vehicle'))));
       }
     } finally {
       if (mounted) setState(() => _saving = false);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 class VehicleManagementScreen extends StatefulWidget {
   const VehicleManagementScreen({super.key});
@@ -74,7 +75,7 @@ class _State extends State<VehicleManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }

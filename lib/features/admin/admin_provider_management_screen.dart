@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/points_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminProviderManagementScreen extends StatefulWidget {
   const AdminProviderManagementScreen({super.key});
@@ -71,7 +72,7 @@ class _State extends State<AdminProviderManagementScreen> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = 'Failed to load registrations: $e';
+          _error = friendlyError(e, context: 'Could not load registrations');
         });
       }
     }
@@ -85,7 +86,7 @@ class _State extends State<AdminProviderManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update this provider'))));
       }
     }
   }
@@ -104,7 +105,7 @@ class _State extends State<AdminProviderManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update this provider'))));
       }
     }
   }
@@ -123,7 +124,7 @@ class _State extends State<AdminProviderManagementScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update this provider'))));
       }
     }
   }

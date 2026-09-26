@@ -9,6 +9,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
+import '../../core/utils/friendly_error.dart';
 
 class ProviderProductFormScreen extends StatefulWidget {
   final String? productId;
@@ -268,7 +269,7 @@ class _State extends State<ProviderProductFormScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not save this product'))));
       }
     } finally {
       if (mounted) setState(() => _saving = false);

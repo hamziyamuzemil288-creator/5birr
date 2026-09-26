@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/review_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class ReviewFormScreen extends ConsumerStatefulWidget {
   final String? orderId;
@@ -135,7 +136,7 @@ class _ReviewFormScreenState extends ConsumerState<ReviewFormScreen> {
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _error = 'Could not submit review: $e';
+        _error = friendlyError(e, context: 'Could not submit your review');
       });
     }
   }

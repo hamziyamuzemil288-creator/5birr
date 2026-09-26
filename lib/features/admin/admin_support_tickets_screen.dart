@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Admin queue for support tickets escalated from the in-app help chat
 /// ("other party is not responding" reports) and other sources.
@@ -79,7 +80,7 @@ class _AdminSupportTicketsScreenState extends State<AdminSupportTicketsScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Could not load tickets: $e';
+        _error = friendlyError(e, context: 'Could not load tickets');
       });
     }
   }
@@ -98,7 +99,7 @@ class _AdminSupportTicketsScreenState extends State<AdminSupportTicketsScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not update: $e')));
+          SnackBar(content: Text(friendlyError(e, context: 'Could not update this ticket'))));
     }
   }
 
@@ -140,7 +141,7 @@ class _AdminSupportTicketsScreenState extends State<AdminSupportTicketsScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Could not update: $e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not update this ticket'))));
     }
   }
 

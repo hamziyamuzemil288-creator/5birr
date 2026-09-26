@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminExpenseScreen extends StatefulWidget {
   const AdminExpenseScreen({super.key});
@@ -109,7 +110,7 @@ class _AdminExpenseScreenState extends State<AdminExpenseScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+            SnackBar(content: Text(friendlyError(e, context: 'Could not record this expense')), backgroundColor: AppTheme.error),
           );
         }
       }

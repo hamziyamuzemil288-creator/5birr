@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminPaymentVerificationScreen extends StatefulWidget {
   const AdminPaymentVerificationScreen({super.key});
@@ -85,7 +86,7 @@ class _State extends State<AdminPaymentVerificationScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not verify this payment'))));
       }
     }
   }
@@ -124,7 +125,7 @@ class _State extends State<AdminPaymentVerificationScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not verify this payment'))));
       }
     }
   }
@@ -321,7 +322,7 @@ class _State extends State<AdminPaymentVerificationScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Cannot load screenshot: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not load the payment screenshot'))));
       }
     }
   }

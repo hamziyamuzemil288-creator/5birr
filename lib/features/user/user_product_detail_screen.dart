@@ -8,6 +8,7 @@ import '../../core/services/favorites_service.dart';
 import '../../core/services/cart_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
+import '../../core/utils/friendly_error.dart';
 
 class UserProductDetailScreen extends ConsumerStatefulWidget {
   final String productId;
@@ -365,7 +366,7 @@ class _State extends ConsumerState<UserProductDetailScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not add to cart: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not add this to your cart'))));
       }
     } finally {
       if (mounted) setState(() => _adding = false);
@@ -435,7 +436,7 @@ class _State extends ConsumerState<UserProductDetailScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not start checkout: $e')));
+            SnackBar(content: Text(friendlyError(e, context: 'Could not start checkout'))));
       }
     } finally {
       if (mounted) setState(() => _adding = false);

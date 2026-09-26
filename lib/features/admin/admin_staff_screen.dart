@@ -6,6 +6,7 @@ import '../../core/services/staff_admin_service.dart';
 import '../../core/services/staff_gateway_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Staff / role-hierarchy management.
 ///
@@ -798,7 +799,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$e')));
+          .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not complete that action'))));
     }
   }
 

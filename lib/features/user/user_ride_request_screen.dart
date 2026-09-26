@@ -12,6 +12,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class UserRideRequestScreen extends StatefulWidget {
   const UserRideRequestScreen({super.key});
@@ -495,7 +496,7 @@ class _State extends State<UserRideRequestScreen>
       if (mounted) {
         setState(() {
           _submitting = false;
-          _error = 'Failed to create ride: $e';
+          _error = friendlyError(e, context: 'Could not request this ride');
         });
       }
     }

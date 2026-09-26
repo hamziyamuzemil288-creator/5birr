@@ -8,6 +8,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/points_service.dart';
+import '../../core/utils/friendly_error.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -128,7 +129,7 @@ class _VehicleProviderDashboardState
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not load your dashboard'))));
       }
     } finally {
       if (mounted) setState(() => _togglingOnline = false);

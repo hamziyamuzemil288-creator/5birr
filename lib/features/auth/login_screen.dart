@@ -8,6 +8,7 @@ import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/google_sign_in_button.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/utils/friendly_error.dart';
 import '../../core/services/login_identity.dart';
 import '../../core/services/staff_admin_service.dart';
 import '../../core/services/staff_gateway_service.dart';
@@ -226,7 +227,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (raw.contains('rate limit')) {
       return 'Too many attempts. Please wait a moment and try again.';
     }
-    return 'Login failed: $raw';
+    // Anything not recognised above used to be returned as
+    // 'Login failed: $raw', which put the raw exception — PostgREST codes,
+    // HttpException internals, JWT text — in front of the user on the very
+    // first screen of the app. The shared mapper keeps this screen's
+    // deliberate, specific messages above and only translates the tail.
+    return friendlyError(raw, context: 'Could not sign you in');
   }
 
   /// Password reset: ask for the email, send the recovery link. The link

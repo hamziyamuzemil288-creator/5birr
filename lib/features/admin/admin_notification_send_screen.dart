@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 class AdminNotificationSendScreen extends StatefulWidget {
   const AdminNotificationSendScreen({super.key});
@@ -115,7 +116,7 @@ class _AdminNotificationSendScreenState extends State<AdminNotificationSendScree
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+          SnackBar(content: Text(friendlyError(e, context: 'Could not send this notification')), backgroundColor: AppTheme.error),
         );
       }
     } finally {
