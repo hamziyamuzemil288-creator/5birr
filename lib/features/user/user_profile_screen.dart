@@ -15,6 +15,18 @@ class UserProfileScreen extends ConsumerWidget {
     final auth = ref.watch(authProvider);
     final profile = auth.profile;
 
+    // The status badge used to be hard-coded to success green whatever the
+    // account's real status was, so an approved and a pending account looked
+    // identical. Colour AND wording now follow the status.
+    final status = profile?.status;
+    final statusColor = switch (status) {
+      'APPROVED' => AppTheme.success,
+      'PENDING_APPROVAL' => AppTheme.warning,
+      'REJECTED' => AppTheme.error,
+      _ => AppTheme.textSecondary,
+    };
+    final statusLabel = (status ?? 'ACTIVE').replaceAll('_', ' ').toLowerCase();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
       body: SingleChildScrollView(
@@ -77,22 +89,20 @@ class UserProfileScreen extends ConsumerWidget {
                             fontSize: 12, color: AppTheme.textMuted)),
                   ],
                   const SizedBox(height: 12),
-                  // Status badge
+                  // Status badge (colour + wording follow the real status)
                   Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                     decoration: BoxDecoration(
-                      color: AppTheme.success.withOpacity(0.1),
+                      color: statusColor.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      (profile?.status ?? 'ACTIVE')
-                          .replaceAll('_', ' ')
-                          .toLowerCase(),
-                      style: const TextStyle(
+                      statusLabel,
+                      style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: AppTheme.success),
+                          color: statusColor),
                     ),
                   ),
                 ],
