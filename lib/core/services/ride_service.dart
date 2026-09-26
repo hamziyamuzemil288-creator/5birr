@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'location_service.dart' show GeoPoint;
+
 class RideService {
   RideService._();
   static final instance = RideService._();
@@ -122,6 +124,32 @@ class RideService {
         .eq('id', rideId)
         .limit(1)
         .map((list) => list.isNotEmpty ? list.first : <String, dynamic>{});
+  }
+
+  /// Live driver_status changes for a provider.
+  ///
+  /// Used by the rider's Active Ride screen as a *refresh signal*: GPS pushes
+  /// write driver_status only (never ride_requests), so without this the map
+  /// never learns that the driver moved. RLS lets a rider see exactly the row
+  /// assigned to their ride (driver_status_rider_read), so a rider receives no
+  /// events for other drivers.
+  Stream<List<Map<String, dynamic>>> watchDriverStatus(String providerId) {
+    return _client
+        .from('driver_status')
+        .stream(primaryKey: ['provider_id'])
+        .eq('provider_id', providerId);
+  }
+
+  /// The driver's current GPS point for a ride, re-fetched on each change
+  /// signal. Read through PostgREST (not the realtime payload) so the
+  /// geography arrives in the GeoJSON shape [GeoPoint.parse] already handles.
+  Future<GeoPoint?> getDriverLocationForRide(String rideId) async {
+    final data = await _client
+        .from('driver_status')
+        .select('current_location')
+        .eq('current_ride_id', rideId)
+        .maybeSingle();
+    return GeoPoint.parse(data?['current_location']);
   }
 
   /// Get ride history for user.

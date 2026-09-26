@@ -23,6 +23,7 @@ class UserActiveRideScreen extends StatefulWidget {
 class _State extends State<UserActiveRideScreen> {
   Map<String, dynamic>? _ride;
   ResilientSubscription<Map<String, dynamic>>? _sub;
+  ResilientSubscription<List<Map<String, dynamic>>>? _driverSub;
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   StreamSubscription? _posSub;
   bool _loading = true;
@@ -55,6 +56,7 @@ class _State extends State<UserActiveRideScreen> {
   @override
   void dispose() {
     _sub?.cancel();
+    _driverSub?.cancel();
     _posSub?.cancel();
     super.dispose();
   }
@@ -72,6 +74,9 @@ class _State extends State<UserActiveRideScreen> {
             if (mounted && updated.isNotEmpty) {
               setState(() => _ride = updated);
               _parseDriverLocation(updated);
+              // The claim may only become known now (the unclaimed case
+              // starts no driver subscription).
+              _watchDriverLocation(updated);
             }
           },
           onState: (s) {
@@ -86,6 +91,7 @@ class _State extends State<UserActiveRideScreen> {
         });
       }
       _parseDriverLocation(ride);
+      _watchDriverLocation(ride);
       await _refreshMyLocation();
     } catch (e) {
       if (mounted) setState(() => _loading = false);
@@ -94,6 +100,11 @@ class _State extends State<UserActiveRideScreen> {
 
   /// The ride row embeds `driver_status(current_location)`; RLS now lets the
   /// rider read that row only while it is assigned to their ride (0032).
+  ///
+  /// `watchRide` streams bare `ride_requests` rows with NO embed, so a ride
+  /// event used to null this out and wipe the driver pin. Only apply a value
+  /// when the embed is actually present; the live subscription below owns
+  /// ongoing updates.
   void _parseDriverLocation(Map<String, dynamic>? ride) {
     GeoPoint? p;
     final ds = ride?['driver_status'];
@@ -102,7 +113,40 @@ class _State extends State<UserActiveRideScreen> {
     } else if (ds is Map) {
       p = GeoPoint.parse(ds['current_location']);
     }
+    if (p == null) return;
     if (mounted) setState(() => _driverLoc = p);
+  }
+
+  /// Track the driver's device GPS live.
+  ///
+  /// The driver pushes fixes to `driver_status` (via update_driver_location),
+  /// which is now in the realtime publication. Each change re-reads the row
+  /// through PostgREST so the geography parses the same way as the embed does
+  /// (a raw realtime payload ships PostGIS as hex EWKB, which GeoPoint cannot
+  /// read).
+  void _watchDriverLocation(Map<String, dynamic>? ride) {
+    if (_driverSub != null) return;
+    final rideId = ride?['id'] as String?;
+    final providerId = ride?['claimed_by_provider_id'] as String?;
+    if (rideId == null || providerId == null) return;
+
+    _driverSub = ResilientSubscription(
+      stream: RideService.instance.watchDriverStatus(providerId),
+      onData: (_) async {
+        try {
+          final p =
+              await RideService.instance.getDriverLocationForRide(rideId);
+          if (!mounted || p == null) return;
+          if (p.lat == _driverLoc?.lat && p.lng == _driverLoc?.lng) return;
+          setState(() => _driverLoc = p);
+        } catch (_) {
+          // A transient read failure must not clear the last known pin.
+        }
+      },
+      // The map's own status bar tracks the ride stream; the driver signal is
+      // silent, so it does not disturb that indicator.
+      onState: (_) {},
+    );
   }
 
   Future<void> _refreshMyLocation() async {

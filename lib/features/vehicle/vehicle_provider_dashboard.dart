@@ -75,6 +75,13 @@ class _VehicleProviderDashboardState
           _loading = false;
         });
       }
+      // Resume GPS pushes for an already-online driver. Updates used to start
+      // ONLY from the online toggle, so reopening the dashboard (or restarting
+      // the app) while online left the driver shown as online but frozen at
+      // their last fix — the rider could not track them.
+      if ((status?['is_online'] ?? false) == true && _posSub == null) {
+        _startLocationUpdates(prov['id'] as String);
+      }
     } catch (e) {
       if (mounted) setState(() => _loading = false);
     }
