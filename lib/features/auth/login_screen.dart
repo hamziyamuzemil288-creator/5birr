@@ -8,6 +8,9 @@ import '../../core/widgets/captcha_challenge_field.dart';
 import '../../core/widgets/google_sign_in_button.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/services/login_identity.dart';
+import '../../core/services/staff_admin_service.dart';
+import '../../core/services/staff_gateway_service.dart';
 import '../auth/admin_gate.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -46,8 +49,33 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  /// One staff-gateway attempt. Never throws — failures come back as false so
+  /// the caller can decide what to say.
+  ///
+  /// Admin-created staff have no ordinary Supabase identity: their auth
+  /// account's email is a server-derived synthetic address, so the normal
+  /// email sign-in can never match them. The gateway is the only door.
+  Future<bool> _staffSignIn(String username) async {
+    try {
+      await const StaffGatewayService()
+          .signIn(username: username, password: _passwordController.text);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
+    final identifier = _emailController.text.trim();
+    final isStaff = classifyLoginIdentifier(identifier) ==
+        LoginIdentityKind.staffUsername;
+    // The gate keys CAPTCHA + lockout per account identity. Bare staff
+    // usernames are normalized to the same synthetic address the gateway
+    // derives for them so the gate (which requires an "@") can enforce
+    // staff logins too — NO login path skips CAPTCHA/lockout.
+    final gateKey = isStaff ? staffLoginGateKey(identifier) : identifier;
+
     if (_captchaRequired && _captchaId == null) {
       setState(() => _error = 'Complete the security check before signing in.');
       return;
@@ -56,14 +84,59 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _isLoading = true;
       _error = null;
     });
-    final email = _emailController.text.trim();
+
+    // 1. Server gate BEFORE the credential check — staff included: consumes
+    //    the CAPTCHA and enforces the failure lockout. Fail closed on any
+    //    gate problem.
     try {
-      // 1. Server gate BEFORE the credential check: consumes the CAPTCHA and
-      //    enforces the failure lockout. Fail closed on any gate problem.
       await CaptchaService.instance
-          .gateLogin(email: email, captchaId: _captchaId);
+          .gateLogin(email: gateKey, captchaId: _captchaId);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          // login-gate consumes the challenge before checking credentials.
+          // Never leave a green, already-consumed challenge on screen.
+          _captchaId = null;
+          _captchaResetVersion++;
+          _error = _friendlyError(e.toString());
+        });
+      }
+      return;
+    }
+
+    // ── Staff gateway credentials ──
+    // A bare username (no "@") is unambiguously staff: send it to the
+    // gateway instead of the email path, which would both reject the shape
+    // and (even if it did not) fail against the synthetic identity. This is
+    // the path that makes an admin-created staff account usable the moment
+    // it exists — and it now runs behind the same gate as everything else.
+    if (isStaff) {
+      final ok = await _staffSignIn(identifier);
+      await CaptchaService.instance.recordLoginAttempt(
+        email: gateKey,
+        success: ok,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        setState(() {
+          _isLoading = false;
+          // The gate consumed the challenge; never leave it on screen.
+          _captchaId = null;
+          _captchaResetVersion++;
+          _error = 'Invalid username or password.';
+        });
+      }
+      // On success the auth listener loads the profile and the router
+      // forwards the staff member to /staff/dashboard; leaving the button in
+      // its loading state until then avoids a flash of an idle form.
+      return;
+    }
+
+    final email = identifier;
+    try {
       try {
-        // 2. The credential check itself.
+        // 2. The credential check itself (the gate already ran above).
         await ref.read(authProvider.notifier).signIn(
               email: email,
               password: _passwordController.text,
@@ -75,6 +148,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           success: true,
         );
       } catch (signInError) {
+        // A staff username MAY itself be an email address, and those accounts
+        // have no ordinary Supabase identity either — so give the gateway one
+        // chance with the same input before reporting a failure. Only count a
+        // failure once BOTH doors have rejected the credentials: recording it
+        // before the fallback would log a false failure on every successful
+        // email-shaped staff login and push the account toward lockout.
+        if (await _staffSignIn(identifier)) {
+          // Clear the failed-attempt window for this identity — the ordinary
+          // rejection above was not a real credential failure.
+          await CaptchaService.instance.recordLoginAttempt(
+            email: email,
+            success: true,
+          );
+          return;
+        }
         await CaptchaService.instance.recordLoginAttempt(
           email: email,
           success: false,
@@ -319,20 +407,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         const Text('Sign in to your account',
                             style: AppTheme.bodyMedium),
                         const SizedBox(height: 24),
+                        // Accepts an account email OR a staff username — an
+                        // admin-created staff member types the username they
+                        // were given, which is not an email.
                         BirrTextField(
-                          label: 'Email',
-                          hint: 'you@example.com',
+                          label: 'Email or staff username',
+                          hint: 'you@example.com or staff username',
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
                           textInputAction: TextInputAction.next,
                           validator: (v) {
-                            if (v == null || v.trim().isEmpty) {
-                              return 'Email is required';
+                            final value = v?.trim() ?? '';
+                            if (value.isEmpty) {
+                              return 'Email or username is required';
                             }
-                            if (!v.contains('@') || !v.contains('.')) {
-                              return 'Enter a valid email address';
+                            if (classifyLoginIdentifier(value) ==
+                                    LoginIdentityKind.email ||
+                                isValidStaffUsername(value)) {
+                              return null;
                             }
-                            return null;
+                            return 'Enter a valid email or staff username';
                           },
                         ),
                         const SizedBox(height: 16),
@@ -433,7 +527,23 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 4),
+                // Explicit door for staff whose username IS an email address
+                // (they cannot be told apart from a normal account by shape).
+                // The gateway screen is otherwise reachable only after
+                // signing in, which left staff created by the admin with no
+                // way in at all.
+                TextButton.icon(
+                  onPressed: () => context.go('/staff/login'),
+                  icon: const Icon(Icons.support_agent,
+                      size: 16, color: AppTheme.textSecondary),
+                  label: const Text('Staff / employee sign in',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textSecondary)),
+                ),
+                const SizedBox(height: 36),
               ],
             ),
           ),
