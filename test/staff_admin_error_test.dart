@@ -77,6 +77,88 @@ void main() {
     });
   });
 
+  group('a duplicate Staff ID is named as such', () {
+    // staff.staff_code is `text NOT NULL UNIQUE` and neither create path
+    // pre-checks it, so a reused ID used to arrive as a raw
+    // `duplicate key value violates unique constraint "staff_staff_code_key"`.
+    test('the gateway code reads as an input problem, not a defect', () {
+      expect(
+        StaffAdminService.describeError({'error': 'staff_code_taken'}),
+        contains('already in use'),
+      );
+    });
+
+    test('an existing row blocks the code before submit', () {
+      final staff = [
+        {'id': 'a', 'name': 'Aymen', 'staff_code': '10000'},
+      ];
+      expect(
+        findStaffCodeConflict(staff, code: '10000'),
+        isNotNull,
+      );
+    });
+
+    test('an unused code is not flagged', () {
+      final staff = [
+        {'id': 'a', 'name': 'Aymen', 'staff_code': '10000'},
+      ];
+      expect(findStaffCodeConflict(staff, code: '10001'), isNull);
+      expect(findStaffCodeConflict(staff, code: '   '), isNull);
+    });
+
+    test('surrounding whitespace still collides, as the server trims too', () {
+      final staff = [
+        {'id': 'a', 'name': 'Aymen', 'staff_code': '10000'},
+      ];
+      expect(findStaffCodeConflict(staff, code: '  10000  '), isNotNull);
+    });
+
+    test('editing a row does not collide with its own code', () {
+      final staff = [
+        {'id': 'a', 'name': 'Aymen', 'staff_code': '10000'},
+      ];
+      expect(
+        findStaffCodeConflict(staff, code: '10000', editingId: 'a'),
+        isNull,
+      );
+    });
+
+    test('the index is case-sensitive, so a different case is allowed', () {
+      // The constraint is a plain text UNIQUE: 'ABC' and 'abc' are two
+      // genuinely different IDs and the form must not block either.
+      final staff = [
+        {'id': 'a', 'name': 'Aymen', 'staff_code': 'ABC'},
+      ];
+      expect(findStaffCodeConflict(staff, code: 'abc'), isNull);
+    });
+
+    test('the warning names the ID and who already holds it', () {
+      expect(
+        kStaffCodeTakenHint('10000', 'Aymen'),
+        allOf(contains('10000'), contains('Aymen')),
+      );
+    });
+
+    test('the warning still reads correctly without an owner name', () {
+      expect(kStaffCodeTakenHint('10000', null), contains('10000'));
+      expect(kStaffCodeTakenHint('10000', '  '), isNot(contains('by')));
+    });
+  });
+
+  group('Staff ID length rule matches the gateway', () {
+    test('accepts the 2-60 range the server enforces', () {
+      expect(isValidStaffCode('ab'), isTrue);
+      expect(isValidStaffCode('a' * 60), isTrue);
+      expect(isValidStaffCode('  10000  '), isTrue);
+    });
+
+    test('rejects what the server would reject', () {
+      expect(isValidStaffCode(''), isFalse);
+      expect(isValidStaffCode('a'), isFalse);
+      expect(isValidStaffCode('a' * 61), isFalse);
+    });
+  });
+
   group('server detail reaches the operator', () {
     test('detail is appended so the app names the cause itself', () {
       final message = StaffAdminService.describeError({

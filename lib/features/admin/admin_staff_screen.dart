@@ -188,6 +188,22 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     String branch =
         (existing?['branch'] as String?) ?? (isSuper ? 'ADMIN' : 'ADMIN');
     final canSetSuper = _isCeo && existing == null;
+    // The staff directory is already loaded (see _load), so a Staff ID that
+    // collides with an existing row can be caught on the form. Both create
+    // paths — the staff-create-gateway function and the create_staff RPC —
+    // write straight into the staff_staff_code_key unique index with no
+    // pre-check, which is what surfaced a raw "duplicate key value violates
+    // unique constraint" after submit. Reads the live _staff on every call so
+    // a reload that lands while the sheet is open is still respected.
+    String? codeConflictMessage() {
+      final row = findStaffCodeConflict(
+        _staff,
+        code: codeController.text,
+        editingId: existing?['id']?.toString(),
+      );
+      if (row == null) return null;
+      return kStaffCodeTakenHint(codeController.text, row['name']?.toString());
+    }
     // Fresh sheet: never show a stale error/spinner from a previous attempt.
     _sheetError = null;
     _submitting = false;
@@ -228,8 +244,18 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                 TextField(
                   controller: codeController,
                   enabled: existing == null,
-                  decoration: const InputDecoration(
-                      labelText: 'Staff ID *', helperText: 'Unique, immutable'),
+                  // The field claims the ID is unique, so say so while it is
+                  // being typed rather than after submit — same pattern as the
+                  // live password-length counter below.
+                  onChanged: (_) => setSheetState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Staff ID *',
+                    errorText:
+                        existing == null ? codeConflictMessage() : null,
+                    helperText: codeConflictMessage() == null
+                        ? 'Unique, immutable'
+                        : null,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -469,6 +495,25 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                           setSheetState, 'Name and staff ID are required');
                       return;
                     }
+                    // Staff ID rules apply to BOTH create paths, not just the
+                    // CEO gateway one: an admin creating through the
+                    // create_staff RPC would otherwise hit the same unique
+                    // index and the same raw server message.
+                    if (existing == null) {
+                      final conflict = codeConflictMessage();
+                      if (conflict != null) {
+                        _showSheetError(setSheetState, conflict);
+                        return;
+                      }
+                      if (!isValidStaffCode(codeController.text)) {
+                        _showSheetError(
+                          setSheetState,
+                          'Staff ID must be $kStaffCodeMinLength–'
+                          '$kStaffCodeMaxLength characters.',
+                        );
+                        return;
+                      }
+                    }
                     // Pre-submit validation mirrors staff-create-gateway so
                     // the operator never sees a raw server exception.
                     if (existing == null && _isCeo) {
@@ -490,15 +535,10 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                         _showSheetError(setSheetState, kStaffUsernameHint);
                         return;
                       }
-                      final staffCodeValue = codeController.text.trim();
-                      if (staffCodeValue.length < 2 ||
-                          staffCodeValue.length > 60 ||
-                          nameController.text.trim().length < 2 ||
+                      if (nameController.text.trim().length < 2 ||
                           nameController.text.trim().length > 100) {
-                        _showSheetError(
-                            setSheetState,
-                            'Name must be 2–100 characters and staff ID '
-                            '2–60 characters.');
+                        _showSheetError(setSheetState,
+                            'Name must be 2–100 characters.');
                         return;
                       }
                       final salesTargetValue =

@@ -44,6 +44,25 @@ check("SUPER_ADMIN_ALREADY_EXISTS", mapStaffGatewayRpcError("SUPER_ADMIN_ALREADY
 check("ONLY_CEO", mapStaffGatewayRpcError("ONLY_CEO_CAN_CREATE_STAFF_GATEWAY"),
   { code: "only_ceo_can_create_staff_gateway", status: 403 });
 
+console.log("--- a duplicate Staff ID names itself instead of the generic 500 ---");
+// staff.staff_code is `text NOT NULL UNIQUE`, so a reused Staff ID trips
+// this index. create_staff_gateway pre-checks the username but has no
+// equivalent for the staff code, so this is the real message the app used
+// to receive verbatim.
+check("staff_staff_code_key", mapStaffGatewayRpcError(
+  'duplicate key value violates unique constraint "staff_staff_code_key"'),
+  { code: "staff_code_taken", status: 409 });
+check("with the DETAIL line Postgres appends", mapStaffGatewayRpcError(
+  'duplicate key value violates unique constraint "staff_staff_code_key"\nDETAIL:  Key (staff_code)=(10000) already exists.'),
+  { code: "staff_code_taken", status: 409 });
+check("index name matched case-insensitively", mapStaffGatewayRpcError(
+  'duplicate key value violates unique constraint "STAFF_STAFF_CODE_KEY"'),
+  { code: "staff_code_taken", status: 409 });
+// A different unique index must NOT be reported as a Staff ID clash.
+check("another unique index stays generic", mapStaffGatewayRpcError(
+  'duplicate key value violates unique constraint "staff_user_id_key"'),
+  { code: "staff_gateway_setup_failed", status: 500 });
+
 console.log("--- the three that used to hide behind the generic 500 ---");
 check("STAFF_AUTH_IDENTITY_MISMATCH", mapStaffGatewayRpcError("STAFF_AUTH_IDENTITY_MISMATCH"),
   { code: "staff_auth_identity_mismatch", status: 500 });

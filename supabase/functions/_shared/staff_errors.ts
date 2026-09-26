@@ -29,6 +29,15 @@ export interface StaffGatewayFailure {
 const MAX_DETAIL_LENGTH = 300;
 
 /**
+ * Postgres' unique-violation text for the `staff.staff_code` index.
+ *
+ * Not a raise the RPC performs — it is what the INSERT trips when the staff
+ * code is already in use. 409 because it is the caller's input, not a defect.
+ */
+const DUPLICATE_STAFF_CODE =
+  /duplicate key value violates unique constraint "[^"]*staff_code[^"]*"/i;
+
+/**
  * Bounds the server detail echoed to the client.
  *
  * The endpoint is CEO-gated, so the operator is trusted, but an unbounded
@@ -58,6 +67,17 @@ export function mapStaffGatewayRpcError(
   message: string | null | undefined,
 ): StaffGatewayFailure {
   const text = message ?? "";
+  // staff.staff_code is `text NOT NULL UNIQUE`
+  // (supabase/migrations/20260922000001_staff_and_admin_history.sql), so
+  // Postgres names that index `staff_staff_code_key`. The RPC pre-checks the
+  // username (STAFF_USERNAME_TAKEN) but has no equivalent pre-check for the
+  // staff code, so a reused Staff ID used to surface as the raw
+  // "duplicate key value violates unique constraint" text under the generic
+  // code. Match the index so the app names the real cause. Matched loosely on
+  // the column so a renamed index still maps.
+  if (DUPLICATE_STAFF_CODE.test(text)) {
+    return { code: "staff_code_taken", status: 409 };
+  }
   if (text.includes("STAFF_USERNAME_TAKEN")) {
     return { code: "staff_username_taken", status: 409 };
   }

@@ -31,6 +31,56 @@ bool isValidStaffUsername(String value) =>
 const String kStaffUsernameHint =
     'Use an email address, or 3–32 letters, numbers, dots, underscores, or hyphens';
 
+/// Staff ID rule. `staff.staff_code` is `text NOT NULL UNIQUE` and the gateway
+/// rejects anything outside 2–60 characters before it reaches the database
+/// (staff-create-gateway: `invalid_staff_details`).
+const int kStaffCodeMinLength = 2;
+const int kStaffCodeMaxLength = 60;
+
+/// True when [value] is an acceptable staff ID (see [kStaffCodeMinLength]).
+/// Pure so the create sheet can share the exact rule with the server.
+bool isValidStaffCode(String value) {
+  final length = value.trim().length;
+  return length >= kStaffCodeMinLength && length <= kStaffCodeMaxLength;
+}
+
+/// The staff row that already owns [code], or null when the ID is free.
+///
+/// WHY THIS EXISTS
+/// ---------------
+/// Both create paths (the staff-create-gateway edge function and the
+/// create_staff RPC) write straight into the `staff_staff_code_key` unique
+/// index with no pre-check, so reusing a Staff ID failed server-side with a
+/// raw `duplicate key value violates unique constraint` message. The admin
+/// staff screen already loads the whole staff directory, so the collision can
+/// be caught on the form for free.
+///
+/// The comparison is trimmed and case-SENSITIVE on purpose: the index is a
+/// plain `text UNIQUE`, so `10000` and `Abc` are genuinely different IDs and
+/// warning about them would block a legitimate create. Editing a row keeps its
+/// own code — pass its `id` as [editingId] to leave it out of the comparison.
+Map<String, dynamic>? findStaffCodeConflict(
+  List<Map<String, dynamic>> staff, {
+  required String code,
+  String? editingId,
+}) {
+  final wanted = code.trim();
+  if (wanted.isEmpty) return null;
+  for (final row in staff) {
+    if (editingId != null && row['id']?.toString() == editingId) continue;
+    if ((row['staff_code']?.toString() ?? '').trim() == wanted) return row;
+  }
+  return null;
+}
+
+/// Says who already holds [code], so the operator does not have to guess
+/// which of their test Staff IDs collided.
+String kStaffCodeTakenHint(String code, String? ownerName) {
+  final who = (ownerName ?? '').trim();
+  return 'Staff ID ${code.trim()} is already used'
+      '${who.isEmpty ? '' : ' by $who'}. Choose a different one.';
+}
+
 class StaffAdminService {
   const StaffAdminService();
 
@@ -125,6 +175,8 @@ class StaffAdminService {
         return 'That username is already registered. Choose a different one.';
       case 'staff_username_taken':
         return 'That username is already taken. Choose a different one.';
+      case 'staff_code_taken':
+        return 'That Staff ID is already in use. Choose a different one.';
       case 'super_admin_already_exists':
         return 'A super admin already exists. Only one is allowed.';
       case 'staff_gateway_trigger_rejected':
