@@ -113,12 +113,37 @@ jobs:
       # `db push` would replay them from scratch (run #2: "type \"app_role\"
       # already exists" in 0001). `migration repair --status applied` writes
       # ONLY the history table (UPSERT ... ON CONFLICT (version)) — it never
-      # executes the files — so it is safe to re-run. Versions 0001..0033
-      # are marked applied from the STAGED dir (one file per version, so the
-      # repair glob `version_*.sql` matches exactly one file each).
+      # executes the files — so it is safe to re-run.
+      #
+      # CAUTION — the version range below is NOT 0001..0033 as an earlier
+      # comment claimed. The loop marks EVERY staged file whose numeric
+      # version is < 20260919000000, which now includes 0034..0041 (added
+      # after that comment was written). Those 8 migrations would be
+      # recorded as applied WITHOUT ever executing. Their effects are
+      # already in the live DB (pasted via SQL editor), so this is correct
+      # in practice — but it means baseline_history=true will never run
+      # 0034..0041. Do not enable it against a fresh/empty database.
       # 20260919* files are NEVER marked applied by this step. The following
-      # dry run is the gate: it must list exactly the three 20260919* files
-      # and nothing older.
+      # dry run is the gate.
+      #
+      # READING THE DRY RUN (this expectation changed as the repo grew — an
+      # earlier version of this comment claimed "exactly the three 20260919*
+      # files"; that was true when written and is now stale, ignore it):
+      #   - The repo ships 95 migration files, but the staging step above
+      #     reduces them to 87 (one per unique numeric version).
+      #   - 0022a-0022d are dropped entirely: the CLI matches on the numeric
+      #     prefix only, so a letter-suffixed file is never seen. Their effects
+      #     are already in the live DB.
+      #   - The four duplicate-version siblings (0020/0021/0022/0024) are
+      #     dropped; only the alphabetically-first file of each is staged.
+      #   - Every 2026*-prefixed file is a real, separately-applied migration
+      #     and WILL appear as pending until it is recorded in the live
+      #     schema_migrations table.
+      # The exact pending list depends on what the live DB already has
+      # recorded, which this workflow cannot report on its own. What you CAN
+      # assert after a dry run: no staged file is silently dropped, and the
+      # count never exceeds 87. A much longer list than three is expected
+      # and is NOT a failure.
       - name: Baseline migration history (repair, no execution)
         if: ${{ inputs.baseline_history }}
         run: |
@@ -209,6 +234,18 @@ jobs:
       - name: Deploy function document-verify
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy document-verify
+
+      # Permanent user removal from the admin Staff Assignment screen
+      # (admin_staff_assignment_screen.dart invokes 'user-admin' with
+      # action=delete_user). Added in f5d4574 alongside document-verify but
+      # never added to this workflow, so the admin delete-user button has
+      # been calling a function that was never deployed. It verifies the
+      # caller holds the true ADMIN role server-side, so JWT verification
+      # must stay ON (contrast staff-login / index-chunks, which are
+      # unauthenticated entry points and take --no-verify-jwt).
+      - name: Deploy function user-admin (true-ADMIN account deletion)
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy user-admin
 
       # Email OTP delivery for signup (Task 7). Stub mode until an email
       # provider is wired (see the function header for the TODO).
