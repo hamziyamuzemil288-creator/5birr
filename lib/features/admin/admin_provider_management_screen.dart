@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/points_service.dart';
@@ -330,8 +331,8 @@ class _State extends State<AdminProviderManagementScreen> {
                                                     const EdgeInsets
                                                         .symmetric(
                                                         vertical: 10),
-                                              ),
-                                              child: const Text('Reject',
+                                              ),                                              child: const Text(
+                                                  'Reject',
                                                   style: TextStyle(
                                                       fontSize: 13,
                                                       color: AppTheme
@@ -339,6 +340,33 @@ class _State extends State<AdminProviderManagementScreen> {
                                             ),
                                           ),
                                         ],
+                                      ),
+                                    ],
+                                    // Entry point to the provider wallet.
+                                    // /admin/providers/:id/wallet was routed
+                                    // but nothing ever navigated to it, so the
+                                    // whole admin wallet/recharge flow was
+                                    // unreachable. Shown for approved
+                                    // providers only — a pending or rejected
+                                    // provider has no earnings to manage.
+                                    if (p['status'] == 'APPROVED') ...[
+                                      const SizedBox(height: 8),
+                                      Align(
+                                        alignment:
+                                            Alignment.centerLeft,
+                                        child:
+                                            OutlinedButton.icon(
+                                          onPressed: () => context.push(
+                                              '/admin/providers/${p['id']}/wallet'),
+                                          icon: const Icon(
+                                              Icons
+                                                  .account_balance_wallet_outlined,
+                                              size: 16),
+                                          label: const Text(
+                                              'Wallet & earnings',
+                                              style: TextStyle(
+                                                  fontSize: 13)),
+                                        ),
                                       ),
                                     ],
                                   ],

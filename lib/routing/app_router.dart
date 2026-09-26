@@ -303,7 +303,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/vehicle/vehicles/new', builder: (_, __) => const VehicleFormScreen()),
       GoRoute(path: '/vehicle/vehicles/:id', builder: (_, s) => VehicleFormScreen(vehicleId: s.pathParameters['id'])),
       GoRoute(path: '/vehicle/ride-requests', builder: (_, __) => const DriverRideRequestsScreen()),
-      GoRoute(path: '/vehicle/trip/:id', builder: (_, __) => const DriverTripScreen()),
+      // No :id parameter — DriverTripScreen resolves the driver's active ride
+      // itself via RideService.getMyActiveDriverRide(). The route previously
+      // declared `:id`, but both call sites (driver_ride_requests_screen and
+      // vehicle_provider_dashboard) pushed a bare '/vehicle/trip', which does
+      // not match a ':id' route — so a driver who claimed a ride landed on
+      // go_router's "no routes for location" error page instead of the trip.
+      GoRoute(path: '/vehicle/trip', builder: (_, __) => const DriverTripScreen()),
       GoRoute(path: '/vehicle/history', builder: (_, __) => const RideHistoryScreen(isProvider: true)),
 
       // ── Admin ──
