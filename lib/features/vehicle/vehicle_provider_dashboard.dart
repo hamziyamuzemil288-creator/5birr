@@ -310,12 +310,8 @@ class _VehicleProviderDashboardState
                         () => context.push('/vehicle/vehicles/new')),
                     _action(Icons.account_balance_wallet_outlined, 'Wallet',
                         () => context.push('/wallet')),
-                    _action(
-                        Icons.person_outline,
-                        'Profile',
-                        () => ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Coming soon')),
-                            )),
+                    _action(Icons.person_outline, 'Profile',
+                        () => context.push('/profile')),
                   ],
                 ),
               ),

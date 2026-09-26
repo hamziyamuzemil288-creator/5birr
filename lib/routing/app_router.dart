@@ -13,6 +13,7 @@ import '../features/staff/staff_dashboard_screen.dart';
 import '../features/auth/terms_policy_screen.dart';
 import '../features/auth/update_password_screen.dart';
 import '../features/user/user_dashboard.dart';
+import '../features/user/user_profile_screen.dart';
 import '../features/user/user_notifications_screen.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
@@ -231,11 +232,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/update-password',
         builder: (_, __) => const UpdatePasswordScreen(),
-      ),
-      GoRoute(
-        path: '/terms',
+      ),      GoRoute(path: '/terms',
         builder: (_, s) => TermsPolicyScreen(returnToSignup: s.extra == true),
       ),
+      // Standalone profile. UserProfileScreen is normally a tab inside
+      // /user, so providers and vehicle owners had no way to reach their own
+      // account details — both dashboards offered a "Profile" button that
+      // just said "Coming soon". The screen already carries its own Scaffold
+      // and AppBar, so it routes as-is.
+      GoRoute(path: '/profile', builder: (_, __) => const UserProfileScreen()),
       GoRoute(path: '/pending-approval', builder: (_, __) => const PendingApprovalScreen()),
       GoRoute(path: '/rejected', builder: (_, __) => const RejectedScreen()),
 
