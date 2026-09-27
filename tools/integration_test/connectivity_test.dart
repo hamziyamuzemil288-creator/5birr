@@ -107,6 +107,31 @@ void main() {
     });
   });
 
+  group('account status stays in sync with provider status', () {
+    test('no account is gated by a stale suspension status', () async {
+      // suspend_provider set both provider_profiles and profiles to
+      // SUSPENDED; unsuspend_provider restored only provider_profiles. The
+      // profile stayed SUSPENDED forever and the router — which gates on
+      // profiles.status — locked that user out of their own account while the
+      // admin panel showed APPROVED.
+      final synced = await ok('assert_profile_status_synced');
+      if (!synced) {
+        try {
+          final n = await client.rpc('count_status_mismatches');
+          // ignore: avoid_print
+          print('accounts with a stale suspension status: $n');
+        } catch (_) {
+          // Diagnostic is best-effort; the assertion below still fails.
+        }
+      }
+      expect(synced, isTrue,
+          reason: 'profiles.status disagrees with provider_profiles.status '
+              'for at least one account, so someone is either locked out of '
+              'the app or gated as suspended while active. Run '
+              'public.count_status_mismatches() for the number affected.');
+    });
+  });
+
   group('signup OTP gate', () {
     test('gate keys off verified_at, not attempt arithmetic', () async {
       // The bug this guards: verify_email_otp increments `attempts` on every
