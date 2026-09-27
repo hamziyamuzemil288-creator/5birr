@@ -71,6 +71,15 @@ $$;
 -- =========================================================
 -- 2. The fee keys: present, described, and never clobbered
 -- =========================================================
+-- trg_system_settings_security refuses every write unless is_admin(), which is
+-- auth.uid()-derived and therefore false on a migration connection — the first
+-- attempt at this migration died on exactly that, with
+-- `ERROR: SETTINGS_ARE_ADMIN_ONLY` (SQLSTATE P0001) on the INSERT below.
+-- 0028 and then 59 lifted the trigger for their own seed and restored it
+-- immediately; this follows that precedent exactly. The lift is part of the
+-- migration's transaction, so a failure anywhere rolls it back too.
+ALTER TABLE public.system_settings DISABLE TRIGGER trg_system_settings_security;
+
 INSERT INTO public.system_settings (key, value, description) VALUES
   ('transaction_fee_percent', '1'::jsonb,
    'Platform commission taken from each completed order/ride, as a PERCENT of the gross amount. Charged together with transaction_fee_min — the fee is whichever of the two is larger'),
@@ -116,19 +125,33 @@ BEGIN
 END;
 $$;
 
--- The 5 birr monthly subscription/shop fee.  Same approach: only seed if no
--- subscription-shaped key exists yet, because the exact key name is not
--- something this migration should decide for an existing deployment.
+-- The 5 birr monthly subscription/shop fee.  It already exists in this
+-- deployment as `monthly_subscription_fee` (0021) and is already read live by
+-- deduct_subscription_fee(), the revenue scheduler and subscription-process,
+-- so this only backfills the missing description that left it anonymous on
+-- the CEO screen.  The seed below is for a deployment that has no
+-- subscription-shaped key at all; the exact new key name is not something
+-- this migration should impose on a database that already has one.
 DO $$
+DECLARE
+  v_existing text;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM public.system_settings
-     WHERE key ILIKE '%subscription%' OR key ILIKE '%monthly%'
-  ) THEN
+  SELECT key INTO v_existing
+    FROM public.system_settings
+   WHERE key ILIKE '%subscription%' OR key ILIKE '%monthly%'
+   ORDER BY key
+   LIMIT 1;
+
+  IF v_existing IS NULL THEN
     INSERT INTO public.system_settings (key, value, description)
     VALUES ('provider_subscription_fee', '5'::jsonb,
             'Monthly provider subscription/shop fee in birr. Editable live — takes effect for the next billing cycle')
     ON CONFLICT (key) DO NOTHING;
+  ELSE
+    UPDATE public.system_settings
+       SET description = coalesce(description,
+             'Monthly provider subscription/shop fee in birr, charged from the provider wallet. Editable live — the next billing cycle uses the new amount')
+     WHERE key = v_existing AND description IS NULL;
   END IF;
 END;
 $$;
@@ -263,6 +286,10 @@ GRANT EXECUTE ON FUNCTION public.deduct_transaction_fee(uuid, uuid, uuid, numeri
 -- next reader to use the wrong number.  Same precedent as 59 dropping
 -- points_per_trade.
 DELETE FROM public.system_settings WHERE key = 'transaction_fee';
+
+-- Last write to system_settings in this migration; the guard goes back on
+-- before any of the function bodies below are executed by anyone.
+ALTER TABLE public.system_settings ENABLE TRIGGER trg_system_settings_security;
 
 -- =========================================================
 -- 5. Fee writes are CEO-only and validated
@@ -529,6 +556,12 @@ BEGIN
       ('transaction_fee_percent'::text,   'TRANSACTION'::text, true,  0::numeric, 100::numeric),
       ('transaction_fee_min',             'TRANSACTION',         false, 0::numeric, 1000000::numeric),
       ('provider_registration_fee',       'ACTIVATION',          false, 0::numeric, 1000000::numeric),
+      -- The subscription key this deployment actually charges from: it has
+      -- existed since 0021 and is read live by deduct_subscription_fee(), the
+      -- revenue scheduler and subscription-process. Listing it here is what
+      -- gives it a label, bounds and an editor instead of leaving it as an
+      -- anonymous row the CEO cannot find.
+      ('monthly_subscription_fee',        'SUBSCRIPTION',        false, 0::numeric, 1000000::numeric),
       ('provider_subscription_fee',       'SUBSCRIPTION',        false, 0::numeric, 1000000::numeric),
       ('ride_base_fare',                  'RIDE DEFAULTS',       false, 0::numeric, 1000000::numeric),
       ('ride_per_km',                     'RIDE DEFAULTS',       false, 0::numeric, 1000000::numeric),
@@ -545,6 +578,7 @@ BEGIN
    WHERE public.is_fee_key(s.key)
      AND s.key NOT IN ('transaction_fee_percent', 'transaction_fee_min',
                        'provider_registration_fee', 'provider_subscription_fee',
+                       'monthly_subscription_fee',
                        'ride_base_fare', 'ride_per_km', 'ride_minimum_fare')
    ORDER BY 4, 1;
 END;
@@ -648,6 +682,9 @@ BEGIN
   FOREACH v_key IN ARRAY ARRAY[
     'transaction_fee_percent', 'transaction_fee_min',
     'provider_registration_fee',
+    -- deduct_subscription_fee() reads this with no fallback of its own, so a
+    -- missing row there charges nothing and silently breaks subscriptions.
+    'monthly_subscription_fee',
     'ride_base_fare', 'ride_per_km', 'ride_minimum_fare'
   ]
   LOOP

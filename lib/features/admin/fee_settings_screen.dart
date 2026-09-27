@@ -60,6 +60,7 @@ class _Fee {
       'transaction_fee_percent': 'Platform commission',
       'transaction_fee_min': 'Minimum commission',
       'provider_registration_fee': 'Provider activation fee',
+      'monthly_subscription_fee': 'Monthly provider subscription',
       'provider_subscription_fee': 'Monthly provider subscription',
       'ride_base_fare': 'Ride base fare',
       'ride_per_km': 'Ride price per kilometre',
