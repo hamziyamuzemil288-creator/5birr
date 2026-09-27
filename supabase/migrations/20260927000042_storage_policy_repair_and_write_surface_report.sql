@@ -91,7 +91,7 @@ DROP POLICY IF EXISTS "payment-screenshots_owner_update" ON storage.objects;
 DROP POLICY IF EXISTS "payment-screenshots_owner_delete" ON storage.objects;
 
 DROP POLICY IF EXISTS payment_screenshots_insert ON storage.objects;
-CREATE POLICY payment_screenshots_insert 
+CREATE POLICY payment_screenshots_insert ON storage.objects
   FOR INSERT TO authenticated
   WITH CHECK (
     bucket_id = 'payment-screenshots'
@@ -99,7 +99,7 @@ CREATE POLICY payment_screenshots_insert
   );
 
 DROP POLICY IF EXISTS payment_screenshots_select_own ON storage.objects;
-CREATE POLICY payment_screenshots_select_own 
+CREATE POLICY payment_screenshots_select_own ON storage.objects
   FOR SELECT TO authenticated
   USING (
     bucket_id = 'payment-screenshots'
@@ -107,7 +107,7 @@ CREATE POLICY payment_screenshots_select_own
   );
 
 DROP POLICY IF EXISTS payment_screenshots_admin_read ON storage.objects;
-CREATE POLICY payment_screenshots_admin_read 
+CREATE POLICY payment_screenshots_admin_read ON storage.objects
   FOR SELECT TO authenticated
   USING (
     bucket_id = 'payment-screenshots'
@@ -119,7 +119,7 @@ CREATE POLICY payment_screenshots_admin_read
 
 -- Closes the upsert gap, and lets a user replace a proof they uploaded wrong.
 DROP POLICY IF EXISTS payment_screenshots_update_own ON storage.objects;
-CREATE POLICY payment_screenshots_update_own 
+CREATE POLICY payment_screenshots_update_own ON storage.objects
   FOR UPDATE TO authenticated
   USING (
     bucket_id = 'payment-screenshots'
@@ -131,7 +131,7 @@ CREATE POLICY payment_screenshots_update_own
   );
 
 DROP POLICY IF EXISTS payment_screenshots_delete_own ON storage.objects;
-CREATE POLICY payment_screenshots_delete_own 
+CREATE POLICY payment_screenshots_delete_own ON storage.objects
   FOR DELETE TO authenticated
   USING (
     bucket_id = 'payment-screenshots'
@@ -147,7 +147,7 @@ DROP POLICY IF EXISTS "payment-proofs_owner_insert" ON storage.objects;
 DROP POLICY IF EXISTS "payment-proofs_owner_or_admin_read" ON storage.objects;
 
 DROP POLICY IF EXISTS user_documents_update_own ON storage.objects;
-CREATE POLICY user_documents_update_own 
+CREATE POLICY user_documents_update_own ON storage.objects
   FOR UPDATE TO authenticated
   USING (
     bucket_id = 'user-documents'
@@ -159,7 +159,7 @@ CREATE POLICY user_documents_update_own
   );
 
 DROP POLICY IF EXISTS payment_proofs_update_own ON storage.objects;
-CREATE POLICY payment_proofs_update_own 
+CREATE POLICY payment_proofs_update_own ON storage.objects
   FOR UPDATE TO authenticated
   USING (
     bucket_id = 'payment-proofs'
@@ -171,7 +171,7 @@ CREATE POLICY payment_proofs_update_own
   );
 
 DROP POLICY IF EXISTS payment_proofs_delete_own ON storage.objects;
-CREATE POLICY payment_proofs_delete_own 
+CREATE POLICY payment_proofs_delete_own ON storage.objects
   FOR DELETE TO authenticated
   USING (
     bucket_id = 'payment-proofs'
