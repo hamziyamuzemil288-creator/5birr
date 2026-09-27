@@ -521,7 +521,7 @@ void main() {
       expect(await ok('assert_staff_password_changes_are_audited'), isTrue,
           reason: 'A self-service password change must be recorded in '
               'staff_activity_log against the real actor (not NULL), as an '
-              ''access'' event, with no password in the detail — and the '
+              '"access" event, with no password in the detail — and the '
               '4-argument log_staff_activity() must still mean "the caller".');
     });
 
