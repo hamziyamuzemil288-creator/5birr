@@ -582,18 +582,23 @@ void main() {
       // the report prints and why it fails when it cannot.
       //
       // Judging a policy is a product decision, so this prints both
-      // expression columns and lets a human read them.
+      // expression columns, the roles the policy applies to, and lets a human
+      // read them. The roles are not decoration: `WITH CHECK (true)` that
+      // belongs to PUBLIC was the user_roles escalation, and the identical
+      // `CHECK: true` on a policy scoped TO service_role is unreachable rather
+      // than dangerous. Without the roles the two read the same.
       final rows = await client.rpc('client_write_policy_detail');
       expect(rows, isA<List>(), reason: 'client_write_policy_detail failed; a '
           'broken report is a finding, not a pass.');
       final wide = <String>[];
       for (final row in (rows as List)) {
         final r = Map<String, dynamic>.from(row as Map);
+        final roles = '${r['roles'] ?? ''}';
         final using = '${r['using_expr'] ?? ''}';
         final check = '${r['check_expr'] ?? ''}';
         // ignore: avoid_print
         print('WRITE POLICY | ${r['verdict'] == 'WIDE' ? 'WIDE ' : '      '}'
-            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']}'
+            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']} · to $roles'
             '${using.isEmpty ? '' : '\n          USING: $using'}'
             '${check.isEmpty ? '' : '\n          CHECK: $check'}');
         if (r['verdict'] == 'WIDE') wide.add('${r['table_name']} (${r['cmd']})');
@@ -602,6 +607,34 @@ void main() {
       print('WRITE POLICY | WIDE count: ${wide.length}');
       // ignore: avoid_print
       print('WRITE POLICY | wide list: ${wide.join(', ')}');
+    });
+
+    test('the client write surface is closed, not just reported', () async {
+      // The test above prints; this one decides. Turning the report into an
+      // assertion is only safe once its numbers have been read, and they now
+      // have: the first clean run printed four WIDE rows. Two were real and are
+      // fixed in 20260927000046 -- `Service role can insert roles` on
+      // user_roles is WITH CHECK (true) on PUBLIC, so any signed-in user could
+      // insert themselves an ADMIN row with the anon key that ships in the app
+      // bundle and hold every admin policy in the schema, and email_otp_codes
+      // let a client seed its own verification row and pass the signup gate
+      // without receiving any email. The other two were artifacts of the
+      // report's own rule (a missing WITH CHECK means USING for the written
+      // row, and a policy no client role reaches is not a finding), and were
+      // fixed in the report instead of in the schema.
+      //
+      // Both halves are asserted together because either alone is insufficient
+      // and reports success: a table grant with no write policy still fails in
+      // RLS, and a permissive policy on a table a client cannot write is
+      // unreachable.
+      expect(await ok('assert_client_write_surface_is_closed'), isTrue,
+          reason: 'Either a client role can write user_roles, email_otp_codes '
+              'or order_items again, or a write policy that a client reaches '
+              'has an expression that never mentions the caller. The first is '
+              'privilege escalation — a user_roles row with role=ADMIN is '
+              'is_admin() for every policy in the schema. Run '
+              'public.client_write_policy_detail() for the offending policy '
+              'and its roles.');
     });
 
     test('a staff password change leaves a record of who did it', () async {
