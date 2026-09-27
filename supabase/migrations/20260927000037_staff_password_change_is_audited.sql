@@ -228,7 +228,7 @@ $$;
 COMMENT ON FUNCTION public.assert_staff_password_changes_are_audited() IS
   'Requires a self-service password change to be recorded in '
   'staff_activity_log against the ACTUAL actor rather than a NULL one, as an '
-  ''access'' event, carrying no password, and requires the 4-argument form of '
+  '"access" event, carrying no password, and requires the 4-argument form of '
   'log_staff_activity() to keep meaning "the caller".';
 
 GRANT EXECUTE ON FUNCTION public.assert_staff_password_changes_are_audited()
