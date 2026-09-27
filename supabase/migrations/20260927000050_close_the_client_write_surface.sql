@@ -104,7 +104,7 @@ BEGIN
       AND NOT (c.relname = ANY (c_expected))
     ORDER BY c.relname
   LOOP
-    FOR r IN ARRAY c_roles LOOP
+    FOREACH r IN ARRAY c_roles LOOP
       FOREACH p IN ARRAY c_privs LOOP
         IF has_table_privilege(r, t, p) THEN
           -- Unqualified table name, unqualified privilege, role as text.
