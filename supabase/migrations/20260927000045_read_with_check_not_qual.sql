@@ -47,6 +47,19 @@
 -- a policy that scopes USING but not WITH CHECK is visible as such rather
 -- than hidden behind a single label.
 
+-- DROP first, and this is not optional. 20260927000044 created this function
+-- returning (table_name, cmd, policy_name, qual, verdict). This one returns
+-- (table_name, cmd, policy_name, using_expr, check_expr, verdict), and
+-- CREATE OR REPLACE REFUSES to change the return type of an existing function:
+--
+--   ERROR: cannot change return type of existing function (SQLSTATE 42P13)
+--
+-- Adding a column to a RETURNS TABLE result is a change of return type, not a
+-- compatible replacement, so the replacement is rejected however similar it
+-- looks. The name and the arguments are unchanged, so the Dart caller needs no
+-- edit -- only the definition is rebuilt.
+DROP FUNCTION IF EXISTS public.client_write_policy_detail();
+
 CREATE OR REPLACE FUNCTION public.client_write_policy_detail()
 RETURNS TABLE (
   table_name text,
