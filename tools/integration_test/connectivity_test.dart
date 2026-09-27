@@ -568,6 +568,38 @@ void main() {
               'from test/client_write_surface_test.dart, which pins 20.');
     });
 
+    test('REPORT: every client write policy, quoted', () async {
+      // The summary buckets classify; this one quotes. The "unguarded" bucket
+      // turned out to be 90% noise -- it flags the absence of is_admin(), but
+      // for a user-owned table is_admin() is the wrong check and cart_items,
+      // favorites and order_messages are correctly scoped to auth.uid(). The
+      // one that mattered, email_otp_codes, is WITH CHECK (true) with no
+      // SELECT, UPDATE or DELETE, and is deliberate: anonymous signup must
+      // request a code before it has a session.
+      //
+      // Judging that required reading the policy, and reading it from the
+      // migration files is unreliable -- 20260927000014 drops a policy 0002
+      // created, and only the database knows which won. So this prints the
+      // enforced expression for every one, and a human decides.
+      final rows = await client.rpc('client_write_policy_detail');
+      expect(rows, isA<List>(), reason: 'client_write_policy_detail failed; a '
+          'broken report is a finding, not a pass.');
+      final wide = <String>[];
+      for (final row in (rows as List)) {
+        final r = Map<String, dynamic>.from(row as Map);
+        final line = '${r['verdict'] == 'WIDE' ? 'WIDE ' : '      '}'
+            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']}\n'
+            '        ${r['qual']}';
+        // ignore: avoid_print
+        print('WRITE POLICY | $line');
+        if (r['verdict'] == 'WIDE') wide.add('${r['table_name']} (${r['cmd']})');
+      }
+      // ignore: avoid_print
+      print('WRITE POLICY | WIDE count: ${wide.length}');
+      // ignore: avoid_print
+      print('WRITE POLICY | wide list: ${wide.join(', ')}');
+    });
+
     test('a staff password change leaves a record of who did it', () async {
       // Self-service password change is the one consequential act a staff
       // member can take on their own account, and it wrote nothing anywhere.
