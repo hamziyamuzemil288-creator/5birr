@@ -185,6 +185,25 @@ void main() {
     });
   });
 
+  group('client-write guards do not block the server', () {
+    test('order and notification guards exempt server roles', () async {
+      // These guards gate on is_admin() = auth.uid(), which is NULL for
+      // anything the server does, so each one rejected the server's own
+      // writes.
+      //
+      // The order INSERT guard is the serious one: it required new.status
+      // = 'CREATED', and create_order_secure now inserts PENDING_PROVIDER,
+      // so it would reject every order the app creates with
+      // ORDERS_MUST_START_AS_CREATED. The notification guard rejected
+      // pg_cron, which is what aborts the daily subscription run on its
+      // overdue-notification path.
+      expect(await ok('assert_client_guards_are_server_safe'), isTrue,
+          reason: 'An order or notification write guard is no longer '
+              'client-scoped, so the server is refused its own writes — which '
+              'means orders cannot be created, or the billing job aborts.');
+    });
+  });
+
   group('provider status: server may change it, clients may not', () {
     test('the self-approval guard exempts server roles only', () async {
       // The guard reads is_admin(), which is auth.uid() — NULL for anything
