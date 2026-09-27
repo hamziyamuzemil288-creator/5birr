@@ -185,6 +185,23 @@ void main() {
     });
   });
 
+  group('suspended providers cannot trade', () {
+    test('orders are refused for providers that are not APPROVED', () async {
+      // Suspension gated the provider out of the app, hid their products
+      // from search, and stopped them publishing — but nothing stopped an
+      // order being created against a listing that was already ACTIVE. A
+      // saved cart or a direct product link still went through, so a
+      // suspended provider kept taking work and still earned the fee.
+      //
+      // That also made non-payment pointless: get suspended for an unpaid
+      // subscription fee, then keep trading regardless.
+      expect(await ok('assert_orders_block_unapproved_providers'), isTrue,
+          reason: 'create_order_secure no longer refuses providers that are '
+              'not APPROVED, so a suspended provider can still receive and '
+              'be paid for orders.');
+    });
+  });
+
   group('order lifecycle has no dead ends', () {
     test('every order status can be advanced out of', () async {
       // Two dead ends lived here for a long time and neither was covered:

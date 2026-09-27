@@ -113,6 +113,42 @@ Deno.serve(async (req: Request) => {
     // passed through as the order owner.
     const admin = getAdminClient();
 
+    // The provider must be APPROVED before any order is accepted.
+    //
+    // Search already hides a non-approved provider's products (the search
+    // functions join provider_profiles on status = 'APPROVED') and a trigger
+    // stops a suspended provider from publishing new listings, but neither
+    // retracts listings that were already ACTIVE. A customer holding a
+    // direct link to a product page, or an item already sitting in their
+    // cart from before the suspension, could still place the order — so a
+    // suspended provider kept taking work and earning fees.
+    //
+    // Checked before the item loop so the refusal is one clear message
+    // rather than a per-product "not available" that reads like the item
+    // sold out.
+    const { data: provider, error: providerError } = await admin
+      .from("provider_profiles")
+      .select("id, status")
+      .eq("id", body.provider_id)
+      .maybeSingle();
+
+    if (providerError) {
+      console.error("order-create: provider lookup failed", providerError);
+      return json({ error: "Failed to validate the provider" }, 500);
+    }
+    if (!provider) {
+      return json({ error: "Provider not found" }, 404);
+    }
+    if (provider.status !== "APPROVED") {
+      return json(
+        {
+          error:
+            "This provider is not currently accepting orders. Please try again later.",
+        },
+        409
+      );
+    }
+
     const productIds = cleanedItems.map((i) => i.product_id);
     const { data: products, error: productsError } = await admin
       .from("products")
