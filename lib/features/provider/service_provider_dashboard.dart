@@ -6,6 +6,8 @@ import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/points_service.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -22,6 +24,7 @@ class _ServiceProviderDashboardState
   int _points = 0;
   double? _walletBalance;
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -69,10 +72,16 @@ class _ServiceProviderDashboardState
           _points = points;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your dashboard');
+        });
+      }
     }
   }
 
@@ -97,7 +106,9 @@ class _ServiceProviderDashboardState
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20),

@@ -9,6 +9,7 @@ import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/points_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -25,6 +26,7 @@ class _VehicleProviderDashboardState
   int _points = 0;
   double? _walletBalance;
   bool _loading = true;
+  String? _error;
   bool _togglingOnline = false;
   StreamSubscription? _posSub;
 
@@ -74,6 +76,7 @@ class _VehicleProviderDashboardState
           _points = points;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();
           _loading = false;
+          _error = null;
         });
       }
       // Resume GPS pushes for an already-online driver. Updates used to start
@@ -84,7 +87,12 @@ class _VehicleProviderDashboardState
         _startLocationUpdates(prov['id'] as String);
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your dashboard');
+        });
+      }
     }
   }
 
@@ -190,7 +198,9 @@ class _VehicleProviderDashboardState
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppTheme.teal))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20),

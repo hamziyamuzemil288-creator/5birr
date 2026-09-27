@@ -21,6 +21,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _totalProducts = 0;
   int _totalOrders = 0;
   int _openAppeals = 0;
+  int _openDisputes = 0;
   double _totalIncome = 0;
   // my_admin_permissions() returns ['*'] for the true Admin/CEO — i.e. every
   // card visible — and the explicit list for staff, who then see only their
@@ -59,6 +60,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       count(() => client.from('products').select('id').count(CountOption.exact)),
       count(() => client.from('orders').select('id').inFilter('status', ['APPROVED', 'STARTED', 'COMPLETED']).count(CountOption.exact)),
       count(() => client.from('appeal_cases').select('id').eq('status', 'OPEN').count(CountOption.exact)),
+      // Open order disputes. These are NOT appeal_cases: only an admin can
+      // move an order out of DISPUTED, so without a count here an open
+      // dispute is invisible from the dashboard entirely.
+      count(() => client.from('orders').select('id').eq('status', 'DISPUTED').count(CountOption.exact)),
     ]);
 
     // Section visibility for the signed-in principal (fail-open to '*' is
@@ -101,6 +106,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         _totalProducts = results[5];
         _totalOrders = results[6];
         _openAppeals = results[7];
+        _openDisputes = results[8];
         _totalIncome = income;
         _loading = false;
       });
@@ -379,6 +385,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                     ? '$_openAppeals open case${_openAppeals == 1 ? '' : 's'}'
                                     : 'User appeals & reports',
                                 () => context.push('/admin/appeals')),
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.report_gmailerrorred_outlined, 'Disputes',
+                                _openDisputes > 0
+                                    ? '$_openDisputes open dispute${_openDisputes == 1 ? '' : 's'}'
+                                    : 'Refund or uphold',
+                                () => context.push('/admin/disputes')),
                           if (_can('admin_history'))
                             _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
                           // Phase 2: staff management (server-side RBAC; the

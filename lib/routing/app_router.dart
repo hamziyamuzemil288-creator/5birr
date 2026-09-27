@@ -52,6 +52,7 @@ import '../features/admin/admin_expense_screen.dart';
 import '../features/admin/admin_reports_screen.dart';
 import '../features/admin/admin_support_tickets_screen.dart';
 import '../features/admin/admin_appeals_screen.dart';
+import '../features/admin/admin_disputes_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/appeal/appeal_screen.dart';
@@ -338,6 +339,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/reports', builder: (_, __) => const AdminReportsScreen()),
       GoRoute(path: '/admin/support-tickets', builder: (_, __) => const AdminSupportTicketsScreen()),
       GoRoute(path: '/admin/appeals', builder: (_, __) => const AdminAppealsScreen()),
+      GoRoute(path: '/admin/disputes', builder: (_, __) => const AdminDisputesScreen()),
       GoRoute(path: '/admin/history', builder: (_, __) => const AdminHistoryScreen()),
       GoRoute(path: '/admin/staff', builder: (_, __) => const AdminStaffScreen()),
       // Task 3: role management console (true-Admin-only page + per-staff
