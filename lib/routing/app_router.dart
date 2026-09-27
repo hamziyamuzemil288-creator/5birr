@@ -59,6 +59,7 @@ import '../features/appeal/appeal_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
+import '../features/approval/suspended_screen.dart';
 import '../features/vehicle/driver_ride_requests_screen.dart';
 import '../features/vehicle/driver_trip_screen.dart';
 import '../features/user/user_ride_request_screen.dart';
@@ -181,6 +182,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         if (authState.isRejected && !isApprovalRoute) {
           return '/rejected';
         }
+        // SUSPENDED and INACTIVE matched none of the checks above, so these
+        // accounts fell through to a fully working dashboard with no
+        // explanation. The revenue scheduler sets provider status to
+        // SUSPENDED on its own when a subscription fee cannot be paid, so
+        // this is reachable without the user doing anything.
+        if (authState.isSuspendedOrInactive && !isApprovalRoute) {
+          return '/suspended';
+        }
       }
 
       // Approval resolved (e.g. admin approved while the user sat on the
@@ -245,6 +254,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/profile', builder: (_, __) => const UserProfileScreen()),
       GoRoute(path: '/pending-approval', builder: (_, __) => const PendingApprovalScreen()),
       GoRoute(path: '/rejected', builder: (_, __) => const RejectedScreen()),
+      GoRoute(path: '/suspended', builder: (_, __) => const SuspendedScreen()),
 
       // ── User ──
       GoRoute(path: '/user', builder: (_, __) => const UserDashboard()),
@@ -372,5 +382,5 @@ String _getDashboardPath(AuthState auth) {
 }
 
 bool _isApprovalRoute(String path) {
-  return path == '/pending-approval' || path == '/rejected';
+  return path == '/pending-approval' || path == '/rejected' || path == '/suspended';
 }

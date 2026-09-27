@@ -69,6 +69,22 @@ class AuthState {
       profile != null && profile!.status == 'PENDING_APPROVAL';
   bool get isApproved => profile != null && profile!.status == 'APPROVED';
   bool get isRejected => profile != null && profile!.status == 'REJECTED';
+
+  /// SUSPENDED and INACTIVE are terminal account states that the router must
+  /// gate. They used to match none of the checks above, so a suspended user
+  /// landed on a normal dashboard with no indication anything was wrong —
+  /// even though `suspend_provider` had emailed them "Account suspended" and
+  /// the revenue scheduler sets SUSPENDED on its own when a subscription fee
+  /// cannot be paid.
+  ///
+  /// INACTIVE is grouped here deliberately: it is the same user-facing
+  /// outcome (no access, needs a human) and nothing in the app transitions
+  /// between the two.
+  bool get isSuspendedOrInactive {
+    if (profile == null) return false;
+    const blocked = {'SUSPENDED', 'INACTIVE'};
+    return blocked.contains(profile!.status);
+  }
 }
 
 /// Auth state notifier managing Supabase auth + profile + roles.
