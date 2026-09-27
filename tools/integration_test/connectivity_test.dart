@@ -107,6 +107,19 @@ void main() {
     });
   });
 
+  group('signup OTP gate', () {
+    test('gate keys off verified_at, not attempt arithmetic', () async {
+      // The bug this guards: verify_email_otp increments `attempts` on every
+      // guess, so a user who typed their code correctly on the third try was
+      // told { ok: true } and then rejected at account creation with
+      // EMAIL_OTP_REQUIRED. The gate must not infer success from attempts.
+      expect(await ok('assert_otp_gate_uses_verified_at'), isTrue,
+          reason: 'otp_verified_recently no longer keys off verified_at, so '
+              'the signup gate is back to rejecting correctly-typed codes '
+              'that needed more than one attempt.');
+    });
+  });
+
   group('PostgREST embeds are backed by real foreign keys', () {
     test('every relationship the app embeds resolves', () async {
       // supabase_flutter embeds with `select('a, child(b)')`, which PostgREST
