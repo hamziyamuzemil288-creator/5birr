@@ -157,8 +157,13 @@ class _State extends State<ProviderSubscriptionScreen> {
       return (
         color: AppTheme.error,
         label: 'Suspended',
+        // The daily billing job picks up SUSPENDED subscriptions again, so a
+        // wallet that now covers the fee is charged and the account comes back
+        // on its own — no support ticket needed. Previously nothing re-read a
+        // SUSPENDED row, so paying did nothing and this copy had to tell
+        // people to contact support instead.
         blurb:
-            'Your account is suspended because a subscription payment was missed. Recharge your wallet and contact support to reactivate.',
+            'Your account is suspended because a subscription payment was missed. Recharge your wallet to at least the monthly fee — your account is reactivated automatically once the payment goes through.',
       );
     }
     if (sub.isGrace) {
