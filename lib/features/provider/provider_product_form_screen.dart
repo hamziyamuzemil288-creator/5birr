@@ -254,12 +254,26 @@ class _State extends State<ProviderProductFormScreen> {
         productId = created['id'] as String;
       }
 
-      // Upload new images
+      // Upload new images.
+      //
+      // The path MUST start with the caller's own auth uid: the storage
+      // policies match the object NAME inside the bucket, and every write
+      // policy on this bucket scopes the object to auth.uid(). It previously
+      // read 'product-images/$productId/...', which put the BUCKET name in
+      // the first segment -- that only worked because migration 0033 had
+      // widened the INSERT policy to `bucket_id = 'product-images'` with no
+      // path check at all, which also let any signed-in account overwrite any
+      // provider's listing photo. 20260927000048 restores the owner check, so
+      // the two halves land together.
+      final uid = client.auth.currentUser?.id;
+      if (uid == null) {
+        throw Exception('Not signed in — cannot upload listing images');
+      }
       for (var i = 0; i < _newImages.length; i++) {
         final file = _newImages[i];
         final fileName =
             '${productId}_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final path = 'product-images/$productId/$fileName';
+        final path = '$uid/$productId/$fileName';
         await client.storage
             .from('product-images')
             .upload(path, file, fileOptions: const FileOptions(upsert: true));

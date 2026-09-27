@@ -511,18 +511,29 @@ void main() {
               'not.');
     });
 
-    test('private storage buckets are scoped to their owner', () async {
+    test('storage writes stay in the caller\'s own folder', () async {
       // Migration 0033 created a second, looser set of policies on three
       // private buckets, and RLS policies OR together -- so the looser set won.
       // One of its disjuncts was a copy-paste from the wrong bucket, letting
       // any signed-in user write outside their own folder in a private
       // bucket. Not readable back, so not a leak, but it breaks the {uid}/
       // invariant every document path depends on.
-      expect(await ok('assert_private_buckets_are_owner_scoped'), isTrue,
-          reason: 'A write policy on user-documents, payment-screenshots or '
-              'payment-proofs is not scoped to the caller''s own folder, or '
-              'one of them also allows a path in a different bucket. The '
-              'removed copy-paste did exactly that.');
+      //
+      // The same migration also replaced product_images_insert with
+      // WITH CHECK (bucket_id = 'product-images') and no path check, which the
+      // assertion could not see: it read pg_policies.qual, and an INSERT
+      // policy has no USING clause, so its rule -- all of it -- is invisible
+      // there. product-images is a PUBLIC bucket, so the consequence was not a
+      // leak but a write: any signed-in account could overwrite any provider's
+      // listing photo, and buyers would be served it immediately. Both halves
+      // are covered now.
+      expect(await ok('assert_bucket_writes_are_owner_scoped'), isTrue,
+          reason: 'A write policy on user-documents, payment-screenshots, '
+              'payment-proofs or product-images is not scoped to the caller''s '
+              'own folder, or one of them also allows a path in a different '
+              'bucket. 0033 shipped both mistakes -- the second as a copy-paste '
+              'in the private buckets, and the first as a public bucket anyone '
+              'could write to.');
     });
 
     test('REPORT: the client write surface', () async {
@@ -607,6 +618,27 @@ void main() {
       print('WRITE POLICY | WIDE count: ${wide.length}');
       // ignore: avoid_print
       print('WRITE POLICY | wide list: ${wide.join(', ')}');
+    });
+
+    test('a job change is recorded wherever it is made', () async {
+      // The CEO's staff editor grants and revokes jobs through update_staff(),
+      // and set_staff_jobs() -- the only call that wrote job history -- had no
+      // caller anywhere in lib/. The staff member's "My jobs" list still
+      // filled in, because my_staff_record() builds it from staff.permissions;
+      // what stayed empty was job_history, which it reads from
+      // staff_job_assignments. So the history card rendered nothing for every
+      // job the console ever granted, and a missing record is invisible in a
+      // way a missing screen is not.
+      //
+      // Behavioural on purpose. A trigger-exists check would have passed on the
+      // broken system, because the bug was a record that never happened on the
+      // path the app takes, not a function that was wrong.
+      expect(await ok('assert_staff_job_changes_are_recorded'), isTrue,
+          reason: 'A job granted or removed through update_staff() -- the call '
+              'the CEO staff editor makes -- left no staff_job_assignments '
+              'row, or a removal wrote a second row instead of closing the '
+              'open one, or an edit that changed no job wrote history anyway. '
+              'The staff workspace history card reads those rows.');
     });
 
     test('the client write surface is closed, not just reported', () async {
