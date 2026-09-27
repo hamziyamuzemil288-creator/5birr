@@ -190,6 +190,13 @@ class _VerificationStatusTileState extends State<VerificationStatusTile> {
 /// What the tile shows for a given state. Split out so every state is spelled
 /// out in one place and cannot quietly converge on the same visuals — which is
 /// precisely the bug this widget exists to prevent.
+///
+/// SUBTITLES ARE DELIBERATELY SHORT. This is a list row inside a Column, and
+/// the regression test pumps it at a 2.0 text scale in a 320x480 viewport,
+/// where the flexible column gets 216px. A two-sentence subtitle wraps to five
+/// lines there and overflows by 10px — caught in CI the first time these
+/// states were written, with a rendering exception and no visible cause. Say
+/// one thing; the profile screen and the admin screen carry the detail.
 class _TileVisual {
   const _TileVisual({
     required this.icon,
@@ -230,8 +237,7 @@ _TileVisual _visualFor(DocReviewState? status) {
         icon: Icons.hourglass_top_rounded,
         color: AppTheme.info,
         title: 'ID awaiting review',
-        subtitle: 'We received your document. Our team checks it shortly — '
-            'you can keep working meanwhile.',
+        subtitle: 'Received — our team is checking it now.',
         chip: 'In review',
       );
     case DocReviewState.rejected:
@@ -239,8 +245,7 @@ _TileVisual _visualFor(DocReviewState? status) {
         icon: Icons.gpp_bad_outlined,
         color: AppTheme.error,
         title: 'ID not accepted',
-        subtitle: 'Our team could not accept your document. Tap to upload a '
-            'clearer one.',
+        subtitle: 'Not accepted. Tap to upload a clearer one.',
         chip: 'Rejected',
       );
     case DocReviewState.flagged:
@@ -248,8 +253,7 @@ _TileVisual _visualFor(DocReviewState? status) {
         icon: Icons.report_problem_outlined,
         color: AppTheme.error,
         title: 'ID under investigation',
-        subtitle: 'Your document was flagged for a manual check. Our team '
-            'will be in touch.',
+        subtitle: 'Flagged for a manual check by our team.',
         chip: 'Flagged',
       );
     case DocReviewState.none:
