@@ -277,6 +277,28 @@ void main() {
     });
   });
 
+  group('a user cannot approve their own account', () {
+    test('a non-admin is refused when they try to set their status to APPROVED', () async {
+      // profiles_update_own is FOR UPDATE USING (id = auth.uid()) with no
+      // column restriction, so a user can write any column of their own row
+      // including status. The guard meant to stop that,
+      // prevent_profile_self_privilege_escalation, branched on
+      // current_user inside a SECURITY DEFINER trigger — where current_user
+      // is the function owner for every caller. It returned on its first
+      // line, so the check never ran and any authenticated user could
+      // PATCH /rest/v1/profiles?id=eq.<their uid> with {"status":"APPROVED"}
+      // and approve their own account. The anon key ships in the app bundle.
+      //
+      // Every other assertion in this suite reads pg_proc.prosrc, and the
+      // inert guard had all the right-looking strings in it. This one
+      // performs the attack instead.
+      expect(await ok('assert_profile_self_approval_is_refused'), isTrue,
+          reason: 'A non-admin was able to set their own profile status to '
+              'APPROVED, or profiles.city is no longer writable by its '
+              'owner. The first is self-approval of the whole account.');
+    });
+  });
+
   group('server-mediated admin actions can authorize', () {
     test('the six edge-function RPCs accept service_role and still refuse clients',
         () async {
