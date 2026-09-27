@@ -532,23 +532,40 @@ void main() {
       // 20260927000014 is visible in both, and only the database knows which
       // won.
       //
-      // This is deliberately print-only. Failing the build on a number nobody
-      // has seen yet would turn the pipeline red for a reason nobody can act
-      // on. Once the report has been read and the unexpected entries
-      // triaged, this becomes a real assertion and the expected list in
-      // client_write_surface_report() becomes the contract.
-      try {
-        final rows = await client.rpc('client_write_surface_report');
-        for (final row in (rows as List)) {
-          final r = Map<String, dynamic>.from(row as Map);
-          final names = (r['tables'] as List?)?.cast<String>() ?? const [];
-          // ignore: avoid_print
-          print('WRITE SURFACE [${r['kind']}] (${names.length}): ${names.join(', ')}');
-        }
-      } catch (e) {
-        // ignore: avoid_print
-        print('write surface report unavailable: $e');
+      // This is deliberately print-only on the NUMBERS. Failing the build on a
+      // count nobody has read yet would turn the pipeline red for a reason
+      // nobody can act on. Once the report has been read and the unexpected
+      // entries triaged, the numbers become the contract and this becomes a
+      // real assertion.
+      //
+      // It is NOT silent about the report itself failing, which is what it used
+      // to do. The first run of this test went green while the report printed
+      // "relation public.objects does not exist" -- the whole point of the
+      // work produced no output and nothing noticed. A broken safety net must
+      // not read as good news, so the call is unguarded and the report must
+      // return one row per kind.
+      final rows = await client.rpc('client_write_surface_report');
+      expect(rows, isA<List>(), reason: 'client_write_surface_report did not '
+          'return a list -- the report is broken, and a broken report is the '
+          'finding, not a pass.');
+      final byKind = <String, List<String>>{};
+      for (final row in (rows as List)) {
+        final r = Map<String, dynamic>.from(row as Map);
+        byKind['${r['kind']}'] = (r['tables'] as List?)?.cast<String>() ?? const [];
       }
+      for (final kind in const ['expected', 'unexpected', 'unguarded']) {
+        final names = byKind[kind];
+        // ignore: avoid_print
+        print('WRITE SURFACE [$kind] (${names?.length ?? -1}): ${names?.join(', ')}');
+        expect(names, isNotNull,
+            reason: 'client_write_surface_report returned no "$kind" row, so '
+                'it is not reporting what it claims to. The safety net is '
+                'reporting silence as success.');
+      }
+      expect(byKind['expected'], hasLength(20),
+          reason: 'The expected list in client_write_surface_report() is the '
+              'contract for what the app writes client-side. It has drifted '
+              'from test/client_write_surface_test.dart, which pins 20.');
     });
 
     test('a staff password change leaves a record of who did it', () async {
