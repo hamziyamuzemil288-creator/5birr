@@ -106,4 +106,31 @@ void main() {
               'delivery flows lose the data.');
     });
   });
+
+  group('PostgREST embeds are backed by real foreign keys', () {
+    test('every relationship the app embeds resolves', () async {
+      // supabase_flutter embeds with `select('a, child(b)')`, which PostgREST
+      // resolves through a foreign key only. It does not infer a relationship
+      // because two tables point at the same auth.users row — so
+      // `provider_profiles(profiles(...))` breaks unless a real FK exists.
+      //
+      // When this fails, the missing pair is worth reporting: a screen whose
+      // embed is invalid gets PGRST201 and renders an error (or, before load
+      // -failure handling, an empty list that looked like "no data").
+      final okEmbeds = await ok('assert_embed_relationships_exist');
+      if (!okEmbeds) {
+        try {
+          final missing = await client.rpc('missing_embed_relationships');
+          // ignore: avoid_print
+          print('missing embed relationships: $missing');
+        } catch (_) {
+          // The diagnostic RPC is best-effort; the assertion below still fails.
+        }
+      }
+      expect(okEmbeds, isTrue,
+          reason: 'At least one PostgREST relationship the app embeds is not '
+              'backed by a foreign key, so those screens error with PGRST201. '
+              'Run public.missing_embed_relationships() for the pair names.');
+    });
+  });
 }
