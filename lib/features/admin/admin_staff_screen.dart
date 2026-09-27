@@ -903,6 +903,19 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
+  /// Manage the job catalogue: add a job, retire one.
+  ///
+  /// Separate from the staff list on purpose. Adding a job is not editing a
+  /// person, and putting it in the staff editor meant the only way to extend
+  /// the catalogue was a migration — which is the same dead end as the CHECK
+  /// constraint this replaced, one layer up.
+  Future<void> _openJobManager() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _JobManagerDialog(onChanged: _load),
+    );
+  }
+
   /// Sends a warning: reason + severity, in one dialog.
   ///
   /// The reason is required and cannot be a single character. A warning with
@@ -1111,7 +1124,20 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Roles & Staff')),
+      appBar: AppBar(
+        title: const Text('Roles & Staff'),
+        actions: [
+          // The job list is MANAGED, not fixed. Without this the only way to
+          // add a job was to write a migration, so in practice the catalogue
+          // was as frozen as the CHECK constraint it replaced.
+          if (_isCeo || _isSuperAdmin)
+            IconButton(
+              tooltip: 'Manage jobs',
+              onPressed: _openJobManager,
+              icon: const Icon(Icons.work_outline),
+            ),
+        ],
+      ),
       floatingActionButton: (_isCeo || _isSuperAdmin)
           ? FloatingActionButton.extended(
               onPressed: () => _openEditor(),
@@ -1357,6 +1383,305 @@ class TypedConfirmDialogState extends State<TypedConfirmDialog> {
           child: Text(widget.actionLabel),
         ),
       ],
+    );
+  }
+}
+
+/// Manages the job catalogue itself: add a job, retire a job.
+///
+/// This exists because "the job must be selectable, not fixed" is only half
+/// true if the set of jobs is still whatever a migration last seeded. Until
+/// this dialog shipped, picking a job was easy and CHOOSING WHICH jobs exist
+/// still required a deploy — the catalogue was frozen one layer up from the
+/// CHECK constraint 20260927000034 removed.
+///
+/// Retired jobs stay listed (greyed, with their holder count) rather than
+/// disappearing. A list that silently drops what it retired is how a job
+/// someone still remembers comes back as a duplicate months later.
+class _JobManagerDialog extends StatefulWidget {
+  final VoidCallback onChanged;
+  const _JobManagerDialog({required this.onChanged});
+
+  @override
+  State<_JobManagerDialog> createState() => _JobManagerDialogState();
+}
+
+class _JobManagerDialogState extends State<_JobManagerDialog> {
+  List<Map<String, dynamic>> _jobs = const [];
+  bool _loading = true;
+  String? _loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final rows = await const StaffGatewayService().allJobs();
+      if (!mounted) return;
+      setState(() {
+        _jobs = rows;
+        _loading = false;
+        _loadError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = friendlyError(e, context: 'Could not load the job list');
+      });
+    }
+  }
+
+  void _toast(String message, {bool bad = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        backgroundColor: bad ? AppTheme.error : null,
+      ));
+  }
+
+  Future<void> _create() async {
+    final labelCtrl = TextEditingController();
+    final groupCtrl = TextEditingController(text: 'General');
+    final descCtrl = TextEditingController();
+
+    // The form returns its values instead of writing to fields on this State:
+    // a dialog popped and rebuilt mid-save would otherwise lose them.
+    final entered = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('New job'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: labelCtrl,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Job name',
+                  helperText: 'The server derives a safe key from this.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: groupCtrl,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Group',
+                  helperText: 'Sorts the checklist in the staff editor.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descCtrl,
+                maxLines: 2,
+                decoration: const InputDecoration(labelText: 'What it covers'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final label = labelCtrl.text.trim();
+              if (label.length < 2) return;
+              Navigator.pop(dialogContext, {
+                'label': label,
+                'group': groupCtrl.text.trim(),
+                'description': descCtrl.text.trim(),
+              });
+            },
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+
+    labelCtrl.dispose();
+    groupCtrl.dispose();
+    descCtrl.dispose();
+
+    if (entered == null) return;
+    final label = entered['label'] ?? '';
+    if (label.isEmpty) return;
+
+    setState(() => _loading = true);
+    try {
+      await const StaffGatewayService().createJob(
+        label: label,
+        group: entered['group'],
+        description: entered['description'],
+      );
+      _toast('"$label" added to the job list');
+      widget.onChanged();
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+      _toast(friendlyError(e, context: 'Could not add that job'), bad: true);
+    }
+  }
+
+  Future<void> _retire(Map<String, dynamic> job) async {
+    final holders = (job['holders'] as num?)?.toInt() ?? 0;
+    // Checked here as well as server-side. The server refuses either way, but
+    // being refused for something the screen just showed you is a worse
+    // experience than being told before you tap.
+    if (holders > 0) {
+      _toast('$holders staff member${holders == 1 ? '' : 's'} still hold '
+          '"${job['label']}". Remove it from them first.', bad: true);
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Retire "${job['label']}"?'),
+        content: const Text(
+          'It will no longer be offered when assigning jobs. The record of '
+          'who held it is kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            child: const Text('Retire'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _loading = true);
+    try {
+      await const StaffGatewayService().retireJob('${job['key']}');
+      _toast('"${job['label']}" retired');
+      widget.onChanged();
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+      _toast(friendlyError(e, context: 'Could not retire that job'), bad: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _jobs.where((j) => j['is_active'] == true).toList();
+    final retired = _jobs.where((j) => j['is_active'] != true).toList();
+
+    return AlertDialog(
+      title: const Text('Job catalogue'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Jobs are chosen here, not fixed in the app. Add one and it is '
+              'immediately assignable.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Flexible(
+              child: _loading
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: CircularProgressIndicator(),
+                      ),
+                    )
+                  : _loadError != null
+                      ? Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          child: Text(_loadError!),
+                        )
+                      : ListView(
+                          shrinkWrap: true,
+                          children: [
+                            for (final job in active) _jobTile(job),
+                            if (retired.isNotEmpty) ...[
+                              const Divider(height: 24),
+                              Padding(
+                                padding:
+                                    const EdgeInsets.only(bottom: 8, left: 4),
+                                child: Text(
+                                  'RETIRED',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(letterSpacing: 1.2),
+                                ),
+                              ),
+                              for (final job in retired) _jobTile(job),
+                            ],
+                          ],
+                        ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: _loading ? null : _create,
+          icon: const Icon(Icons.add, size: 18),
+          label: const Text('New job'),
+        ),
+      ],
+    );
+  }
+
+  Widget _jobTile(Map<String, dynamic> job) {
+    final isActive = job['is_active'] == true;
+    final holders = (job['holders'] as num?)?.toInt() ?? 0;
+    final description = '${job['description'] ?? ''}';
+    final group = '${job['group_name'] ?? ''}';
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: Icon(
+        isActive ? Icons.work_outline : Icons.work_off_outlined,
+        color: isActive ? null : Theme.of(context).disabledColor,
+      ),
+      title: Text(
+        '${job['label']}',
+        style: TextStyle(
+          color: isActive ? null : Theme.of(context).disabledColor,
+        ),
+      ),
+      subtitle: Text(
+        [
+          if (group.isNotEmpty) group,
+          if (description.isNotEmpty) description,
+          '$holders holding',
+        ].join(' · '),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: isActive
+          ? TextButton(
+              onPressed: _loading ? null : () => _retire(job),
+              child: const Text('Retire'),
+            )
+          : null,
     );
   }
 }

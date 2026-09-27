@@ -498,6 +498,19 @@ void main() {
               'history row when it is removed, and refuse a non-manager.');
     });
 
+    test('the CEO can add a job, not just pick from a seeded list', () async {
+      // The catalogue was still, in practice, fixed: ten rows in a migration.
+      // Picking a job became easy, but CHOOSING WHICH jobs exist still needed
+      // a deploy — so the set was frozen one layer above the CHECK constraint
+      // that was removed to unfreeze it.
+      expect(await ok('assert_staff_jobs_are_creatable'), isTrue,
+          reason: 'create_staff_job() must refuse a non-manager, derive a safe '
+              'key from a label alone, and produce a job that can be assigned '
+              'immediately; deactivate_staff_job() must refuse while anybody '
+              'holds the job and keep the assignment history once they do '
+              'not.');
+    });
+
     test('money and status changes cannot happen unlogged', () async {
       // admin_cash_recharge, admin_wallet_adjustment, approve_wallet_recharge,
       // transition_order_status, transition_ride_status, claim_ride and

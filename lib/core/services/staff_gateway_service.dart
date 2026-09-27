@@ -145,6 +145,112 @@ class StaffGatewayService {
     }
   }
 
+  /// The full catalogue INCLUDING retired jobs, with a live holder count.
+  ///
+  /// [jobCatalogue] is the assignable-only view the staff editor uses. This
+  /// one exists so a retired job stays VISIBLE: a list that silently drops
+  /// what it retired is how a job someone still remembers comes back as a
+  /// duplicate three months later.
+  Future<List<Map<String, dynamic>>> allJobs() async {
+    final rows = await Supabase.instance.client.rpc('list_staff_jobs');
+    return (rows as List)
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+  }
+
+  /// Creates a job in the catalogue. CEO / Super Admin only, server-side.
+  ///
+  /// [key] is deliberately optional: the server derives a safe one from the
+  /// label when it is omitted. Making someone invent a machine-safe key is how
+  /// job creation gets abandoned in favour of editing a migration, which is
+  /// the thing this exists to stop.
+  ///
+  /// Deliberately returns nothing. The RPC returns a `staff_jobs` row, which
+  /// PostgREST sends as a single object rather than a list, and the only
+  /// caller reloads the catalogue anyway — so parsing that shape here would
+  /// be a way to fail for no benefit.
+  Future<void> createJob({
+    required String label,
+    String? key,
+    String? group,
+    String? description,
+  }) async {
+    try {
+      await Supabase.instance.client.rpc(
+        'create_staff_job',
+        params: {
+          'p_label': label,
+          'p_key': key,
+          'p_group': group,
+          'p_description': description,
+        },
+      );
+    } catch (e) {
+      final raw = e.toString();
+      for (final code in const [
+        'ONLY_ADMINISTRATORS_CAN_CREATE_STAFF_JOBS',
+        'JOB_LABEL_REQUIRED',
+        'INVALID_STAFF_JOB_KEY',
+        'STAFF_JOB_ALREADY_EXISTS',
+      ]) {
+        if (raw.contains(code)) throw Exception(_describeCreateJobError(code));
+      }
+      rethrow;
+    }
+  }
+
+  String _describeCreateJobError(String code) {
+    switch (code) {
+      case 'ONLY_ADMINISTRATORS_CAN_CREATE_STAFF_JOBS':
+        return 'Only the CEO or a super admin can add a job.';
+      case 'JOB_LABEL_REQUIRED':
+        return 'Give the job a name of at least 2 characters.';
+      case 'INVALID_STAFF_JOB_KEY':
+        return 'The job name could not be turned into a usable key. Use 2-40 '
+            'characters, letters, numbers and underscores.';
+      case 'STAFF_JOB_ALREADY_EXISTS':
+        return 'A job with that name already exists. Pick a different one.';
+      default:
+        return 'Could not create the job.';
+    }
+  }
+
+  /// Retires a job. Refused while anybody still holds it — the CEO has to
+  /// remove it from them first, so the staff list can never show a job the
+  /// catalogue no longer offers.
+  Future<void> retireJob(String key, {String? reason}) async {
+    try {
+      await Supabase.instance.client.rpc(
+        'deactivate_staff_job',
+        params: {'p_key': key, 'p_reason': reason},
+      );
+    } catch (e) {
+      final raw = e.toString();
+      for (final code in const [
+        'ONLY_ADMINISTRATORS_CAN_DEACTIVATE_STAFF_JOBS',
+        'STAFF_JOB_STILL_ASSIGNED',
+        'STAFF_JOB_NOT_FOUND',
+      ]) {
+        if (raw.contains(code)) throw Exception(_describeRetireJobError(code));
+      }
+      rethrow;
+    }
+  }
+
+  String _describeRetireJobError(String code) {
+    switch (code) {
+      case 'ONLY_ADMINISTRATORS_CAN_DEACTIVATE_STAFF_JOBS':
+        return 'Only the CEO or a super admin can retire a job.';
+      case 'STAFF_JOB_STILL_ASSIGNED':
+        return 'Somebody still holds this job. Remove it from them first, '
+            'then retire it.';
+      case 'STAFF_JOB_NOT_FOUND':
+        return 'That job is already retired or no longer exists.';
+      default:
+        return 'Could not retire the job.';
+    }
+  }
+
   String _describeJobError(String code) {
     switch (code) {
       case 'ONLY_ADMINISTRATORS_CAN_ASSIGN_STAFF_JOBS':
