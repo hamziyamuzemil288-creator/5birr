@@ -87,11 +87,18 @@ CREATE OR REPLACE FUNCTION public.log_staff_password_change(
   p_actor_id uuid
 )
 RETURNS void
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT public.log_staff_activity(
+BEGIN
+  -- plpgsql, deliberately, not LANGUAGE sql. A SQL-language body is fully
+  -- parsed and name-resolved at CREATE time, so this function could only be
+  -- created after log_staff_activity and staff_activity_log both existed —
+  -- turning a migration-ordering mistake into a hard deploy failure instead
+  -- of a runtime one. plpgsql resolves names on first execution, which is the
+  -- same reason 20260927000034's validate_staff_jobs() is plpgsql.
+  PERFORM public.log_staff_activity(
     p_staff_id,
     'PASSWORD_CHANGED',
     -- What changed, and by whom. Never the value.
@@ -102,6 +109,7 @@ AS $$
     'access',
     p_actor_id
   );
+END;
 $$;
 
 REVOKE ALL ON FUNCTION public.log_staff_password_change(uuid, uuid)
