@@ -185,6 +185,28 @@ void main() {
     });
   });
 
+  group('provider status: server may change it, clients may not', () {
+    test('the self-approval guard exempts server roles only', () async {
+      // The guard reads is_admin(), which is auth.uid() — NULL for anything
+      // the server initiates. So it used to reject the pg_cron subscription
+      // job and the subscription-process edge function when they moved
+      // provider_profiles.status. The suspend branch is not wrapped in an
+      // exception block, so the raise aborted the whole daily run: the first
+      // provider needing suspension killed the job and everyone after them
+      // was skipped. Auto-suspension had never actually worked, and the
+      // reactivation path was silently swallowed.
+      //
+      // The fix scopes the guard to clients via session_user. Both halves
+      // are asserted, because the fix must not become "remove the guard":
+      // the client branch has to still refuse a status change.
+      expect(await ok('assert_provider_status_guard_is_client_scoped'), isTrue,
+          reason: 'prevent_provider_self_privilege_escalation either lost its '
+              'session_user exemption (breaking the subscription scheduler '
+              'again) or lost the client-side refusal (reinstating '
+              'self-approval).');
+    });
+  });
+
   group('orders cannot be forged by a client', () {
     test('no non-admin INSERT path exists on orders', () async {
       // orders carried a policy allowing any authenticated user to insert
