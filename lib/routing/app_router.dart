@@ -57,6 +57,7 @@ import '../features/admin/admin_order_payments_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/appeal/appeal_screen.dart';
+import '../features/appeal/my_appeals_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
@@ -364,6 +365,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),
       // User-submitted appeal / spam-report form (linked from the help chat).
       GoRoute(path: '/appeal', builder: (_, __) => const AppealScreen()),
+      // Both sides of an appeal: what I filed (status + resolution + reply)
+      // and what was filed against me (with the Respond action).
+      GoRoute(path: '/appeals', builder: (_, __) => const MyAppealsScreen()),
 
       // Task 7 item 2: standalone notification inbox for providers/vehicle
       // owners (their dashboards' bell). Users get the same screen as a

@@ -67,6 +67,29 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
         c['reporter'] = profilesById[c['user_id']];
       }
 
+      // The respondent — the account the report names — resolves the same
+      // way (appeal_cases.respondent_id also has no FK to profiles).
+      final respondentIds = cases
+          .map((c) => c['respondent_id'] as String?)
+          .whereType<String>()
+          .toSet()
+          .toList();
+      final Map<String, Map<String, dynamic>> respondentsById = {};
+      if (respondentIds.isNotEmpty) {
+        final respondentRows = await client
+            .from('profiles')
+            .select('id, full_name')
+            .inFilter('id', respondentIds);
+        for (final p in respondentRows as List) {
+          final pm = Map<String, dynamic>.from(p as Map);
+          respondentsById[pm['id'] as String] = pm;
+        }
+      }
+      for (final c in cases) {
+        final rid = c['respondent_id'] as String?;
+        c['respondent'] = rid == null ? null : respondentsById[rid];
+      }
+
       if (!mounted) return;
       setState(() {
         _cases = cases;
@@ -282,12 +305,21 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
                 ],
               ),
               const SizedBox(height: 6),
+              if (c['respondent'] != null)
+                Text(
+                  'Reported: '
+                  '${((c['respondent'] as Map)['full_name'] as String?) ?? 'Unknown'}',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary),
+                ),
               Text(
                 (c['description'] as String?) ?? '',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                style: const TextStyle(
+                    color: AppTheme.textSecondary, fontSize: 13),
               ),
               const SizedBox(height: 6),
               Text(
@@ -328,6 +360,7 @@ class _AppealDetailSheet extends StatefulWidget {
 
 class _AppealDetailSheetState extends State<_AppealDetailSheet> {
   String? _photoUrl;
+  String? _responsePhotoUrl;
   bool _photoLoading = true;
   String? _photoError;
 
@@ -355,6 +388,21 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
         _photoLoading = false;
       });
     }
+    // The respondent's reply evidence lives in THEIR folder; readable to the
+    // admin through the same admin-read storage policy. Best effort — a
+    // missing reply photo must never blank the sheet.
+    final responsePath = widget.caseData['response_photo_path'] as String?;
+    if (responsePath != null && responsePath.isNotEmpty) {
+      try {
+        final url = await Supabase.instance.client.storage
+            .from('user-documents')
+            .createSignedUrl(responsePath, 60 * 60);
+        if (!mounted) return;
+        setState(() => _responsePhotoUrl = url);
+      } catch (_) {
+        // Leave null; the text reply below still renders.
+      }
+    }
   }
 
   @override
@@ -363,6 +411,9 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
     final reporter = c['reporter'] as Map<String, dynamic>?;
     final status = (c['status'] as String?) ?? 'OPEN';
     final createdAt = DateTime.tryParse((c['created_at'] as String?) ?? '');
+    final respondedAt = DateTime.tryParse((c['responded_at'] as String?) ?? '');
+    final respondentName =
+        ((c['respondent'] as Map?)?['full_name'] as String?);
 
     return DraggableScrollableSheet(
       expand: false,
@@ -426,6 +477,14 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
                   style: const TextStyle(
                       fontSize: 12, color: AppTheme.textSecondary)),
             ],
+            if (respondentName != null) ...[
+              const SizedBox(height: 4),
+              Text('Reported: $respondentName',
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary)),
+            ],
             const SizedBox(height: 16),
 
             // Evidence photo (private bucket → signed URL)
@@ -481,6 +540,42 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
                 label: 'Account phone'),
 
             const SizedBox(height: 16),
+
+            // The other party's reply — what makes an appeal two-directional.
+            if (((c['response_text'] as String?) ?? '').isNotEmpty) ...[
+              const Text('Respondent reply',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppTheme.info.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: SelectableText(
+                  c['response_text'] as String,
+                  style: const TextStyle(
+                      color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              ),
+              if (respondedAt != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                    'Sent ${DateFormat('d MMM yyyy, HH:mm').format(respondedAt)}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary)),
+              ],
+              if (_responsePhotoUrl != null) ...[
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.network(_responsePhotoUrl!,
+                      height: 160, width: double.infinity, fit: BoxFit.cover),
+                ),
+              ],
+              const SizedBox(height: 16),
+            ],
             if (((c['resolution_note'] as String?) ?? '').isNotEmpty) ...[
               const Text('Resolution note',
                   style: TextStyle(fontWeight: FontWeight.w700)),

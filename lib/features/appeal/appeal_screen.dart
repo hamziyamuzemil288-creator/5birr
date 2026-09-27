@@ -45,6 +45,15 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
   String _about = 'general';
   bool _fromChat = false;
 
+  // Respondent picker: WHO the report is about (optional). Filled from the
+  // counterparties the submitter actually met — sellers from their orders,
+  // drivers from their rides — resolved server-side by appeal_counterparties()
+  // so no extra table reads (or RLS guesses) happen here. Stored as
+  // appeal_cases.respondent_id, which is what gives the other party a screen
+  // and a reply path (My Appeals → "Against me").
+  List<Map<String, String>> _counterparties = const [];
+  String? _respondentId;
+
   static const _aboutLabels = {
     'rider': 'Ride / driver issue',
     'provider': 'Provider / selling issue',
@@ -57,6 +66,31 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
   void initState() {
     super.initState();
     _loadCaptchaRequirement();
+    _loadCounterparties();
+  }
+
+  /// Loads the "who is this about" picker. A failed load must never block
+  /// the appeal itself, so errors collapse to an empty (hidden) picker.
+  Future<void> _loadCounterparties() async {
+    try {
+      final rows = await Supabase.instance.client.rpc('appeal_counterparties');
+      final items = <Map<String, String>>[];
+      final seen = <String>{};
+      for (final r in rows as List) {
+        final m = Map<String, dynamic>.from(r as Map);
+        final uid = m['counterpart_user_id'] as String?;
+        if (uid == null || uid.isEmpty || !seen.add(uid)) continue;
+        items.add({
+          'user_id': uid,
+          'name': (m['display_name'] as String?) ?? 'Aliob provider',
+          'kind': (m['kind'] as String?) ?? '',
+        });
+      }
+      if (!mounted) return;
+      setState(() => _counterparties = items);
+    } catch (_) {
+      // Intentionally swallowed: optional context, never a blocker.
+    }
   }
 
   @override
@@ -150,8 +184,8 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
       final client = Supabase.instance.client;
 
       // Task 14: chat-escalated appeals carry their context into the stored
-      // description so the case lands with the right review context — the
-      // appeals table has no dedicated column, so we prefix the text that
+      // description so the case lands with the right review context —
+      // appeal_cases has no dedicated tag column, so we prefix the text that
       // admins/staff already read on every case.
       final aboutLabel = _aboutLabels[_about] ?? 'Something else';
       final descriptionText = _fromChat
@@ -180,6 +214,7 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
                 ? null
                 : _emailCtrl.text.trim(),
             'captcha_id': _captchaId,
+            if (_respondentId != null) 'respondent_id': _respondentId,
           })
           .select('id')
           .single();
@@ -315,6 +350,40 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
                 ],
               ),
             ),
+            const SizedBox(height: 20),
+
+            // Who is this about? Optional. Names the respondent who then
+            // sees the case and can reply (see My Appeals).
+            if (_counterparties.isNotEmpty) ...[
+              Text('Who is this about?',
+                  style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 4),
+              const Text(
+                'Optional — the person you name can see this report and reply to it.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                value: _respondentId,
+                isExpanded: true,
+                hint: const Text('No specific person'),
+                decoration: const InputDecoration(labelText: 'Report about'),
+                items: _counterparties
+                    .map((c) => DropdownMenuItem<String>(
+                          value: c['user_id'],
+                          child: Text(
+                            '${c['name']} · '
+                            '${c['kind'] == 'DRIVER' ? 'driver' : 'seller'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ))
+                    .toList(),
+                onChanged: _submitting
+                    ? null
+                    : (v) => setState(() => _respondentId = v),
+              ),
+            ],
             const SizedBox(height: 20),
 
             // Photo attachment

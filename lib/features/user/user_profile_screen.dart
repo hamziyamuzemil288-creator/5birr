@@ -160,6 +160,11 @@ class UserProfileScreen extends ConsumerWidget {
                   // and a successful upload left no visible trace anywhere.
                   const VerificationStatusTile(),
                   _divider(),
+                  // Both sides of the appeal flow: what I filed (and where it
+                  // stands) and what was filed against me (with the reply).
+                  _menuTile(Icons.outlined_flag, 'My Appeals', AppTheme.gold,
+                      onTap: () => context.push('/appeals')),
+                  _divider(),
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),
                   _divider(),

@@ -1,0 +1,25 @@
+-- Drop the legacy `appeals` table. It has been dead since appeal_cases
+-- replaced it (20260923000000), and the audit that confirmed it:
+--
+--   * No Dart caller: `rg "from('appeals')" lib` → 0 hits. The app's only
+--     appeal surface reads/writes `appeal_cases`.
+--   * No Edge Function caller: 0 hits in supabase/functions.
+--   * No FK depends ON it: `REFERENCES appeals` → 0 hits (its own two FKs
+--     point into auth.users and die with the table).
+--   * No function, view, or assertion reads it (the staff task feed reads
+--     appeal_cases; the write-surface expectations list appeal_cases only).
+--   * No test pins it: test/ and tools/ mention only `appeal_cases` and
+--     storage path strings like 'appeals/test.jpg'.
+--   * Migration 46 already revoked its client write grants, so it has been
+--     inert for authenticated callers since then.
+--
+-- What remained was a table with owner/admin policies that no screen ever
+-- queried — an audit surface that could be mistaken for a live feature. The
+-- account-reinstatement semantics it was meant to model live in appeal_cases
+-- (`about = account` cases) and in the suspension/rejection flows.
+--
+-- DROP (not TRUNCATE, not DELETE): the row history is meaningless for an
+-- unused table, and the client-write report counts base tables, so leaving an
+-- empty husk would keep it on the "unexpected" list forever.
+
+DROP TABLE IF EXISTS public.appeals;
