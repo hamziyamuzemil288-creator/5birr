@@ -682,13 +682,13 @@ void main() {
       // RLS, and a permissive policy on a table a client cannot write is
       // unreachable.
       expect(await ok('assert_client_write_surface_is_closed'), isTrue,
-          reason: 'Either a client role can write user_roles, email_otp_codes '
-              'or order_items again, or a write policy that a client reaches '
-              'has an expression that never mentions the caller. The first is '
-              'privilege escalation — a user_roles row with role=ADMIN is '
-              'is_admin() for every policy in the schema. Run '
-              'public.client_write_policy_detail() for the offending policy '
-              'and its roles.');
+          reason: 'One of three: a client role can write user_roles, '
+              'email_otp_codes or order_items again (a user_roles row with '
+              'role=ADMIN is is_admin() for every policy in the schema); a '
+              'table outside the twenty the app writes became client-writable; '
+              'or a write policy a client can reach never names a caller. Run '
+              'public.client_write_surface_report() and '
+              'public.client_write_policy_detail() for the offending names.');
     });
 
     test('a staff password change leaves a record of who did it', () async {
