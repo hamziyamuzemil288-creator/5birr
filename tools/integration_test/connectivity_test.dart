@@ -511,6 +511,46 @@ void main() {
               'not.');
     });
 
+    test('private storage buckets are scoped to their owner', () async {
+      // Migration 0033 created a second, looser set of policies on three
+      // private buckets, and RLS policies OR together -- so the looser set won.
+      // One of its disjuncts was a copy-paste from the wrong bucket, letting
+      // any signed-in user write outside their own folder in a private
+      // bucket. Not readable back, so not a leak, but it breaks the {uid}/
+      // invariant every document path depends on.
+      expect(await ok('assert_private_buckets_are_owner_scoped'), isTrue,
+          reason: 'A write policy on user-documents, payment-screenshots or '
+              'payment-proofs is not scoped to the caller''s own folder, or '
+              'one of them also allows a path in a different bucket. The '
+              'removed copy-paste did exactly that.');
+    });
+
+    test('REPORT: the client write surface', () async {
+      // A diagnostic, not an assertion. It prints so the next run shows the
+      // LIVE state of what a client can write, which cannot be read from the
+      // migration files -- a policy created in 0002 and dropped in
+      // 20260927000014 is visible in both, and only the database knows which
+      // won.
+      //
+      // This is deliberately print-only. Failing the build on a number nobody
+      // has seen yet would turn the pipeline red for a reason nobody can act
+      // on. Once the report has been read and the unexpected entries
+      // triaged, this becomes a real assertion and the expected list in
+      // client_write_surface_report() becomes the contract.
+      try {
+        final rows = await client.rpc('client_write_surface_report');
+        for (final row in (rows as List)) {
+          final r = Map<String, dynamic>.from(row as Map);
+          final names = (r['tables'] as List?)?.cast<String>() ?? const [];
+          // ignore: avoid_print
+          print('WRITE SURFACE [${r['kind']}] (${names.length}): ${names.join(', ')}');
+        }
+      } catch (e) {
+        // ignore: avoid_print
+        print('write surface report unavailable: $e');
+      }
+    });
+
     test('a staff password change leaves a record of who did it', () async {
       // Self-service password change is the one consequential act a staff
       // member can take on their own account, and it wrote nothing anywhere.
