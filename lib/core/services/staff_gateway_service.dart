@@ -138,7 +138,7 @@ class StaffGatewayService {
         .from('staff_warnings')
         .select('id, reason, severity, warned_by_name, created_at, '
             'acknowledged_at, acknowledged_note')
-        .order('created_at', descending: true)
+        .order('created_at', ascending: false)
         .limit(20);
     return (rows as List)
         .map((r) => Map<String, dynamic>.from(r as Map))
