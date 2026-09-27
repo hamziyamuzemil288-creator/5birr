@@ -41,7 +41,7 @@ class _State extends State<ProviderSubscriptionScreen> {
 
   @override
   void initState() {
-    superState();
+    super.initState();
     _load();
   }
 
