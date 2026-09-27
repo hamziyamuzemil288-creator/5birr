@@ -154,6 +154,32 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
     return 'Could not update this task.';
   }
 
+  /// Password failures have their own wording.
+  ///
+  /// They used to go through [_friendlyError], whose fallback is "Could not
+  /// update this task." — so typing the current password wrong, on a screen
+  /// with no tasks on it, reported a broken task list. The server already
+  /// distinguishes every one of these; the client was throwing the
+  /// distinction away.
+  String _passwordError(String raw) {
+    if (raw.contains('current_password_incorrect')) {
+      return 'That is not your current password.';
+    }
+    if (raw.contains('new_password_must_differ')) {
+      return 'The new password must be different from the current one.';
+    }
+    if (raw.contains('invalid_password_requirements')) {
+      return 'Use between 10 and 200 characters.';
+    }
+    if (raw.contains('staff_inactive')) {
+      return 'This staff account is no longer active.';
+    }
+    if (raw.contains('unauthorized')) {
+      return 'Your session has expired. Sign in again, then change it.';
+    }
+    return 'Could not change the password. Please try again.';
+  }
+
   void _openTask(Map<String, dynamic> task) {
     final route = task['action_route'] as String?;
     if (route == null || route.isEmpty) return;
@@ -164,55 +190,92 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
     final current = TextEditingController();
     final next = TextEditingController();
     final confirm = TextEditingController();
+    // Set INSIDE the dialog, so the message appears while the fields the user
+    // typed into are still on screen.
+    String? problem;
+
     final ok = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Change staff password'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: current,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Current password'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: next,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'New password'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: confirm,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Confirm new password'),
-              ),
-            ],
+      // Only the inner builder needs a context (for the snackbar-free inline
+      // error and the final pop), so the outer one is left unnamed rather than
+      // shadowed by it.
+      builder: (_) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Change staff password'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: current,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Current password'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: next,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'New password',
+                    helperText: 'At least 10 characters.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: confirm,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Confirm new password'),
+                ),
+                if (problem != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    problem!,
+                    style: TextStyle(color: AppTheme.error, fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              // Validated HERE, before the dialog closes. It used to pop
+              // unconditionally and check afterwards, so a mistyped
+              // confirmation cost the user all three fields — including the
+              // current password, which is the one they cannot look up.
+              onPressed: () {
+                if (next.text != confirm.text) {
+                  setDialogState(() => problem = 'The two new passwords do not match.');
+                  return;
+                }
+                if (next.text.length < 10) {
+                  setDialogState(() => problem = 'Use at least 10 characters.');
+                  return;
+                }
+                if (next.text == current.text) {
+                  setDialogState(
+                    () => problem = 'The new password must be different from the current one.',
+                  );
+                  return;
+                }
+                if (current.text.isEmpty) {
+                  setDialogState(() => problem = 'Enter your current password.');
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Change password'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Change password'),
-          ),
-        ],
       ),
     );
+
     if (ok == true) {
-      if (next.text != confirm.text || next.text.length < 10) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('New passwords must match and be at least 10 characters.')),
-          );
-        }
-        return;
-      }
       try {
         await _service.changePassword(
           currentPassword: current.text,
@@ -226,7 +289,7 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(_friendlyError(e.toString()))),
+            SnackBar(content: Text(_passwordError(e.toString()))),
           );
         }
       }

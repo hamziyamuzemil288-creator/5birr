@@ -511,6 +511,20 @@ void main() {
               'not.');
     });
 
+    test('a staff password change leaves a record of who did it', () async {
+      // Self-service password change is the one consequential act a staff
+      // member can take on their own account, and it wrote nothing anywhere.
+      // The subtlety: the Edge Function authenticates as service_role, which
+      // carries no JWT, so log_staff_activity's auth.uid() was NULL there. The
+      // row still appeared — with no actor, on the table whose whole purpose
+      // is saying who did what. Only the actor value can catch that.
+      expect(await ok('assert_staff_password_changes_are_audited'), isTrue,
+          reason: 'A self-service password change must be recorded in '
+              'staff_activity_log against the real actor (not NULL), as an '
+              ''access'' event, with no password in the detail — and the '
+              '4-argument log_staff_activity() must still mean "the caller".');
+    });
+
     test('money and status changes cannot happen unlogged', () async {
       // admin_cash_recharge, admin_wallet_adjustment, approve_wallet_recharge,
       // transition_order_status, transition_ride_status, claim_ride and
