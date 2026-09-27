@@ -22,6 +22,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _totalOrders = 0;
   int _openAppeals = 0;
   int _openDisputes = 0;
+  int _pendingOrderPayments = 0;
   double _totalIncome = 0;
   // my_admin_permissions() returns ['*'] for the true Admin/CEO — i.e. every
   // card visible — and the explicit list for staff, who then see only their
@@ -64,6 +65,15 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
       // move an order out of DISPUTED, so without a count here an open
       // dispute is invisible from the dashboard entirely.
       count(() => client.from('orders').select('id').eq('status', 'DISPUTED').count(CountOption.exact)),
+      // Orders whose payment the buyer submitted and is waiting on an admin.
+      // Only an admin can move an order out of PAYMENT_VERIFICATION, so
+      // without this count a customer who has already paid is invisible and
+      // the provider never gets the release.
+      count(() => client
+          .from('orders')
+          .select('id')
+          .eq('status', 'PAYMENT_VERIFICATION')
+          .count(CountOption.exact)),
     ]);
 
     // Section visibility for the signed-in principal (fail-open to '*' is
@@ -107,6 +117,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         _totalOrders = results[6];
         _openAppeals = results[7];
         _openDisputes = results[8];
+        _pendingOrderPayments = results[9];
         _totalIncome = income;
         _loading = false;
       });
@@ -391,6 +402,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                     ? '$_openDisputes open dispute${_openDisputes == 1 ? '' : 's'}'
                                     : 'Refund or uphold',
                                 () => context.push('/admin/disputes')),
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.receipt_long_outlined, 'Order Payments',
+                                _pendingOrderPayments > 0
+                                    ? '$_pendingOrderPayments waiting to verify'
+                                    : 'Verify customer payments',
+                                () => context.push('/admin/order-payments')),
                           if (_can('admin_history'))
                             _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
                           // Phase 2: staff management (server-side RBAC; the

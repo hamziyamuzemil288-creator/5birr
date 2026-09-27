@@ -53,6 +53,7 @@ import '../features/admin/admin_reports_screen.dart';
 import '../features/admin/admin_support_tickets_screen.dart';
 import '../features/admin/admin_appeals_screen.dart';
 import '../features/admin/admin_disputes_screen.dart';
+import '../features/admin/admin_order_payments_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/appeal/appeal_screen.dart';
@@ -339,6 +340,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/users', builder: (_, __) => const AdminUserManagementScreen()),
       GoRoute(path: '/admin/payment-methods', builder: (_, __) => const AdminPaymentMethodsScreen()),
       GoRoute(path: '/admin/payments', builder: (_, __) => const AdminPaymentVerificationScreen()),
+      GoRoute(path: '/admin/order-payments', builder: (_, __) => const AdminOrderPaymentsScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/admin/providers/:id/wallet/recharge', builder: (_, s) => AdminCashRechargeScreen(providerId: s.pathParameters['id']!)),
       // ── Admin — New sections ──

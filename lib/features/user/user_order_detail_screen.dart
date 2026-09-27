@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:storage_client/storage_client.dart' show FileOptions;
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/review_service.dart';
@@ -12,13 +16,17 @@ import '../../core/services/order_chat_service.dart';
 import '../../core/utils/order_number_format.dart';
 import '../../core/utils/friendly_error.dart';
 
-/// Statuses from which CANCELLED is a legal transition
+/// Statuses from which CANCELLED is a legal transition for the BUYER
 /// (see transition_order_status whitelist in 0003_functions.sql).
+///
+/// PAYMENT_PENDING is deliberately absent. The whitelist allows CANCELLED
+/// from there only to an admin, so offering the buyer the button produced an
+/// error on every tap. The buyer's real exit from PAYMENT_PENDING is to
+/// submit payment (see _submitPayment).
 const _cancellableStatuses = {
   'CREATED',
   'PENDING_PROVIDER',
   'ACCEPTED',
-  'PAYMENT_PENDING',
   'APPROVED',
   'STARTED',
 };
@@ -79,6 +87,9 @@ class _UserOrderDetailScreenState
   // In-order chat (buyer ↔ provider).
   final _chatCtrl = TextEditingController();
   bool _sendingChat = false;
+
+  // Buyer payment-proof submission (PAYMENT_PENDING -> PAYMENT_VERIFICATION).
+  bool _paying = false;
 
   @override
   void dispose() {
@@ -644,8 +655,7 @@ class _UserOrderDetailScreenState
     await _transition('CANCELLED', note: 'Cancelled by customer');
   }
 
-  Future<void> _transition(String newStatus, {String? note}) async {
-    setState(() => _acting = true);
+  Future<void> _transition(String newStatus, {String? note}) async {    setState(() => _acting = true);
     try {
       await Supabase.instance.client.functions.invoke('order-transition',
           body: {
@@ -670,6 +680,85 @@ class _UserOrderDetailScreenState
   }
 
   String _label(String status) => status.replaceAll('_', ' ');
+
+  /// True when the buyer still owes money for this order.
+  ///
+  /// The provider moves the order to PAYMENT_PENDING when they request
+  /// payment, and the only legal exit from there is PAYMENT_VERIFICATION —
+  /// which the transition whitelist allows for the buyer alone. Until the
+  /// buyer could actually submit, the order was stuck: the provider waited
+  /// for money that the app gave the buyer no way to send, and the buyer
+  /// saw a CANCEL ORDER button the database rejects (CANCELLED from
+  /// PAYMENT_PENDING is admin-only).
+  bool get _awaitingMyPayment =>
+      !_isProvider && (_order?['status'] as String?) == 'PAYMENT_PENDING';
+
+  /// Buyer attaches a payment screenshot and hands the order to an admin
+  /// for verification.
+  ///
+  /// Order of operations matters. The proof row is written FIRST and the
+  /// order is transitioned SECOND, because the reverse leaves a proof
+  /// attached to an order that is still PAYMENT_PENDING if the transition
+  /// is refused — and the buyer's next tap would then insert a second proof
+  /// for the same order. Writing the proof first means a failed transition
+  /// leaves a pending proof the buyer can retry over, not a duplicate.
+  Future<void> _submitPayment() async {
+    final client = Supabase.instance.client;
+    final user = client.auth.currentUser;
+    if (user == null) {
+      _toast('You need to be signed in to pay for this order.');
+      return;
+    }
+
+    final picked = await ImagePicker()
+        .pickImage(source: ImageSource.gallery, imageQuality: 85);
+    if (picked == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Submit payment proof?'),
+        content: const Text(
+            'Attach a screenshot of your transfer. An admin will verify it '
+            'before the order starts.'),
+        actions: [
+          TextButton(
+              onPressed: () => dctx.pop(false),
+              child: const Text('CANCEL')),
+          TextButton(
+              onPressed: () => dctx.pop(true),
+              child: const Text('SUBMIT')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _paying = true);
+    try {
+      final path =
+          '${user.id}/${widget.orderId}/${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await client.storage.from('payment-proofs').upload(path, File(picked.path),
+          fileOptions: const FileOptions(upsert: true));
+      await client.from('payment_proofs').insert({
+        'order_id': widget.orderId,
+        'storage_path': path,
+      });
+
+      if (!mounted) return;
+      await _transition('PAYMENT_VERIFICATION', note: 'Payment proof submitted');
+    } catch (e) {
+      if (!mounted) return;
+      _toast(friendlyError(e, context: 'Could not submit your payment proof'));
+    } finally {
+      if (mounted) setState(() => _paying = false);
+    }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
 
   /// First product id in the order, used to target a product review.
   String? get _firstProductId {
@@ -748,7 +837,19 @@ class _UserOrderDetailScreenState
                                         ),
                                 ),
                               )),
-                        if (!_isProvider && _canCancel)
+                        if (_awaitingMyPayment)
+                          SizedBox(
+                            width: double.infinity,
+                            child: PrimaryButton(
+                              label: 'PAY & UPLOAD PROOF',
+                              icon: Icons.upload_file_outlined,
+                              isLoading: _paying,
+                              onPressed: _paying ? null : _submitPayment,
+                            ),
+                          ),
+                        if (!_isProvider &&
+                            _canCancel &&
+                            !_awaitingMyPayment)
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
