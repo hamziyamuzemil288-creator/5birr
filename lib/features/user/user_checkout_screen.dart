@@ -213,6 +213,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       _submitting = true;
       _error = null;
     });
+    // Once order-create returns, the order EXISTS. Everything after that
+    // point is bookkeeping, and none of it is allowed to report failure —
+    // the outer catch used to set "Could not place your order" for a thrown
+    // clearCart()/invalidate/showDialog, which would tell the user their
+    // order failed when it had in fact been created, inviting them to submit
+    // again and place a duplicate.
+    String? createdOrderId;
+    var orderCreated = false;
     try {
       final client = Supabase.instance.client;
 
@@ -240,6 +248,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final data = Map<String, dynamic>.from(result.data as Map);
       final order = data['order'] as Map<String, dynamic>?;
       final orderId = order?['id'] as String?;
+      createdOrderId = orderId;
+      orderCreated = true;
       final orderNumber =
           onf.formatOrderNumber(order?['order_number'] as String?);
 
@@ -283,17 +293,29 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         }
       }
 
-      await CartService.instance.clearCart();
-      ref.invalidate(cartCountProvider);
+      // Cart clearing is best-effort for the same reason the uploads above
+      // are: it runs after the order exists, so a failure must be reported as
+      // a leftover cart, not as a failed order. The user can empty the cart
+      // from the cart screen.
+      var cartIssue = false;
+      try {
+        await CartService.instance.clearCart();
+        ref.invalidate(cartCountProvider);
+      } catch (_) {
+        cartIssue = true;
+      }
 
       if (!mounted) return;
       setState(() => _submitting = false);
       final dialogMessage = idIssue ??
           screenshotIssue ??
-          (orderNumber != null
-              ? 'Order $orderNumber has been placed successfully. '
-                  'You can track it in My Orders.'
-              : 'Your order has been placed successfully. You can track it in My Orders.');
+          (cartIssue
+              ? 'Your order has been placed successfully, but your cart could '
+                  'not be cleared automatically. Please empty it from the cart.'
+              : (orderNumber != null
+                  ? 'Order $orderNumber has been placed successfully. '
+                      'You can track it in My Orders.'
+                  : 'Your order has been placed successfully. You can track it in My Orders.'));
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
@@ -325,8 +347,24 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       );
     } catch (e) {
       if (!mounted) return;
+      setState(() => _submitting = false);
+      if (orderCreated) {
+        // The order is real. Say so plainly and send them to it rather than
+        // implying it failed — otherwise the obvious next move is to submit
+        // again, and that creates a duplicate order.
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(friendlyError(e,
+                context: 'Your order was placed, but we could not finish the last step')),
+            backgroundColor: AppTheme.warning,
+          ),
+        );
+        context.go(createdOrderId != null
+            ? '/user/orders/$createdOrderId'
+            : '/user?tab=2');
+        return;
+      }
       setState(() {
-        _submitting = false;
         _error = friendlyError(e, context: 'Could not place your order');
       });
     }
