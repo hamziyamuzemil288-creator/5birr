@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
+import 'rank_badge.dart';
 
 /// Immutable snapshot of one provider's trust stats, read from the
 /// `provider_trust_stats` view (migration 0027).
 class ProviderTrustStats {
+  /// The provider profile these stats belong to, so the section can also show
+  /// the provider's rank badge without the caller having to pass it twice.
+  final String? providerId;
   final double avgRating;
   final int reviewCount;
   final int completedCount;
@@ -15,6 +19,7 @@ class ProviderTrustStats {
   final DateTime? memberSince;
 
   const ProviderTrustStats({
+    this.providerId,
     required this.avgRating,
     required this.reviewCount,
     required this.completedCount,
@@ -28,6 +33,7 @@ class ProviderTrustStats {
     final providerId = m['provider_id'];
     if (providerId == null) return null;
     return ProviderTrustStats(
+      providerId: providerId as String?,
       avgRating: (m['avg_rating'] as num?)?.toDouble() ?? 0,
       reviewCount: (m['review_count'] as num?)?.toInt() ?? 0,
       completedCount: (m['completed_count'] as num?)?.toInt() ?? 0,
@@ -90,6 +96,11 @@ class ProviderTrustSection extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                       color: AppTheme.textSecondary)),
               const Spacer(),
+              // The provider's rank badge, beside the verification pill it
+              // belongs with. Both are trust signals; neither unlocks
+              // anything.
+              RankBadge(providerId: s.providerId, compact: false),
+              if (s.isVerified) const SizedBox(width: 6),
               if (s.isVerified)
                 _pill(
                   icon: Icons.verified_rounded,

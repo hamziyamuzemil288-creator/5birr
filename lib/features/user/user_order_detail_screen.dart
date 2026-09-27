@@ -15,6 +15,7 @@ import '../../core/services/location_service.dart';
 import '../../core/services/order_chat_service.dart';
 import '../../core/utils/order_number_format.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/rank_badge.dart';
 
 /// Statuses from which CANCELLED is a legal transition for the BUYER
 /// (see transition_order_status whitelist in 0003_functions.sql).
@@ -1022,11 +1023,21 @@ class _UserOrderDetailScreenState
                   fontSize: 12, color: AppTheme.textSecondary)),
           if (provider['business_name'] != null) ...[
             const SizedBox(height: 4),
-            Text(provider['business_name'] as String,
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.teal)),
+            Row(
+              children: [
+                Flexible(
+                  child: Text(provider['business_name'] as String,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.teal)),
+                ),
+                const SizedBox(width: 6),
+                // The counterparty's rank, at the point of a real transaction.
+                RankBadge(providerId: o['provider_id'] as String?),
+              ],
+            ),
           ],
         ],
       ),

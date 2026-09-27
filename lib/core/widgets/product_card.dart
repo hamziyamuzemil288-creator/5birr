@@ -3,6 +3,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../models/product.dart';
+import 'rank_badge.dart';
 
 class ProductCard extends StatelessWidget {
   final Product product;
@@ -117,6 +118,12 @@ class ProductCard extends StatelessWidget {
                               style: TextStyle(
                                   fontSize: 10, color: AppTheme.error)),
                         ),
+                      // The seller's rank, where a buyer is choosing. A trust
+                      // signal and nothing more: it gates no product and no
+                      // order. Renders nothing until the batched lookup lands,
+                      // so a grid of cards costs one round trip, not twelve.
+                      const Spacer(),
+                      RankBadge(providerId: product.providerId),
                     ],
                   ),
                 ],

@@ -733,4 +733,61 @@ void main() {
               'The assertion names the offending table.');
     });
   });
+
+  group('notifications, points and rank', () {
+    test('the events that matter notify, and the queued ones drain', () async {
+      // Four of the seven named events were already notified by the functions
+      // that perform them; orders, rides and appeals were silent. Two
+      // assertions because there are two failure modes: an event with no
+      // notification at all, and a notification written into the queue that
+      // nothing ever empties.
+      expect(await ok('assert_meaningful_events_are_notified'), isTrue,
+          reason: 'A user-meaningful event has lost its notification, or a '
+              'notification is being written by hand instead of through '
+              'notify_user() — which would fail on every client-side path.');
+
+      expect(await ok('assert_notification_outbox_is_drained'), isTrue,
+          reason: 'The notification queue is not scheduled, has a policy, or '
+              'is client-writable — a client-writable queue is a '
+              'client-writable notification, and an unscheduled one is a '
+              'notification nobody ever sees.');
+    });
+
+    test('every award path is wired and the ledger is the source of truth',
+        () async {
+      // The award triggers are the whole feature: without them a completed
+      // order, an approved provider, a positive review and an approved
+      // recharge all award nothing, and the ledger and the totals drift apart
+      // exactly the way a wallet balance and its ledger did before Phase 1.
+      expect(await ok('assert_points_awards_are_wired'), isTrue,
+          reason: 'An award trigger is missing, an award function no longer '
+              'routes through award_points(), or user_points no longer '
+              'matches the sum of the points_ledger rows behind it.');
+    });
+
+    test('points are convertible at a rate the CEO controls', () async {
+      // The conversion is money leaving the points system and entering a
+      // wallet, so this checks the setting exists and is usable, that the
+      // superseded points_per_trade knob is gone rather than sitting there
+      // looking live, and that a signed-in account can actually call the
+      // conversion at all.
+      expect(await ok('assert_points_conversion_is_configurable'), isTrue,
+          reason: 'A points setting is missing or not numeric, the '
+              'points_to_birr_rate is outside (0, 1], the dead '
+              'points_per_trade key is back, or convert_points_to_wallet() '
+              'is not executable by an authenticated account.');
+    });
+
+    test('the rank ladder is readable and its boundaries behave', () async {
+      // The ladder is data the CEO edits. This asserts the stored array is
+      // the shape the readers expect and that the boundary is real: at the
+      // first threshold an account holds that rung, one point below it holds
+      // none — because a ladder that badges a zero-point account makes the
+      // whole progress display meaningless.
+      expect(await ok('assert_rank_ladder_is_consistent'), isTrue,
+          reason: 'rank_tiers is missing, malformed, does not ascend, has a '
+              'non-positive first rung, or points_rank_code() disagrees with '
+              'the stored ladder at its own boundary.');
+    });
+  });
 }

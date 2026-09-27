@@ -5,6 +5,8 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/rank_service.dart';
+import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/verification_status_tile.dart';
 
 class UserProfileScreen extends ConsumerWidget {
@@ -288,7 +290,8 @@ class UserProfileScreen extends ConsumerWidget {
   }
 }
 
-/// Live loyalty-points total for the signed-in user (Feature 3).
+/// The signed-in user's points AND their rank, with the distance to the next
+/// rung and a way into the full breakdown (Feature 3, extended).
 class _PointsCard extends StatefulWidget {
   @override
   State<_PointsCard> createState() => _PointsCardState();
@@ -296,6 +299,7 @@ class _PointsCard extends StatefulWidget {
 
 class _PointsCardState extends State<_PointsCard> {
   int _points = 0;
+  RankProgress? _progress;
   bool _loading = true;
   // A failed read used to leave _points at 0, so the card confidently showed
   // "0 points" to a user who may well have a balance. Say we do not know
@@ -311,9 +315,19 @@ class _PointsCardState extends State<_PointsCard> {
   Future<void> _load() async {
     try {
       final p = await PointsService.instance.getMyPoints();
+      // The ladder is read from the server (the rank_tiers setting), never
+      // from thresholds compiled into the app, so the CEO can retune it.
+      // Best-effort: points without a rank still beats no card at all.
+      RankProgress? progress;
+      try {
+        progress = await RankService.instance.progressForPoints(p);
+      } catch (_) {
+        progress = null;
+      }
       if (mounted)
         setState(() {
           _points = p;
+          _progress = progress;
           _loading = false;
           _failed = false;
         });
@@ -329,74 +343,19 @@ class _PointsCardState extends State<_PointsCard> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.primaryGreen.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.25)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: AppTheme.primaryGreen.withOpacity(0.12),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.stars_rounded,
-                color: AppTheme.primaryGreen, size: 24),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('My Points',
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textSecondary)),
-                const SizedBox(height: 2),
-                _loading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: AppTheme.primaryGreen))
-                    : _failed
-                        ? InkWell(
-                            onTap: () {
-                              setState(() {
-                                _loading = true;
-                                _failed = false;
-                              });
-                              _load();
-                            },
-                            child: const Row(
-                              children: [
-                                Text('Could not load points',
-                                    style: TextStyle(
-                                        fontSize: 13,
-                                        color: AppTheme.textMuted)),
-                                SizedBox(width: 6),
-                                Icon(Icons.refresh,
-                                    size: 14, color: AppTheme.textMuted),
-                              ],
-                            ),
-                          )
-                        : Text('$_points points',
-                            style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.primaryGreenDark)),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return RankProgressCard(
+      points: _points,
+      progress: _progress,
+      loading: _loading,
+      failed: _failed,
+      onRetry: () {
+        setState(() {
+          _loading = true;
+          _failed = false;
+        });
+        _load();
+      },
+      onTap: () => context.push('/points'),
     );
   }
 }

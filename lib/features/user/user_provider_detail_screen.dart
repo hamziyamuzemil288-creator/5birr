@@ -7,6 +7,7 @@ import '../../core/services/review_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/provider_trust_section.dart';
+import '../../core/widgets/rank_badge.dart';
 
 class UserProviderDetailScreen extends StatefulWidget {
   final String providerId;
@@ -248,11 +249,17 @@ class _State extends State<UserProviderDetailScreen> {
         children: [
           Row(
             children: [
-              Expanded(
+              Flexible(
                 child: Text(r['reviewer_name'] ?? 'Anonymous',
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 13, fontWeight: FontWeight.w600)),
               ),
+              const SizedBox(width: 6),
+              // A reviewer's rank, so the reviews read as people with a track
+              // record rather than as anonymous text.
+              RankBadge(userId: r['user_id'] as String?),
+              const Spacer(),
               _stars(rating),
             ],
           ),

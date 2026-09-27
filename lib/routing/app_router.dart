@@ -36,6 +36,7 @@ import '../features/vehicle/vehicle_management_screen.dart';
 import '../features/vehicle/vehicle_form_screen.dart';
 import '../features/wallet/wallet_screen.dart';
 import '../features/wallet/recharge_screen.dart';
+import '../features/wallet/points_screen.dart';
 import '../features/admin/admin_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
@@ -56,6 +57,7 @@ import '../features/admin/admin_disputes_screen.dart';
 import '../features/admin/admin_order_payments_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
+import '../features/admin/admin_settings_screen.dart';
 import '../features/appeal/appeal_screen.dart';
 import '../features/appeal/my_appeals_screen.dart';
 import '../features/settings/account_deletion_screen.dart';
@@ -324,6 +326,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // ── Wallet (provider) ──
       GoRoute(path: '/wallet', builder: (_, __) => const WalletScreen()),
       GoRoute(path: '/wallet/recharge', builder: (_, __) => const RechargeScreen()),
+      // Points, rank and the conversion into wallet credit. Reachable by any
+      // signed-in account: a customer earns points too and can see what they
+      // would be worth once they hold a business account.
+      GoRoute(path: '/points', builder: (_, __) => const PointsScreen()),
 
       // ── Vehicle Provider ──
       GoRoute(path: '/vehicle', builder: (_, __) => const VehicleProviderDashboard()),
@@ -366,6 +372,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/staff-assignment', builder: (_, __) => const AdminStaffAssignmentScreen()),
       GoRoute(path: '/admin/roles/permissions', builder: (_, __) => const AdminRolePermissionsScreen()),
       GoRoute(path: '/admin/send-notifications', builder: (_, __) => const AdminNotificationSendScreen()),
+      // The generic settings editor: fees, thresholds, the points awards and
+      // the points-to-birr rate, editable without a migration.
+      GoRoute(path: '/admin/settings', builder: (_, __) => const AdminSettingsScreen()),
 
       // ── Help (signed-in users) ──
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),

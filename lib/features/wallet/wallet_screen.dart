@@ -158,6 +158,22 @@ class _WalletScreenState extends State<WalletScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  // Points live next to the wallet because that is what they
+                  // convert into. The conversion rate is a server setting and
+                  // the screen reads it live.
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () => context.push('/points'),
+                      icon: const Icon(Icons.stars_rounded),
+                      label: const Text('POINTS & RANK'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.primaryGreen,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 24),
                   // My recharge requests
                   const Text('My Recharge Requests',

@@ -424,6 +424,13 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                 'Roles, city, warnings, deletion', () => context.push('/admin/staff-assignment')),
                           if (_can('*') || _can('admin_history'))
                             _menuCard(Icons.tune, 'Role Permissions', 'Per-staff section access', () => context.push('/admin/roles/permissions')),
+                          // The business rules — fees, thresholds, the points
+                          // awards and the points-to-birr rate — editable
+                          // without a migration. Writes go through
+                          // admin_update_setting(), which is Admin-gated.
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.settings_outlined, 'System Settings',
+                                'Fees, points & rank rules', () => context.push('/admin/settings')),
                         ],
                       ),
                     ),

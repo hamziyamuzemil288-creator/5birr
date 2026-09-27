@@ -8,8 +8,10 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/rank_badge.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -24,6 +26,7 @@ class _VehicleProviderDashboardState
   Map<String, dynamic>? _driverStatus;
   int _vehicleCount = 0;
   int _points = 0;
+  RankProgress? _rankProgress;
   double? _walletBalance;
   bool _loading = true;
   String? _error;
@@ -63,6 +66,14 @@ class _VehicleProviderDashboardState
           .maybeSingle();
       final points =
           await PointsService.instance.getProviderPoints(prov['id'] as String);
+      // Ladder from the server; best-effort so a rank hiccup never blocks the
+      // dashboard itself.
+      RankProgress? progress;
+      try {
+        progress = await RankService.instance.progressForPoints(points);
+      } catch (_) {
+        progress = null;
+      }
       final wallet = await client
           .from('wallets')
           .select('balance')
@@ -74,6 +85,7 @@ class _VehicleProviderDashboardState
           _vehicleCount = vehicles.count ?? 0;
           _driverStatus = status;
           _points = points;
+          _rankProgress = progress;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();
           _loading = false;
           _error = null;
@@ -282,6 +294,15 @@ class _VehicleProviderDashboardState
                           ),
                         ],
                       ),
+                    ),
+                    const SizedBox(height: 20),
+                    // Rank: the business's standing on the loyalty ladder. A
+                    // trust signal only — nothing is gated on it.
+                    RankProgressCard(
+                      points: _points,
+                      progress: _rankProgress,
+                      subjectLabel: 'Business',
+                      onTap: () => context.push('/points'),
                     ),
                     const SizedBox(height: 20),
                     // Wallet balance strip

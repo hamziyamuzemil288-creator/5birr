@@ -6,8 +6,10 @@ import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/rank_badge.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -22,6 +24,7 @@ class _ServiceProviderDashboardState
   int _productCount = 0;
   int _orderCount = 0;
   int _points = 0;
+  RankProgress? _rankProgress;
   double? _walletBalance;
   bool _loading = true;
   String? _error;
@@ -59,6 +62,14 @@ class _ServiceProviderDashboardState
           .eq('provider_id', prov['id'])
           .count(CountOption.exact);
       final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
+      // Ladder from the server; best-effort so a rank hiccup never blocks the
+      // dashboard itself.
+      RankProgress? progress;
+      try {
+        progress = await RankService.instance.progressForPoints(points);
+      } catch (_) {
+        progress = null;
+      }
       final wallet = await client
           .from('wallets')
           .select('balance')
@@ -70,6 +81,7 @@ class _ServiceProviderDashboardState
           _productCount = prods.count ?? 0;
           _orderCount = orders.count ?? 0;
           _points = points;
+          _rankProgress = progress;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();
           _loading = false;
           _error = null;
@@ -158,6 +170,16 @@ class _ServiceProviderDashboardState
                           ),
                         ],
                       ),
+                    ),
+                    const SizedBox(height: 20),
+                    // Rank: the business's standing on the loyalty ladder, with
+                    // the distance to the next rung. Status only — no feature
+                    // is gated on it.
+                    RankProgressCard(
+                      points: _points,
+                      progress: _rankProgress,
+                      subjectLabel: 'Business',
+                      onTap: () => context.push('/points'),
                     ),
                     const SizedBox(height: 20),
                     // Wallet balance strip

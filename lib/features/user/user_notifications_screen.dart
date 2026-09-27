@@ -53,6 +53,10 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
     if (type.contains('REJECT')) return AppTheme.error;
     if (type.contains('WALLET')) return AppTheme.gold;
     if (type.contains('RIDE')) return AppTheme.teal;
+    // Points awards and appeal decisions are their own colours rather than
+    // the default green, so the list reads at a glance without a filter.
+    if (type.contains('POINTS')) return AppTheme.gold;
+    if (type.contains('APPEAL')) return AppTheme.warning;
     return AppTheme.primaryGreen;
   }
 
