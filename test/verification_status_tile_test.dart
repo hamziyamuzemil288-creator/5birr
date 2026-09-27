@@ -195,14 +195,30 @@ void main() {
     // names the exact state and scale. Letting the first one escape reported
     // only "a RenderFlex overflowed by 10.0 pixels" against a line number,
     // which is no way to find the culprit among six states x four scales.
+    //
+    // The tile is pumped the way user_profile_screen.dart actually renders it:
+    // a row inside a scrollable Column. Pumping it straight into a Scaffold
+    // body hands the row a TIGHT 480px height, so any state whose text needs
+    // more than that reports an overflow that the user never sees, because in
+    // the app the parent scrolls. That is not a hypothetical — the "Not
+    // verified" row, whose copy has not changed in either direction, failed
+    // that way at a 2.0 scale. The guard that matters is still live: a chip
+    // that steals the row's width squeezes the text to a few pixels per line
+    // and blows up here just as loudly.
     for (final scale in [1.0, 1.3, 1.8, 2.0]) {
       for (final status in DocReviewState.values) {
         await tester.pumpWidget(MaterialApp(
           home: MediaQuery(
             data: MediaQueryData(textScaler: TextScaler.linear(scale)),
             child: Scaffold(
-              body: VerificationStatusTile(
-                reviewLoader: () async => status,
+              body: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    VerificationStatusTile(
+                      reviewLoader: () async => status,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
