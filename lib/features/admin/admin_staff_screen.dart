@@ -1100,6 +1100,155 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
+  /// Read-only view of this staff member's CURRENT task queue — the CEO
+  /// console half of staff_task_feed(p_staff_id), which the server already
+  /// limits to CEO / Super Admin. From here one task can be removed
+  /// (staff_cancel_task): a status change on the completion record, never a
+  /// hard delete of the item or the person's history.
+  Future<void> _showTasks(Map<String, dynamic> staff) async {
+    List<Map<String, dynamic>> tasks;
+    try {
+      final client = Supabase.instance.client;
+      final rows = await client
+          .rpc('staff_task_feed', params: {'p_staff_id': staff['id']});
+      tasks = (rows as List)
+          .map((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content:
+              Text(friendlyError(e, context: 'Could not load this queue'))));
+      return;
+    }
+    if (!mounted) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (sheetContext, setDialogState) => AlertDialog(
+          title: Text('${staff['name']} — tasks'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 420,
+            child: tasks.isEmpty
+                ? const Center(
+                    child: Text('No tasks in this queue',
+                        style: TextStyle(color: AppTheme.textSecondary)),
+                  )
+                : ListView.separated(
+                    itemCount: tasks.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, i) {
+                      final t = tasks[i];
+                      final done = t['is_completed'] == true;
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          (t['title'] as String?) ?? 'Task',
+                          style: const TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(
+                          '${(t['description'] as String?) ?? ''}\n'
+                          '${(t['status'] as String?) ?? ''} · '
+                          '${(t['required_permission'] as String?) ?? ''}',
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: done
+                            ? const Icon(Icons.check_circle_outline,
+                                color: AppTheme.primaryGreen, size: 20)
+                            : IconButton(
+                                icon: const Icon(Icons.playlist_remove,
+                                    color: AppTheme.error, size: 20),
+                                tooltip: 'Remove from this queue',
+                                onPressed: () async {
+                                  final removed =
+                                      await _cancelStaffTask(staff, t);
+                                  if (removed) {
+                                    setDialogState(() => tasks.removeAt(i));
+                                  }
+                                },
+                              ),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// CEO-only confirmation for removing ONE task from a staff queue. The
+  /// server (staff_cancel_task) re-checks the caller; the dialog exists so
+  /// the click can carry a reason onto the audit record.
+  Future<bool> _cancelStaffTask(
+      Map<String, dynamic> staff, Map<String, dynamic> task) async {
+    final reasonCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove this task?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '\"${(task['title'] as String?) ?? 'Task'}\" will leave '
+              '${staff['name']}\'s queue. The underlying work item is '
+              'unaffected and stays visible in the admin queues.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonCtrl,
+              maxLength: 200,
+              decoration: const InputDecoration(
+                labelText: 'Reason (optional)',
+                helperText: 'Stored on the cancellation record.',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    final reason = reasonCtrl.text.trim();
+    reasonCtrl.dispose();
+    if (ok != true) return false;
+    try {
+      await Supabase.instance.client.rpc('staff_cancel_task', params: {
+        'p_task_key': task['task_key'],
+        'p_staff_id': staff['id'],
+        'p_reason': reason.isEmpty ? null : reason,
+      });
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text(friendlyError(e, context: 'Could not remove this task'))));
+      }
+      return false;
+    }
+  }
+
   /// Only the CEO / Super Admin / owner may edit or revoke; the server
   /// enforces the same matrix via can_manage_staff.
   bool _canManage(Map<String, dynamic> s) {
@@ -1248,6 +1397,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                 onSelected: (v) {
                                   if (v == 'edit') _openEditor(s);
                                   if (v == 'perf') _showPerformance(s);
+                                  if (v == 'tasks') _showTasks(s);
                                   if (v == 'referrals') _showReferralCodes(s);
                                   if (v == 'revoke') _revoke(s);
                                   if (v == 'delete') _deletePermanently(s);
@@ -1258,6 +1408,17 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
+                                  // The CEO's cross-staff console: read any
+                                  // staff member's CURRENT queue through the
+                                  // same RPC the staff workspace uses, and
+                                  // remove a single task from it. The server
+                                  // refuses both for anyone who is not CEO /
+                                  // Super Admin; hiding the item is UX, not
+                                  // the boundary.
+                                  if (_isCeo || _isSuperAdmin)
+                                    const PopupMenuItem(
+                                        value: 'tasks',
+                                        child: Text('Tasks')),
                                   // The step between "tell them off" and
                                   // "take their access away". Revoke already
                                   // existed; nothing in between did, so a
