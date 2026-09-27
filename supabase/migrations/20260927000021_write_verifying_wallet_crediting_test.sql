@@ -48,7 +48,7 @@
 CREATE OR REPLACE FUNCTION public.assert_wallet_crediting_writes()
 RETURNS boolean
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
