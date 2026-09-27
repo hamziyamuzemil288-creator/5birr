@@ -27,6 +27,17 @@ class AuthState {
   /// router must send the user to /update-password before anything else.
   final bool isRecoverySession;
 
+  /// True when this account already runs a business of either kind.
+  ///
+  /// Used to hide "Become a Partner": a customer turning their existing
+  /// account into a business is the case that button is for, and somebody who
+  /// is already a provider pressing it would only be told they have one
+  /// already. An account can hold USER *and* a provider role at once, so this
+  /// checks the provider roles rather than primaryRole.
+  bool get isProvider =>
+      roles.contains(AppUserRole.serviceProvider) ||
+      roles.contains(AppUserRole.vehicleProvider);
+
   const AuthState({
     this.user,
     this.profile,

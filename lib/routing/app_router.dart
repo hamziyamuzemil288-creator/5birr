@@ -58,6 +58,12 @@ import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/appeal/appeal_screen.dart';
 import '../features/appeal/my_appeals_screen.dart';
+import '../features/settings/account_deletion_screen.dart';
+import '../features/admin/admin_deletion_requests_screen.dart';
+import '../features/auth/change_password_screen.dart';
+import '../features/provider/provider_gallery_screen.dart';
+import '../features/provider/become_partner_screen.dart';
+import '../features/user/rate_customer_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
 import '../features/approval/pending_approval_screen.dart';
 import '../features/approval/rejected_screen.dart';
@@ -368,6 +374,32 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // Both sides of an appeal: what I filed (status + resolution + reply)
       // and what was filed against me (with the Respond action).
       GoRoute(path: '/appeals', builder: (_, __) => const MyAppealsScreen()),
+
+      // ── Self-service account actions (any signed-in account) ──
+      // Submission opens a request; staff decide. Nothing deletes on submit.
+      GoRoute(path: '/account/deletion', builder: (_, __) => const AccountDeletionScreen()),
+      GoRoute(path: '/account/password', builder: (_, __) => const ChangePasswordScreen()),
+      // Become a Partner: an existing user applying to run a business, through
+      // the same approval pipeline a fresh provider signup uses.
+      GoRoute(path: '/become-partner', builder: (_, __) => const BecomePartnerScreen()),
+
+      // ── Provider extras ──
+      GoRoute(
+        path: '/provider/gallery/:id',
+        builder: (_, s) => ProviderGalleryScreen(providerId: s.pathParameters['id']!),
+      ),
+      // A provider rating the customer on a completed order.
+      GoRoute(
+        path: '/review/customer',
+        builder: (_, s) => RateCustomerScreen(
+          orderId: s.extra is Map ? '${(s.extra as Map)['order_id']}' : '',
+          customerId: s.extra is Map ? '${(s.extra as Map)['customer_id']}' : '',
+          customerName: s.extra is Map ? (s.extra as Map)['customer_name'] as String? : null,
+        ),
+      ),
+
+      // ── Staff queue: account deletion requests ──
+      GoRoute(path: '/admin/deletions', builder: (_, __) => const AdminDeletionRequestsScreen()),
 
       // Task 7 item 2: standalone notification inbox for providers/vehicle
       // owners (their dashboards' bell). Users get the same screen as a

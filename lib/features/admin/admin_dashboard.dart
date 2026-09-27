@@ -390,6 +390,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                             _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
                           if (_can('support_chat'))
                             _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
+                          if (_can('*') || _can('account_deletion'))
+                            _menuCard(Icons.person_remove_outlined, 'Account Deletions',
+                                'Deletion requests',
+                                () => context.push('/admin/deletions')),
                           if (_can('support_chat'))
                             _menuCard(Icons.gavel_outlined, 'Appeals',
                                 _openAppeals > 0

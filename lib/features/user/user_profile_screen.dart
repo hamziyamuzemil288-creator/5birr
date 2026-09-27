@@ -165,8 +165,28 @@ class UserProfileScreen extends ConsumerWidget {
                   _menuTile(Icons.outlined_flag, 'My Appeals', AppTheme.gold,
                       onTap: () => context.push('/appeals')),
                   _divider(),
+                  // Offered only to someone who is not already a provider: a
+                  // customer turning their existing account into a business is
+                  // the case this is for, and a provider pressing it would only
+                  // ever be told they already have one.
+                  if (!auth.isProvider)
+                    _menuTile(Icons.storefront_outlined, 'Become a Partner',
+                        AppTheme.primaryGreen,
+                        onTap: () => context.push('/become-partner')),
+                  if (!auth.isProvider) _divider(),
+                  _menuTile(Icons.lock_outline, 'Change Password',
+                      AppTheme.textSecondary,
+                      onTap: () => context.push('/account/password')),
+                  _divider(),
                   _menuTile(Icons.help_outline, 'Help & Support', AppTheme.gold,
                       onTap: () => context.push('/help')),
+                  _divider(),
+                  // Destructive, so it sits last and is styled as the
+                  // deliberate act it is. It opens a request; it does not
+                  // delete anything on the spot.
+                  _menuTile(Icons.delete_outline, 'Delete Account',
+                      AppTheme.error,
+                      onTap: () => context.push('/account/deletion')),
                   _divider(),
                   _menuTile(Icons.info_outline, 'About Aliob',
                       AppTheme.textSecondary),

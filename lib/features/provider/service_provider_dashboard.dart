@@ -190,6 +190,13 @@ class _ServiceProviderDashboardState
                         () => context.push('/provider/business')),
                     _action(Icons.inventory_2_outlined, 'My Products',
                         () => context.push('/provider/products')),
+                    // Only rendered once a profile row exists. The route is
+                    // /provider/gallery/:id, so a null id here would push a
+                    // path that matches no route at all.
+                    if (_providerProfile?['id'] != null)
+                      _action(Icons.photo_library_outlined, 'My Gallery',
+                          () => context
+                              .push('/provider/gallery/${_providerProfile!['id']}')),
                     _action(Icons.add_circle_outline, 'Add Product',
                         () => context.push('/provider/products/new')),
                     _action(Icons.receipt_long_outlined, 'Orders',

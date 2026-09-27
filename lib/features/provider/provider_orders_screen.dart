@@ -253,6 +253,32 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
                 '${_fmtDate(DateTime.parse(o['created_at'] as String))}',
                 style: const TextStyle(
                     fontSize: 12, color: AppTheme.textMuted)),
+            // Only once the work is actually finished, which is the same
+            // condition the server checks. The customer id is orders.user_id,
+            // which is the id reviews.target_id expects for target_type USER.
+            if (status == 'COMPLETED' && (o['user_id'] as String?) != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () => context.push('/review/customer', extra: {
+                      'order_id': o['id'],
+                      'customer_id': o['user_id'],
+                      'customer_name': userName.isEmpty ? null : userName,
+                    }),
+                    icon: const Icon(Icons.star_outline, size: 16),
+                    label: const Text('Rate this customer',
+                        style: TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      foregroundColor: AppTheme.gold,
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
         trailing: Text(

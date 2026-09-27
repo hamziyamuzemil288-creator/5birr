@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/photo_grid.dart';
 
 class ProviderProductListScreen extends StatefulWidget {
   const ProviderProductListScreen({super.key});
@@ -144,16 +145,67 @@ class _State extends State<ProviderProductListScreen> {
                     itemCount: _products.length,
                     itemBuilder: (_, i) {
                       final p = _products[i];
+                      final images = (p['product_images'] as List?) ?? const [];
                       return Card(
                         child: ListTile(
-                          leading: Container(
+                          // The real listing photo, not a grey box: a provider
+                          // scanning their own catalogue is looking for "which
+                          // one has the photo I uploaded". The +N badge says
+                          // how many more there are without turning a list row
+                          // into a grid.
+                          leading: SizedBox(
                             width: 48,
                             height: 48,
-                            decoration: BoxDecoration(
-                                color: AppTheme.creamDark,
-                                borderRadius: BorderRadius.circular(8)),
-                            child: const Icon(Icons.inventory_2_outlined,
-                                color: AppTheme.textMuted),
+                            child: images.isEmpty
+                                ? Container(
+                                    decoration: BoxDecoration(
+                                        color: AppTheme.creamDark,
+                                        borderRadius:
+                                            BorderRadius.circular(8)),
+                                    child: const Icon(
+                                        Icons.inventory_2_outlined,
+                                        color: AppTheme.textMuted),
+                                  )
+                                : Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      PhotoGrid(
+                                        crossAxisCount: 1,
+                                        spacing: 0,
+                                        borderRadius: 8,
+                                        items: [
+                                          PhotoGridItem.stored(
+                                            images.first['storage_path']
+                                                as String? ?? '',
+                                            bucket: 'product-images',
+                                          ),
+                                        ],
+                                      ),
+                                      if (images.length > 1)
+                                        Positioned(
+                                          right: 2,
+                                          bottom: 2,
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 4, vertical: 1),
+                                            decoration: BoxDecoration(
+                                              color: Colors.black
+                                                  .withOpacity(0.6),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                            ),
+                                            child: Text(
+                                              '+${images.length - 1}',
+                                              style: const TextStyle(
+                                                fontSize: 10,
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
                           ),
                           title: Text(p['name'] ?? '',
                               maxLines: 1, overflow: TextOverflow.ellipsis),
