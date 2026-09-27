@@ -355,6 +355,10 @@ class _State extends State<UserRideRequestScreen>
           initialCenter: _initialMapCenter(),
           title: 'Pick Pickup Location',
           initialCenterReliable: _pickupPoint != null || _destLatLng != null,
+          // Picking a pickup FROM the current position is what the user
+          // usually wants, so this screen may start with the pin already
+          // dropped. The destination screen may not — see below.
+          seedPinFromGps: true,
         ),
       ),
     );
@@ -401,6 +405,25 @@ class _State extends State<UserRideRequestScreen>
 
   String _formatCoords(LatLng p) =>
       '${p.latitude.toStringAsFixed(5)}, ${p.longitude.toStringAsFixed(5)}';
+
+  /// Straight-line pickup -> destination distance in km, or null until both
+  /// ends are known.
+  ///
+  /// Shown on the form because the fare is opaque: the server prices
+  /// base + per_km * distance against a rounded distance and a floor, so a
+  /// request priced at the minimum gave the user no way to tell "short trip"
+  /// from "the destination was never actually chosen and defaulted to me".
+  double? get _tripDistanceKm {
+    final p = _pickupPoint;
+    final d = _destLatLng;
+    if (p == null || d == null) return null;
+    return LocationService.instance.calculateDistance(
+      p.latitude,
+      p.longitude,
+      d.latitude,
+      d.longitude,
+    );
+  }
 
   /// Geocode a typed destination address at submit time. Returns true when
   /// a coordinate was found and stored in [_destLatLng].
@@ -822,12 +845,31 @@ class _State extends State<UserRideRequestScreen>
                       ),
                     ),
                   if (_destLatLng != null)
-                    const Padding(
-                      padding: EdgeInsets.only(left: 4),
-                      child: Text(
-                        'Destination coordinates set — tap the map icon to change',
-                        style: TextStyle(fontSize: 12, color: AppTheme.success),
-                      ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Builder(builder: (context) {
+                        final km = _tripDistanceKm;
+                        // km is null when the pickup is still unknown (no GPS
+                        // and nothing typed), so it is computed once here
+                        // rather than asserted into the string.
+                        final tooClose = km != null && km < 0.15;
+                        final message = km == null
+                            ? 'Destination set — tap the map icon to change it.'
+                            : tooClose
+                                ? 'Pickup and destination are at the same spot '
+                                    '— tap the map icon to move the pin.'
+                                : 'Destination set — ${km.toStringAsFixed(1)} '
+                                    'km away. Tap the map icon to change it.';
+                        return Text(
+                          message,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: tooClose
+                                ? AppTheme.warning
+                                : AppTheme.success,
+                          ),
+                        );
+                      }),
                     ),
                   const SizedBox(height: 16),
                   // Vehicle category selection
@@ -914,16 +956,24 @@ class _State extends State<UserRideRequestScreen>
                     child: PrimaryButton(
                       label: 'REQUEST RIDE',
                       isLoading: _submitting,
-                      // Destination coordinates must be picked before the
-                      // request can be submitted.
-                      onPressed: _destLatLng == null ? null : _submit,
+                      // A destination may be given as a picked pin OR as typed
+                      // text: _submit() geocodes the text before it submits,
+                      // but the button used to be hard-disabled until a pin
+                      // existed, so that branch was unreachable and typing an
+                      // address simply did nothing. The one thing still not
+                      // allowed is an empty destination.
+                      onPressed: (_destLatLng == null &&
+                              _destCtrl.text.trim().isEmpty)
+                          ? null
+                          : _submit,
                     ),
                   ),
-                  if (_destLatLng == null)
+                  if (_destLatLng == null && _destCtrl.text.trim().isEmpty)
                     const Padding(
                       padding: EdgeInsets.only(top: 8),
                       child: Text(
-                        'Pick a destination on the map to enable the request',
+                        'Type a destination or pick one on the map to enable '
+                        'the request',
                         textAlign: TextAlign.center,
                         style:
                             TextStyle(fontSize: 12, color: AppTheme.textMuted),
@@ -943,11 +993,25 @@ class _MapPickerScreen extends StatefulWidget {
   final LatLng initialCenter;
   final String title;
   final bool initialCenterReliable;
+
+  /// Whether opening this screen may already have the pin on the user.
+  ///
+  /// True for pickup, false for destination. This is the "it takes default km"
+  /// bug: the picker used to drop a pin at the live GPS fix the moment it
+  /// opened, for BOTH purposes, so opening "Pick destination" silently set
+  /// the destination to where the user already was. Pickup and destination
+  /// were then the same point, the server priced the trip at its minimum
+  /// (ETB 80 by default, base 50 + 20/km over a rounded 0.00 km), and the
+  /// "REQUEST RIDE" button was live — a complete, confident, wrong ride for
+  /// the price of a starting fare. Nothing on screen said the destination had
+  /// never been chosen by the user.
+  final bool seedPinFromGps;
   const _MapPickerScreen(
       {super.key,
       required this.initialCenter,
       this.title = 'Pick Destination',
-      this.initialCenterReliable = false});
+      this.initialCenterReliable = false,
+      this.seedPinFromGps = false});
 
   @override
   State<_MapPickerScreen> createState() => _MapPickerScreenState();
@@ -985,7 +1049,10 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
     if (_centerIsFallback) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _seedFromLastKnown();
-        _moveToCurrentLocation(showError: false);
+        _moveToCurrentLocation(
+          showError: false,
+          dropPin: widget.seedPinFromGps,
+        );
       });
     }
   }
@@ -1021,17 +1088,23 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
 
   /// Fresh GPS fix: permission is already held in the common case (the
   /// parent screen requested it), so this usually resolves quickly.
-  Future<void> _moveToCurrentLocation({bool showError = true}) async {
+  ///
+  /// [dropPin] is what keeps the destination honest. Recentring the map on
+  /// the user is always helpful; choosing a point FOR them never is, and on
+  /// this screen a chosen point is a live, priced, submittable ride request.
+  Future<void> _moveToCurrentLocation({
+    bool showError = true,
+    bool dropPin = false,
+  }) async {
     if (_recentering) return;
     setState(() => _recentering = true);
     final r = await LocationService.instance.getCurrentPositionDetailed();
     if (!mounted) return;
     setState(() => _recentering = false);
     if (r.success) {
-      setState(() => _picked = LatLng(
-          r.position!.latitude, r.position!.longitude));
-      _moveCamera(
-          LatLng(r.position!.latitude, r.position!.longitude));
+      final point = LatLng(r.position!.latitude, r.position!.longitude);
+      if (dropPin) setState(() => _picked = point);
+      _moveCamera(point);
     } else if (showError) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1154,7 +1227,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                     onChanged: _onSearchChanged,
                     textInputAction: TextInputAction.search,
                     decoration: InputDecoration(
-                      hintText: 'Search address or place',
+                      hintText: 'Search a place in Ethiopia',
                       prefixIcon: const Icon(Icons.search, size: 20),
                       suffixIcon: _searching
                           ? const Padding(
@@ -1215,6 +1288,24 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                               ))
                           .toList(),
                     ),
+                  )
+                else if (!_searching && _searchCtrl.text.trim().length >= 3)
+                  // Say WHY it is empty. The underlying fix pinned every
+                  // query to Ethiopia, so an unqualified name that exists
+                  // abroad now correctly returns nothing — and a bare "no
+                  // results" for "Jimma" would look like a broken search bar.
+                  Container(
+                    margin: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      'No match in Ethiopia. Try adding a town or a kebele.',
+                      style: TextStyle(fontSize: 12.5, color: AppTheme.textSecondary),
+                    ),
                   ),
               ],
             ),
@@ -1246,7 +1337,9 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                 ),
               ),
             ),
-          // Manual recenter on the current GPS position.
+          // Manual recenter on the current GPS position. Camera only: it
+          // must never overwrite a pin the user has already placed, and it
+          // must never place one for them.
           Positioned(
             right: 16,
             bottom: 16,

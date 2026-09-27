@@ -19,6 +19,20 @@ import 'location_service.dart' show GeoPoint;
 /// Rate limiting: shared stopwatch enforces >= 1.1s between external HTTP
 /// calls. Failures surface as empty results, never exceptions — callers
 /// keep working (old GPS-only behavior) when geocoding is unavailable.
+///
+/// COUNTRY SCOPE
+/// -------------
+/// Every query is pinned to Ethiopia and every response is filtered to
+/// Ethiopia, because this is an Ethiopian marketplace and the reported symptom
+/// was a global index answering local questions: typing "Jimma" returned Jimma
+/// in other countries, so the nearest-match ranking put a foreign city ahead of
+/// the one the user was standing in.
+///
+/// Photon's lat/lon parameters are a SOFT ranking hint, not a filter — a soft
+/// hint is not enough, which is why the `bbox` below and the client-side
+/// [PlaceResult.isInEthiopia] check both exist. Nominatim's `countrycodes=et`
+/// was already a hard filter, but it only ran on the FALLBACK path, so the bug
+/// lived in the primary one.
 class GeocodingService {
   GeocodingService._();
   static final instance = GeocodingService._();
@@ -27,6 +41,18 @@ class GeocodingService {
   static const _nominatimUrl = 'https://nominatim.openstreetmap.org';
   static const _minInterval = Duration(milliseconds: 1100);
   static const _httpTimeout = Duration(seconds: 8);
+
+  /// Ethiopia, generously padded so border towns and lakeside kebeles are not
+  /// clipped away. Photon wants minLon,minLat,maxLon,maxLat; Nominatim's
+  /// `viewbox` wants minLon,MAXLat,maxLon,minLat (top before bottom). They are
+  /// NOT the same string, so they are two constants rather than one reused.
+  static const _ethiopiaBbox = '32.9,3.3,48.0,15.0';
+  static const _ethiopiaViewbox = '32.9,15.0,48.0,3.3';
+
+  static const _ethMinLat = 3.3;
+  static const _ethMaxLat = 15.0;
+  static const _ethMinLng = 32.9;
+  static const _ethMaxLng = 48.0;
 
   /// Simple in-memory cache (address -> coords, coords -> address). Keeps
   /// repeat lookups free and blips invisible; capped to stay tiny.
@@ -87,10 +113,16 @@ class GeocodingService {
     final (double, double)? bias = biasPoint != null
         ? (biasPoint.lat, biasPoint.lng)
         : (biasCity != null ? _cityBias[biasCity] : null);
+    // Over-fetch from the remote service, then keep only Ethiopian hits. The
+    // bbox is a hard server-side filter; asking for exactly `limit` and then
+    // discarding the foreign ones is how a search for an Ethiopian place came
+    // back with nothing at all.
+    final fetch = limit * 3;
     final params = {
       'q': q,
-      'limit': '$limit',
+      'limit': '$fetch',
       'lang': 'en',
+      'bbox': _ethiopiaBbox,
       if (bias != null) ...{
         'lat': '${bias.$1}',
         'lon': '${bias.$2}',
@@ -103,29 +135,47 @@ class GeocodingService {
       final features = (data['features'] as List? ?? []);
       final results = features
           .map((f) => PlaceResult.fromPhoton(f as Map<String, dynamic>))
+          .where((p) => p.isInEthiopia)
+          .take(limit)
+          .toList();
+      if (results.isNotEmpty) {
+        _cachePut(cacheKey, results);
+        return results;
+      }
+      // Photon answered, but nothing survived the country filter. Falling
+      // through to the second index is the safe reading: either Photon ignored
+      // the bbox we sent, or this really has no Ethiopian match, and the
+      // second index settles which. Returning the empty list here instead
+      // would have turned "the bbox parameter was not honoured" into a search
+      // bar that silently finds nothing.
+    } catch (_) {
+      // Network/HTTP failure — fall through to the other index.
+    }
+
+    // Nominatim fallback (same free OSM data, different index).
+    try {
+      await _throttle();
+      final uri = Uri.parse('$_nominatimUrl/search').replace(queryParameters: {
+        'q': q,
+        'format': 'json',
+        'limit': '$limit',
+        'addressdetails': '1',
+        'countrycodes': 'et',
+        'viewbox': _ethiopiaViewbox,
+        // viewbox only ranks; bounded makes it a filter. Without it
+        // Nominatim is free to return an equally-named place in Kenya.
+        'bounded': '1',
+      });
+      final list = await _getJson(uri) as List<dynamic>;
+      final results = list
+          .map((e) => PlaceResult.fromNominatim(e as Map<String, dynamic>))
+          .where((p) => p.isInEthiopia)
+          .take(limit)
           .toList();
       _cachePut(cacheKey, results);
       return results;
     } catch (_) {
-      // Nominatim fallback (same free OSM data, different index).
-      try {
-        await _throttle();
-        final uri = Uri.parse('$_nominatimUrl/search').replace(queryParameters: {
-          'q': q,
-          'format': 'json',
-          'limit': '$limit',
-          'countrycodes': 'et',
-          if (bias != null) 'viewbox': _ethiopiaViewbox,
-        });
-        final list = await _getJson(uri) as List<dynamic>;
-        final results = list
-            .map((e) => PlaceResult.fromNominatim(e as Map<String, dynamic>))
-            .toList();
-        _cachePut(cacheKey, results);
-        return results;
-      } catch (_) {
-        return const [];
-      }
+      return const [];
     }
   }
 
@@ -139,18 +189,21 @@ class GeocodingService {
     final cached = _cache[cacheKey];
     if (cached is GeoPoint) return cached;
 
-    // 1. Photon (free, no key).
+    // 1. Photon (free, no key), Ethiopia-scoped by searchPlaces.
     final places = await searchPlaces(full, limit: 1);
     if (places.isNotEmpty) {
       _cachePut(cacheKey, places.first.point);
       return places.first.point;
     }
-    // 2. Platform geocoder as last resort.
+    // 2. Platform geocoder as last resort. It is a GLOBAL index with no
+    //    country filter of its own, so its answer is checked too: an
+    //    unqualified "Jimma" resolves to a street in another country, and a
+    //    ride request pinned there is silently, expensively wrong.
     try {
       final found = await platform.locationFromAddress(full)
           .timeout(_httpTimeout);
-      if (found.isNotEmpty) {
-        final p = found.first;
+      for (final p in found) {
+        if (!isInEthiopia(p.latitude, p.longitude)) continue;
         final point = GeoPoint(p.latitude, p.longitude);
         _cachePut(cacheKey, point);
         return point;
@@ -175,11 +228,12 @@ class GeocodingService {
       return places.first.point;
     }
     // Platform geocoder as last resort (platform geocoders are already
-    // network-proximate, so no explicit bias is possible).
+    // network-proximate, so no explicit bias is possible) — country-checked
+    // for the same reason as in geocode().
     try {
       final found = await platform.locationFromAddress(q).timeout(_httpTimeout);
-      if (found.isNotEmpty) {
-        final p = found.first;
+      for (final p in found) {
+        if (!isInEthiopia(p.latitude, p.longitude)) continue;
         final point = GeoPoint(p.latitude, p.longitude);
         _cachePut(cacheKey, point);
         return point;
@@ -187,6 +241,15 @@ class GeocodingService {
     } catch (_) {}
     return null;
   }
+
+  /// Is this coordinate inside the Ethiopia search box? Padding matches
+  /// [_ethiopiaBbox]; a place just over the line in an adjacent country is not
+  /// a place a rider in this app can be sent to.
+  static bool isInEthiopia(double lat, double lng) =>
+      lat >= _ethMinLat &&
+      lat <= _ethMaxLat &&
+      lng >= _ethMinLng &&
+      lng <= _ethMaxLng;
 
   /// Nearby known/registered places (POIs) around a live GPS point — the
   /// chips shown after "Current Location" centers the map (Task 13).
@@ -216,6 +279,7 @@ class GeocodingService {
       final results = features
           .map((f) => PlaceResult.fromPhoton(f as Map<String, dynamic>))
           .where((p) => p.label.isNotEmpty && p.label != 'Place')
+          .where((p) => p.isInEthiopia)
           .take(limit)
           .toList();
       _cachePut(cacheKey, results);
@@ -278,8 +342,6 @@ class GeocodingService {
     }
   }
 
-  static const _ethiopiaViewbox = '32.9,15.0,48.0,3.4';
-
   /// Approximate city centers for search bias (sufficient for relevance).
   static const Map<String, (double, double)> _cityBias = {
     'Addis Ababa': (9.005, 38.763),
@@ -304,6 +366,7 @@ class PlaceResult {
     required this.city,
     required this.lat,
     required this.lng,
+    this.countryCode,
   });
 
   final String label;
@@ -311,7 +374,17 @@ class PlaceResult {
   final double lat;
   final double lng;
 
+  /// ISO-3166 alpha-2 code when the provider supplies one. Photon does,
+  /// Nominatim only with `addressdetails=1`. Null means "unknown" — never
+  /// "not Ethiopia": the coordinate check is what decides, so a provider that
+  /// omits the field cannot smuggle a foreign result back in.
+  final String? countryCode;
+
   GeoPoint get point => GeoPoint(lat, lng);
+
+  bool get isInEthiopia =>
+      (countryCode?.toLowerCase() == 'et' || countryCode == null) &&
+      GeocodingService.isInEthiopia(lat, lng);
 
   factory PlaceResult.fromPhoton(Map<String, dynamic> feature) {
     final props = (feature['properties'] as Map<String, dynamic>?) ?? {};
@@ -329,15 +402,19 @@ class PlaceResult {
       city: (props['city'] ?? props['state'] ?? '').toString(),
       lat: coords.length > 1 ? (coords[1] as num).toDouble() : 0,
       lng: coords.isNotEmpty ? (coords[0] as num).toDouble() : 0,
+      countryCode: props['countrycode']?.toString(),
     );
   }
 
   factory PlaceResult.fromNominatim(Map<String, dynamic> e) {
+    final address = (e['address'] as Map<String, dynamic>?) ?? const {};
     return PlaceResult(
       label: (e['display_name'] as String?) ?? 'Place',
-      city: ((e['address'] as Map<String, dynamic>?)?['city'] ?? '').toString(),
+      city: (address['city'] ?? address['town'] ?? address['village'] ?? '')
+          .toString(),
       lat: double.tryParse((e['lat'] ?? '').toString()) ?? 0,
       lng: double.tryParse((e['lon'] ?? '').toString()) ?? 0,
+      countryCode: (e['country_code'] ?? address['country_code'])?.toString(),
     );
   }
 }
