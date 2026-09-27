@@ -608,7 +608,7 @@ class _FeeSettingsScreenState extends State<FeeSettingsScreen> {
     );
   }
 
-  static String _labelForKey(String key) {
+  String _labelForKey(String key) {
     final fee = _fees.where((f) => f.key == key).toList();
     return fee.isEmpty ? key : fee.first.label;
   }

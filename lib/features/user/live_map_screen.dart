@@ -333,7 +333,8 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     setState(() => _busyDestination = true);
     String? label;
     try {
-      final resolved = await GeocodingService.reverseGeocode(centre.latitude, centre.longitude);
+      final resolved = await GeocodingService.instance
+          .reverseGeocode(centre.latitude, centre.longitude);
       label = resolved?.address;
     } catch (_) {
       // A dropped pin is still a valid destination without a street name.
@@ -1148,7 +1149,8 @@ class _DestinationSearchSheetState extends State<_DestinationSearchSheet> {
       final bias = widget.biasPoint == null
           ? null
           : GeoPoint(widget.biasPoint!.latitude, widget.biasPoint!.longitude);
-      final results = await GeocodingService.searchPlaces(query, biasPoint: bias, limit: 8);
+      final results = await GeocodingService.instance
+          .searchPlaces(query, biasPoint: bias, limit: 8);
       if (!mounted) return;
       setState(() {
         _results = results;
