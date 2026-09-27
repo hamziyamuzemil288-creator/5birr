@@ -171,4 +171,23 @@ void main() {
               'Run public.missing_embed_relationships() for the pair names.');
     });
   });
+
+  group('reactivation restores a provider\'s whole account', () {
+    test('vehicles go back in service when a provider is reactivated',
+        () async {
+      // Suspension is three parts: provider_profiles.status,
+      // profiles.status, and vehicles.is_available. The revenue-driven
+      // reactivation only undid the first two, so a provider whose fee was
+      // collected after an admin suspension was left APPROVED everywhere the
+      // UI reads it, but their vehicle stayed unavailable — and an
+      // unavailable vehicle is filtered out of find_nearby_drivers() and
+      // refused by claim_ride(). Approved, unsuspended, fully paid, and
+      // unable to take a single ride, with nothing on screen explaining it.
+      expect(await ok('assert_vehicle_sync_handled'), isTrue,
+          reason: 'sync_profile_status_from_provider() no longer returns '
+              'vehicles.is_available to true on reactivation, so a reactivated '
+              'provider stays unable to take rides. The trigger must handle '
+              'both halves of a suspension, not just the account status.');
+    });
+  });
 }
