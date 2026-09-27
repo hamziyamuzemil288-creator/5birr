@@ -314,7 +314,7 @@ class _VehicleProviderDashboardState
                     _action(Icons.play_circle_outline, 'Active Trip',
                         () => context.push('/vehicle/trip')),
                     _action(Icons.history, 'Ride History',
-                        () => context.push('/vehicle/ride-history')),
+                        () => context.push('/vehicle/history')),
                     _action(Icons.directions_car_outlined, 'Manage Vehicles',
                         () => context.push('/vehicle/vehicles')),
                     _action(Icons.add_circle_outline, 'Add Vehicle',

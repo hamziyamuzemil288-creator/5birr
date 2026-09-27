@@ -23,7 +23,9 @@ const List<ChatDeepLink> kKnownRoutes = [
   ChatDeepLink('Browse & shop', '/user'),
   ChatDeepLink('Open my cart', '/user/cart'),
   ChatDeepLink('Go to checkout', '/user/checkout'),
-  ChatDeepLink('My orders', '/user/orders'),
+  // The orders list is tab 2 of the /user shell, not a standalone route —
+  // /user/orders only exists as /user/orders/:id for a single order.
+  ChatDeepLink('My orders', '/user?tab=2'),
   ChatDeepLink('Provider dashboard', '/provider'),
   ChatDeepLink('Manage my listings', '/provider/products'),
   ChatDeepLink('Add a new listing', '/provider/products/new'),
@@ -38,7 +40,7 @@ const List<ChatDeepLink> kKnownRoutes = [
   ChatDeepLink('Add a vehicle', '/vehicle/vehicles/new'),
   // Help & account
   ChatDeepLink('Help & Support', '/help'),
-  ChatDeepLink('My profile', '/user/profile'),
+  ChatDeepLink('My profile', '/user?tab=4'),
   ChatDeepLink('Favorites', '/user/favorites'),
   // Appeals (user-submitted appeal / spam-report form)
   ChatDeepLink('Submit an appeal', '/appeal'),

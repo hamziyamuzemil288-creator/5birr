@@ -7,6 +7,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class VehicleFormScreen extends StatefulWidget {
   final String? vehicleId;
@@ -26,6 +27,7 @@ class _State extends State<VehicleFormScreen> {
   List<Map<String, dynamic>> _categories = [];
   String? _providerId;
   bool _loading = true;
+  String? _error;
   bool _saving = false;
   // One-time activation gate: the registration fee must be paid (via the
   // first wallet recharge) before uploading vehicles/listings.
@@ -40,6 +42,8 @@ class _State extends State<VehicleFormScreen> {
   }
 
   Future<void> _load() async {
+    // Clear any previous failure so a successful retry actually recovers.
+    if (mounted && _error != null) setState(() => _error = null);
     try {
       final client = Supabase.instance.client;
       final userId = client.auth.currentUser?.id;
@@ -86,7 +90,12 @@ class _State extends State<VehicleFormScreen> {
       }
       if (mounted) setState(() => _loading = false);
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load the form');
+        });
+      }
     }
   }
 
@@ -149,7 +158,9 @@ class _State extends State<VehicleFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text(_isEdit ? 'Edit Vehicle' : 'Add Vehicle')),
-      body: _loading
+      body: _error != null
+          ? LoadErrorView(message: _error!, onRetry: _load)
+          : _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.teal))
           : SingleChildScrollView(
