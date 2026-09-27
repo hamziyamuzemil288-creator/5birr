@@ -320,6 +320,43 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                   ),
                   const SizedBox(height: 12),
                 ],
+                // The other half of the "invalid username or password" report.
+                // A staff row created by anyone other than the CEO has NO login
+                // at all: only the CEO may mint gateway credentials
+                // (create_staff_gateway raises ONLY_CEO_CAN_CREATE_STAFF_GATEWAY),
+                // so this path writes a staff row and nothing else. The
+                // credential fields above are simply hidden, which reads as
+                // "there is no such thing" rather than "ask the CEO" — and the
+                // person then tries to sign in and is refused forever.
+                if (existing == null && !_isCeo)
+                  Container(
+                    margin: const EdgeInsets.only(top: 4, bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.warning.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: AppTheme.warning.withOpacity(0.4)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 18, color: AppTheme.warning),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This staff member will have NO login. Only the '
+                            'CEO can create gateway credentials — ask the CEO '
+                            'to set a username and password, or link an '
+                            'existing account from the staff menu.',
+                            style: TextStyle(
+                                fontSize: 12, color: AppTheme.textPrimary),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 const Text('Branch', style: AppTheme.sectionHeader),
                 const SizedBox(height: 4),
                 SegmentedButton<String>(

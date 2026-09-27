@@ -423,4 +423,50 @@ void main() {
               'both halves of a suspension, not just the account status.');
     });
   });
+
+  group('identity documents tell the truth (profile "Verified" bug)', () {
+    test('a document has a real admin review lifecycle', () async {
+      // The profile tile reported a fixed "Verified" for everyone. The cause
+      // was upstream: the status CHECK constraint allowed only MANUAL_REVIEW,
+      // AUTO_APPROVED and SUSPECTED_FRAUD, so an administrator had no value to
+      // write when they approved an ID — and the client read "a document
+      // exists" as "verified". Both halves have to hold: the enum must carry
+      // VERIFIED/REJECTED, and provider_docs_satisfied() must still count a
+      // VERIFIED document, or approving an ID closes the very gate it was
+      // meant to open.
+      expect(await ok('assert_document_review_is_admin_only'), isTrue,
+          reason: 'review_user_document() is not admin-only, or does not '
+              'really write verification_status, or provider_docs_satisfied() '
+              'no longer counts a VERIFIED document — so either users can '
+              'self-verify or approving an ID locks the provider out.');
+    });
+
+    test('a user cannot verify their own document, an admin can', () async {
+      // Behavioural, and the half a source-text check cannot do: 0029/0030/
+      // 0033/0034 all shipped guards that MENTIONED their condition and never
+      // ran it, and the suite was green the whole time. This performs the
+      // attack, then requires the legitimate path to still work — removing
+      // the admin check would pass an attack-only test and break the feature.
+      expect(await ok('assert_document_review_refuses_non_admins'), isTrue,
+          reason: 'Either an ordinary user can mark their own ID VERIFIED, or '
+              'an administrator cannot verify one at all, or a verified '
+              'document leaves provider_docs_satisfied() false.');
+    });
+  });
+
+  group('staff accounts can actually sign in', () {
+    test('every linked staff member has a gateway username', () async {
+      // "I created the staff in the admin interface and the login says
+      // invalid login or username." link_staff_user attached an auth account
+      // and told the operator "$email can now sign in as staff" — while
+      // creating no staff_credentials row, which is the only thing
+      // staff-login looks the typed name up in. Every linked staff member was
+      // permanently locked out, and the non-CEO create path still is.
+      expect(await ok('assert_staff_link_gets_a_login'), isTrue,
+          reason: 'At least one staff row with an auth user has no '
+              'staff_credentials row, so staff-login cannot find it and the '
+              'account is unreachable. link_staff_user() must write the row '
+              'and refuse a username collision rather than skip it.');
+    });
+  });
 }
