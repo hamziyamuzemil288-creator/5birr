@@ -136,7 +136,7 @@ BEGIN
   WHERE id = '00000000-0000-4000-8000-00000000e506';
   IF v_status IS DISTINCT FROM 'PENDING' THEN
     RAISE EXCEPTION 'a direct client call moved the recharge to %, expected it to stay PENDING', coalesce(v_status, '(null)');
-  END;
+  END IF;
 
   -- ---------------------------------------------------------------
   -- The real call, in the real context.
