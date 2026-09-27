@@ -226,6 +226,26 @@ void main() {
     });
   });
 
+  group('order creation actually works (write test)', () {
+    test('a real order is created and persisted, then rolled back', () async {
+      // This is the only test in the suite that WRITES, and it exists
+      // because the read-only ones let a 25-minute production outage ship
+      // green. When create_order_secure was changed to insert
+      // PENDING_PROVIDER while a live trigger still demanded CREATED, every
+      // order failed — and the order assertion here was a prosrc grep that
+      // never created an order, so it could not have caught it.
+      //
+      // The function does its work in a subtransaction it always rolls back
+      // (raising a sentinel to force the unwind), so it asserts against real
+      // rows with real triggers attached and leaves nothing behind.
+      expect(await ok('assert_order_creation_writes'), isTrue,
+          reason: 'create_order_secure did not produce a real order in '
+              'PENDING_PROVIDER with its items, or accepted an order from a '
+              'non-approved provider. This is the write path, so this failing '
+              'means customers cannot check out.');
+    });
+  });
+
   group('orders cannot be forged by a client', () {
     test('no non-admin INSERT path exists on orders', () async {
       // orders carried a policy allowing any authenticated user to insert
