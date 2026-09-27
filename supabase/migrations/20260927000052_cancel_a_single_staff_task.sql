@@ -299,7 +299,8 @@ BEGIN
     LEFT JOIN public.provider_profiles pp ON pp.id = o.provider_id
     WHERE (v_view_all OR public.staff_has_permission(v_staff.user_id, 'payment_verification'))
       AND (v_view_all OR public.staff_scope_allows_category(pp.category_id, v_staff.user_id))
-  ) t
+  )
+  SELECT * FROM tasks t
   -- A cancelled row means "this must leave THIS person's queue": filter the
   -- task out entirely. The completion row itself stays (audit history), and
   -- staff_progress() reads this same feed, so cancelled tasks drop out of
