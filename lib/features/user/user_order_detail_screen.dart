@@ -661,9 +661,11 @@ class _UserOrderDetailScreenState
     } catch (e) {
       if (!mounted) return;
       setState(() => _acting = false);
-      final s = e.toString().replaceFirst(RegExp(r'^FunctionException:\s*'), '');
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Action failed: $s')));
+      // This used to show the exception verbatim after stripping only the
+      // FunctionException prefix, so a PostgREST error surfaced here in full.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              friendlyError(e, context: 'Could not complete that action'))));
     }
   }
 

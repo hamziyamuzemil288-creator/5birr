@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Phase 3: filterable admin history / audit trail.
 ///
@@ -83,7 +84,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e, context: 'Could not load the audit log');
         _loading = false;
       });
     }

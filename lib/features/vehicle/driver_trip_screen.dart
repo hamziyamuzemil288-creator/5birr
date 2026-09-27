@@ -14,6 +14,7 @@ import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/realtime_status_banner.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class DriverTripScreen extends StatefulWidget {
   const DriverTripScreen({super.key});
@@ -27,6 +28,10 @@ class _State extends State<DriverTripScreen> {
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   StreamSubscription<geo.Position>? _posSub;
   bool _loading = true;
+  // Set when _load() throws. Without it the catch below cleared the spinner
+  // and the screen fell through to "No active trip" — telling a driver who is
+  // mid-journey that they have no trip, because the request failed.
+  String? _error;
 
   // Live GPS state
   String? _providerId;
@@ -71,12 +76,18 @@ class _State extends State<DriverTripScreen> {
         setState(() {
           _ride = ride;
           _loading = false;
+          _error = null;
         });
       }
       _syncProviderId(ride);
       await _startLiveLocation();
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your trip');
+        });
+      }
     }
   }
 
@@ -178,6 +189,12 @@ class _State extends State<DriverTripScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppTheme.teal))
+          : _error != null
+              ? LoadErrorView(
+                  message: _error!,
+                  onRetry: _load,
+                  icon: Icons.directions_car_outlined,
+                )
           : _ride == null
               ? Center(
                   child: Column(

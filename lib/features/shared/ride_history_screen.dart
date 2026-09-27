@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class RideHistoryScreen extends StatefulWidget {
   final bool isProvider;
@@ -13,6 +15,9 @@ class RideHistoryScreen extends StatefulWidget {
 class _State extends State<RideHistoryScreen> {
   List<Map<String, dynamic>> _rides = [];
   bool _loading = true;
+  // Set on a failed load. Without it a network error fell through to the
+  // "No rides yet" empty state, which claims the user has never ridden.
+  String? _error;
 
   @override
   void initState() {
@@ -29,10 +34,18 @@ class _State extends State<RideHistoryScreen> {
         setState(() {
           _rides = rides;
           _loading = false;
+          // Clear a previous failure so a successful retry returns to the
+          // normal list rather than staying on the error screen.
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your rides');
+        });
+      }
     }
   }
 
@@ -44,6 +57,8 @@ class _State extends State<RideHistoryScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
           : _rides.isEmpty
               ? Center(
                   child: Column(

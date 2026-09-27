@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../core/providers/auth_provider.dart' as auth_state;
 import '../../core/services/staff_gateway_service.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 
 class StaffDashboardScreen extends ConsumerStatefulWidget {
   const StaffDashboardScreen({super.key});
@@ -51,7 +52,7 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = e.toString();
+          _error = friendlyError(e, context: 'Could not load your tasks');
         });
       }
     }

@@ -91,7 +91,7 @@ class _AdminRolePermissionsScreenState
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = friendlyError(e, context: 'Could not load roles');
       });
     }
   }

@@ -146,7 +146,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e, context: 'Could not load staff');
         _loading = false;
       });
     }
@@ -1286,7 +1286,7 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
           .where((r) => r['staff_id'] == widget.staff['id'])
           .toList();
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e, context: 'Could not load staff');
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -1327,7 +1327,7 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
       await _load();
     } catch (e) {
       if (mounted) {
-        setState(() => _error = e.toString());
+        setState(() => _error = friendlyError(e, context: 'Could not load staff'));
       }
     }
   }
@@ -1341,7 +1341,9 @@ class _ReferralCodesSheetState extends State<_ReferralCodesSheet> {
       });
       await _load();
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted)
+        setState(
+            () => _error = friendlyError(e, context: 'Could not load staff'));
     }
   }
 

@@ -11,6 +11,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/cart_service.dart';
 import '../../core/services/document_upload_service.dart';
 import '../../core/utils/order_number_format.dart' as onf;
+import '../../core/utils/friendly_error.dart';
 
 class UserCheckoutScreen extends ConsumerStatefulWidget {
   final String providerId;
@@ -326,19 +327,13 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _error = 'Order failed: ${_errorMessage(e)}';
+        _error = friendlyError(e, context: 'Could not place your order');
       });
     }
   }
 
   static String _fmtQty(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
-
-  String _errorMessage(Object e) {
-    // Strip any exception-type prefix so the server's message shows cleanly.
-    final s = e.toString();
-    return s.replaceFirst(RegExp(r'^FunctionException:\s*'), '');
-  }
 
   @override
   Widget build(BuildContext context) {

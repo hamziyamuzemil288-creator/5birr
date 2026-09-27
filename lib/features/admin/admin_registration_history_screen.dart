@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
+import '../../core/utils/friendly_error.dart';
 
 /// Task 8: Registration History with two combined categorizations:
 ///   Channel:       Self-registered / Sales-registered / Other (unknown code)
@@ -87,7 +88,7 @@ class _State extends State<AdminRegistrationHistoryScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = friendlyError(e, context: 'Could not load registrations');
           _loading = false;
         });
       }

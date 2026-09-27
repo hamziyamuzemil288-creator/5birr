@@ -14,6 +14,7 @@ import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/realtime_status_banner.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class UserActiveRideScreen extends StatefulWidget {
   const UserActiveRideScreen({super.key});
@@ -28,6 +29,10 @@ class _State extends State<UserActiveRideScreen> {
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   StreamSubscription? _posSub;
   bool _loading = true;
+  // Set when _load() throws. Otherwise a failed request cleared the spinner
+  // and fell through to "No active ride" — telling a rider waiting in a car
+  // that their ride does not exist.
+  String? _error;
 
   // Live GPS state
   GeoPoint? _driverLoc; // parsed from driver_status.current_location embed
@@ -89,13 +94,21 @@ class _State extends State<UserActiveRideScreen> {
         setState(() {
           _ride = ride;
           _loading = false;
+          // Clear a prior failure so a successful retry leaves the error
+          // screen instead of showing the ride behind stale error text.
+          _error = null;
         });
       }
       _parseDriverLocation(ride);
       _watchDriverLocation(ride);
       await _refreshMyLocation();
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your ride');
+        });
+      }
     }
   }
 
@@ -261,6 +274,12 @@ class _State extends State<UserActiveRideScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          : _error != null
+              ? LoadErrorView(
+                  message: _error!,
+                  onRetry: _load,
+                  icon: Icons.directions_car_outlined,
+                )
           : _ride == null
               ? Center(
                   child: Column(
