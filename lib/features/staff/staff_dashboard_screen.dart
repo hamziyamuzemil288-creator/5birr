@@ -432,7 +432,11 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
     );
   }
 
-  Widget _historyLine(Map<String, dynamic> h) {
+  // `activity` and `job_history` arrive as jsonb_agg columns, so the list is
+  // List<dynamic> and the callback has to accept dynamic. Casting inside is
+  // the price of the data crossing as JSON rather than as a typed row.
+  Widget _historyLine(dynamic raw) {
+    final h = Map<String, dynamic>.from(raw as Map);
     final revoked = h['revoked_at'] != null;
     final when = h['assigned_at']?.toString() ?? '';
     return Padding(
@@ -449,7 +453,8 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
     );
   }
 
-  Widget _activityLine(Map<String, dynamic> a) {
+  Widget _activityLine(dynamic raw) {
+    final a = Map<String, dynamic>.from(raw as Map);
     final when = a['created_at']?.toString() ?? '';
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
