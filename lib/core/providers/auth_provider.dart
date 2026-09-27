@@ -6,6 +6,7 @@ import '../services/city_service.dart';
 import '../models/models.dart';
 import '../services/supabase_service.dart';
 import '../services/provider_presence_service.dart';
+import '../utils/friendly_error.dart';
 import '../utils/phone_formatter.dart';
 
 /// Application roles matching the Supabase `app_role` enum.
@@ -219,10 +220,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
     } catch (e) {
       // Only apply error state if no newer load has taken over.
       if (seq != _profileLoadSeq) return;
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth profile-load failed: $e');
       state = state.copyWith(
         user: user,
         isLoading: false,
-        error: e.toString(),
+        error: friendlyError(e, context: 'Could not load your account'),
       );
     }
   }
@@ -297,7 +303,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // /pending-approval).
       await _loadUserProfile(response.user!);
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth could failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: friendlyError(e, context: 'Could not create your account'),
+      );
       rethrow;
     }
   }
@@ -363,7 +377,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // by the triggers.
       await _loadUserProfile(response.user!);
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth could failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: friendlyError(e, context: 'Could not send the reset email'),
+      );
       rethrow;
     }
   }
@@ -383,7 +405,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         redirectTo: 'io.supabase.com.amistbirr.myapp://login-callback/',
       );
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth could failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: friendlyError(e, context: 'Could not sign in'),
+      );
       rethrow;
     }
     state = state.copyWith(isLoading: false);
@@ -406,7 +436,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // _authSub listener will pick up AuthChangeEvent.signedIn
       // and call _loadUserProfile automatically.
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth could failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: friendlyError(e, context: 'Could not sign in with Google'),
+      );
       rethrow;
     }
   }
@@ -437,7 +475,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         state = state.copyWith(isLoading: false);
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+// Keep the raw exception in the console for debugging; only the
+      // user-facing text changes. splash_screen renders state.error
+      // verbatim, so an unfiltered PostgrestException would put schema
+      // detail on screen.
+      debugPrint('auth could failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: friendlyError(e, context: 'Could not load your account'),
+      );
       rethrow;
     }
   }
