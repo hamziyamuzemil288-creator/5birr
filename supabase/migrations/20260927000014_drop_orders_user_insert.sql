@@ -83,7 +83,7 @@ AS $$
     FROM pg_policies
     WHERE schemaname = 'public'
       AND tablename  = 'orders'
-      AND 'INSERT' = ANY (COALESCE(commands, ARRAY[]::text[]))
+      AND cmd = 'INSERT'
       AND lower(regexp_replace(replace(coalesce(qual, ''), 'public.', ''), '\s+', '', 'g'))
           IS DISTINCT FROM 'is_admin()'
   );
@@ -106,6 +106,6 @@ BEGIN
        'public.create_order_secure(uuid,uuid,jsonb,numeric,text,text,text,text,text)',
        'EXECUTE'
   ) THEN
-    RAISE EXCEPTION 'service_role can no longer call create_order_secure — order creation would break';
+    RAISE EXCEPTION 'service_role can no longer call create_order_secure - order creation would break';
   END IF;
 END $$;
