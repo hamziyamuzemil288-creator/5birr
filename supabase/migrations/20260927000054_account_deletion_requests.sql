@@ -53,6 +53,27 @@
 -- which is the correct outcome for an account that no longer exists.
 
 -- ===========================================================================
+-- 0. The notification type
+-- ===========================================================================
+-- notifications.type is the notification_type ENUM, and the two decision
+-- functions below insert into it. 'ACCOUNT_DELETION' was not a member, so
+-- every approve and every reject would have failed at RUNTIME with
+-- `invalid input value for enum notification_type` -- the migration would
+-- deploy cleanly and the queue would break the first time anybody used it.
+-- Nothing static catches that, which is why it is added here explicitly.
+--
+-- Safe to add and use in one migration: the functions only INSERT when a
+-- staff member clicks, long after this transaction has committed. The
+-- "unsafe use of new value" restriction only bites when the new value is read
+-- inside the same transaction that added it.
+--
+-- The app classifies a notification with == and startsWith checks
+-- (lib/core/models/notification.dart), not an exhaustive switch, so a new
+-- value renders as a plain notice and matches none of the order/ride/wallet
+-- groupings -- which is correct: this is about the account, not a transaction.
+ALTER TYPE public.notification_type ADD VALUE IF NOT EXISTS 'ACCOUNT_DELETION';
+
+-- ===========================================================================
 -- 1. The request table
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS public.account_deletion_requests (
