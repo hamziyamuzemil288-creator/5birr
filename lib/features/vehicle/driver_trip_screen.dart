@@ -424,7 +424,13 @@ class _State extends State<DriverTripScreen> {
           if (status == 'CLAIMED')
             _actionButton(
                 'DRIVER_ARRIVING', 'HEADING TO PICKUP', AppTheme.teal),
-          if (status == 'DRIVER_ARRIVING' || status == 'ARRIVED')
+          // ARRIVED is only offered from DRIVER_ARRIVING. Listing it for
+          // status == 'ARRIVED' as well rendered a second "ARRIVED AT
+          // PICKUP" button next to "START TRIP" on the very screen where the
+          // driver has already tapped it, and pressing it sent
+          // ARRIVED -> ARRIVED, which transition_ride_status rejects with
+          // INVALID_TRANSITION_ARRIVED_TO_ARRIVED.
+          if (status == 'DRIVER_ARRIVING')
             _actionButton(
                 'ARRIVED', 'ARRIVED AT PICKUP', AppTheme.primaryGreen),
           if (status == 'ARRIVED')

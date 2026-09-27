@@ -78,6 +78,19 @@ void main() {
               'for ARRIVED/TRIP_STARTED, freezing rides before COMPLETED so '
               'the ride fee never reached the ledger (break #2).');
     });
+
+    test('every ride status has a transition branch', () async {
+      // assert_ride_transition_covers_chain only proves ARRIVED and
+      // TRIP_STARTED are handled AT ALL. It says nothing about the other
+      // statuses — and DRIVER_EN_ROUTE, a live enum value, had no branch at
+      // all, so a ride in it raised UNEXPECTED_RIDE_STATUS on every
+      // transition: neither rider nor driver could move it, and no fee was
+      // ever charged.
+      expect(await ok('assert_ride_chain_has_no_dead_ends'), isTrue,
+          reason: 'transition_ride_status has no branch for at least one '
+              'non-terminal ride status, so a ride in that state is frozen '
+              'and cannot be advanced, cancelled, or completed.');
+    });
   });
 
   group('staff attribution: actions -> performance view (Phase 2 #6)', () {
