@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:realtime_client/realtime_client.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 
 import '../../core/providers/auth_provider.dart' as auth_state;
@@ -20,21 +23,76 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
   List<Map<String, dynamic>> _tasks = [];
   Map<String, dynamic> _progress = const {};
   List<String> _permissions = const [];
+  List<Map<String, dynamic>> _warnings = [];
   bool _loading = true;
   String? _error;
+
+  /// Live task updates. Held so dispose() can cancel it — a channel that
+  /// outlives its State keeps calling setState on a dead widget, and this
+  /// screen is one people leave open all day.
+  RealtimeChannel? _channel;
+
+  /// Guards the re-fetch storm: a single approval decision can fire several
+  /// postgres_changes events, and each one would otherwise start its own
+  /// request.
+  bool _refreshing = false;
+  Timer? _coalesce;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _listen();
   }
 
-  Future<void> _load() async {
+  @override
+  void dispose() {
+    _coalesce?.cancel();
+    final channel = _channel;
+    if (channel != null) {
+      Supabase.instance.client.removeChannel(channel);
+    }
+    _channel = null;
+    super.dispose();
+  }
+
+  /// Subscribe to every table behind the task feed.
+  ///
+  /// The feed was a snapshot loaded once in initState with a manual refresh
+  /// button, so work arriving in a staff member's queue was invisible until
+  /// they thought to pull — on the one screen whose entire job is to tell them
+  /// what to work on.
+  Future<void> _listen() async {
+    final channel = _service.subscribeToTaskFeed(_onFeedChanged);
+    _channel = channel;
+    await channel.subscribe();
+  }
+
+  /// Coalesce bursts into one re-read. Several of the five source tables are
+  /// written inside a single transaction by the admin RPCs, so one decision
+  /// arrives as several events within milliseconds.
+  void _onFeedChanged() {
+    _coalesce?.cancel();
+    _coalesce = Timer(const Duration(milliseconds: 400), _refreshQuietly);
+  }
+
+  Future<void> _refreshQuietly() async {
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
+    try {
+      await _load(silent: true);
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  Future<void> _load({bool silent = false}) async {
     try {
       final results = await Future.wait<dynamic>([
         _service.taskFeed(),
         _service.progress(),
         Supabase.instance.client.rpc('my_admin_permissions'),
+        _service.myWarnings(),
       ]);
       if (!mounted) return;
       setState(() {
@@ -45,16 +103,21 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
         _permissions = ((results[2] as List?) ?? const [])
             .map((e) => e.toString())
             .toList();
+        _warnings = (results[3] as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
         _loading = false;
         _error = null;
       });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = friendlyError(e, context: 'Could not load your tasks');
-        });
-      }
+      // A silent re-read must never replace a good list with an error screen:
+      // a realtime blip while somebody is watching their queue should leave
+      // the last known state alone.
+      if (!mounted || silent) return;
+      setState(() {
+        _loading = false;
+        _error = friendlyError(e, context: 'Could not load your tasks');
+      });
     }
   }
 
@@ -208,6 +271,10 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
                     padding: const EdgeInsets.all(16),
                     children: [
                       _welcome(auth),
+                      if (_warnings.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        _warningsCard(),
+                      ],
                       const SizedBox(height: 16),
                       _metrics(),
                       const SizedBox(height: 20),
@@ -289,6 +356,115 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
         ],
       );
 
+  /// Warnings addressed to this person.
+  ///
+  /// Sits ABOVE the progress card, not below it. A warning that arrives under
+  /// a progress bar is a warning nobody reads, and the reason a manager sent
+  /// it is precisely that the work is going badly.
+  Widget _warningsCard() {
+    final open = _warnings.where((w) => w['acknowledged_at'] == null).toList();
+    final shown = (open.isNotEmpty ? open : _warnings).take(5).toList();
+    final serious = open.any((w) => w['severity'] == 'SERIOUS');
+    return Card(
+      color: (serious ? AppTheme.error : AppTheme.warning).withOpacity(0.08),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: (serious ? AppTheme.error : AppTheme.warning).withOpacity(0.5),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  serious ? Icons.report_problem_outlined : Icons.warning_amber_rounded,
+                  color: serious ? AppTheme.error : AppTheme.warning,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    open.isNotEmpty
+                        ? '${open.length} open warning${open.length == 1 ? '' : 's'}'
+                        : 'Warnings from management',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 16),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ...shown.map(_warningTile),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _warningTile(Map<String, dynamic> warning) {
+    final serious = warning['severity'] == 'SERIOUS';
+    final acknowledged = warning['acknowledged_at'] != null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            warning['reason'] as String? ?? '',
+            style: const TextStyle(fontSize: 13.5),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${serious ? 'Serious' : 'Warning'}'
+            '${warning['warned_by_name'] != null ? ' · from ${warning['warned_by_name']}' : ''}',
+            style: const TextStyle(
+                fontSize: 11.5, color: AppTheme.textSecondary),
+          ),
+          if (!acknowledged)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _acknowledge(warning),
+                icon: const Icon(Icons.done, size: 16),
+                label: const Text('I have read this',
+                    style: TextStyle(fontSize: 12.5)),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Acknowledging is server-enforced to this person only. A manager being
+  /// able to tick it off would make the timestamp prove nothing, which is the
+  /// only reason the column exists.
+  Future<void> _acknowledge(Map<String, dynamic> warning) async {
+    final id = warning['id'] as String?;
+    if (id == null) return;
+    try {
+      await _service.acknowledge(id);
+      await _refreshQuietly();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Marked as read.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not mark it as read. ${e.toString().split('\n').first}')),
+        );
+      }
+    }
+  }
+
   Widget _permissionCard() {
     return Card(
       child: ListTile(
@@ -320,29 +496,92 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
 
   Widget _taskCard(Map<String, dynamic> task, {required bool pending}) {
     final terminal = task['is_terminal'] == true;
+    // A hand-built row, not a ListTile — the same reasoning as
+    // verification_status_tile.dart, and for the same reason it exists.
+    //
+    // ListTile(isThreeLine: true) has a FIXED height. The two-icon Row in the
+    // trailing slot took its 96px first, which left the title and the
+    // two-line subtitle roughly 150px on a 360px screen; at a 2.0 text scale
+    // both wrapped past the three reserved lines and the card overflowed
+    // vertically. This list has already produced that bug three times in
+    // different screens, so it is built to lay out at any scale instead of
+    // being tuned until it fits one.
+    final meta =
+        '${task['source_type'] ?? ''} · ${task['status'] ?? ''}'.trim();
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        title: Text(task['title'] as String? ?? 'Task'),
-        subtitle: Text('${task['description'] ?? ''}\n${task['source_type']} · ${task['status']}'),
-        isThreeLine: true,
-        trailing: pending
-            ? Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Open work item',
-                    onPressed: () => _openTask(task),
-                    icon: const Icon(Icons.open_in_new),
-                  ),
-                  IconButton(
-                    tooltip: terminal ? 'Mark done' : 'Resolve the work item first',
-                    onPressed: terminal ? () => _markDone(task) : null,
-                    icon: Icon(terminal ? Icons.check_circle : Icons.lock_clock),
-                  ),
-                ],
-              )
-            : const Icon(Icons.check_circle, color: AppTheme.success),
+      child: InkWell(
+        onTap: pending ? () => _openTask(task) : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      task['title'] as String? ?? 'Task',
+                      style: const TextStyle(
+                          fontSize: 14.5, fontWeight: FontWeight.w600),
+                    ),
+                    if ((task['description'] as String?)?.isNotEmpty ?? false) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        task['description'] as String,
+                        style: const TextStyle(
+                            fontSize: 12.5, color: AppTheme.textSecondary),
+                      ),
+                    ],
+                    if (meta.isNotEmpty) ...[
+                      const SizedBox(height: 5),
+                      Text(
+                        meta,
+                        style: const TextStyle(
+                            fontSize: 11, color: AppTheme.textMuted),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              if (pending)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Open work item',
+                      onPressed: () => _openTask(task),
+                      icon: const Icon(Icons.open_in_new, size: 20),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    IconButton(
+                      tooltip: terminal
+                          ? 'Mark done'
+                          : 'Resolve the work item first',
+                      onPressed: terminal ? () => _markDone(task) : null,
+                      icon: Icon(
+                        terminal ? Icons.check_circle : Icons.lock_clock,
+                        size: 20,
+                        color: terminal
+                            ? AppTheme.primaryGreen
+                            : AppTheme.textMuted,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.only(right: 8, top: 4),
+                  child: Icon(Icons.check_circle,
+                      color: AppTheme.success, size: 20),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

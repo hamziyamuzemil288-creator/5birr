@@ -1,3 +1,4 @@
+import 'package:realtime_client/realtime_client.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class StaffGatewayService {
@@ -43,6 +44,134 @@ class StaffGatewayService {
     final rows = await Supabase.instance.client.rpc('staff_progress');
     if ((rows as List).isEmpty) return const {};
     return Map<String, dynamic>.from(rows.first as Map);
+  }
+
+  /// Live updates for the task feed.
+  ///
+  /// WHY A CHANNEL AND NOT A POLL
+  /// ---------------------------
+  /// staff_task_feed() is derived from five tables, all of which migration
+  /// 20260927000033 put in the supabase_realtime publication. Subscribing to
+  /// them means the moment work lands in this person's queue the card is
+  /// already on screen, which is the whole point — a staff member watching the
+  /// screen used to see nothing until they remembered the refresh button.
+  ///
+  /// Polling would look identical from the outside and cost a request every few
+  /// seconds forever, on a screen people leave open all day.
+  ///
+  /// `onChange` fires for any row-level event on any of the five tables. It
+  /// deliberately does NOT try to patch the list from the payload: the feed is
+  /// a UNION across five sources with permission and category scoping applied
+  /// in SQL, so the only correct answer to "something changed" is to re-ask
+  /// the database. A partial patch computed in Dart is how the list and the
+  /// server drift apart.
+  RealtimeChannel subscribeToTaskFeed(void Function() onChange) {
+    final client = Supabase.instance.client;
+    // onPostgresChanges takes ONE table per call, so the channel is built by
+    // chaining. An unknown table name in this list fails the whole channel
+    // silently — which is why assert_staff_task_sources_are_live exists in CI
+    // to fail the build instead of shipping a screen that never updates.
+    var channel = client.channel('staff-task-feed');
+    for (final table in const [
+      'approval_requests',
+      'support_tickets',
+      'appeal_cases',
+      'wallet_recharge_requests',
+      'payment_proofs',
+    ]) {
+      channel = channel.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: table,
+        callback: (_) => onChange(),
+      );
+    }
+    return channel;
+  }
+
+  /// Sends a warning to a staff member. CEO / Super Admin only, server-side.
+  Future<void> warn({
+    required String staffId,
+    required String reason,
+    String severity = 'WARNING',
+  }) async {
+    try {
+      await Supabase.instance.client.rpc(
+        'warn_staff',
+        params: {
+          'p_staff_id': staffId,
+          'p_reason': reason,
+          'p_severity': severity,
+        },
+      );
+    } catch (e) {
+      // PostgREST raises, so the stable RAISE code is inside the message text.
+      // Mapping it here is what turns "PostgrestException(code: P0001, ...)"
+      // into something a manager can act on.
+      final raw = e.toString();
+      for (final code in const [
+        'ONLY_ADMINISTRATORS_CAN_WARN_STAFF',
+        'WARNING_REASON_REQUIRED',
+        'INVALID_WARNING_SEVERITY',
+        'STAFF_NOT_FOUND_OR_INACTIVE',
+        'CANNOT_WARN_THE_CEO',
+      ]) {
+        if (raw.contains(code)) throw Exception(_describeWarnError(code));
+      }
+      rethrow;
+    }
+  }
+
+  /// Every active staff member with their open-warning count, worst first.
+  Future<List<Map<String, dynamic>>> warningSummary() async {
+    final rows = await Supabase.instance.client.rpc('staff_warning_summary');
+    return (rows as List)
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+  }
+
+  /// Warnings addressed to the signed-in staff member, newest first.
+  Future<List<Map<String, dynamic>>> myWarnings() async {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await Supabase.instance.client
+        .from('staff_warnings')
+        .select('id, reason, severity, warned_by_name, created_at, '
+            'acknowledged_at, acknowledged_note')
+        .order('created_at', descending: true)
+        .limit(20);
+    return (rows as List)
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+  }
+
+  /// Marks a warning as seen. Only the person it was sent to can do this —
+  /// server-side, because a manager clicking it would make the timestamp prove
+  /// nothing.
+  Future<void> acknowledge(String warningId, {String? note}) async {
+    await Supabase.instance.client.rpc(
+      'acknowledge_staff_warning',
+      params: {'p_warning_id': warningId, 'p_note': note},
+    );
+  }
+
+  String _describeWarnError(String code) {
+    switch (code) {
+      case 'ONLY_ADMINISTRATORS_CAN_WARN_STAFF':
+        return 'Only the CEO or a super admin can send warnings.';
+      case 'WARNING_REASON_REQUIRED':
+        return 'Write what the problem is — a warning with no reason is not a '
+            'warning.';
+      case 'INVALID_WARNING_SEVERITY':
+        return 'Pick either a warning or a serious warning.';
+      case 'STAFF_NOT_FOUND_OR_INACTIVE':
+        return 'That staff member no longer exists, or their access is already '
+            'revoked.';
+      case 'CANNOT_WARN_THE_CEO':
+        return 'The CEO account cannot be sent warnings.';
+      default:
+        return 'Could not send the warning.';
+    }
   }
 
   Future<void> changePassword({

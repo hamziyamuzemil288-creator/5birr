@@ -469,4 +469,35 @@ void main() {
               'and refuse a username collision rather than skip it.');
     });
   });
+
+  group('the CEO can manage the team, and the team sees it happen', () {
+    test('a warning is admin-only, from both doors', () async {
+      // The word "warning" did not exist anywhere in this schema. A manager
+      // whose only options were silence and revocation had neither, which is
+      // why the console could "control" a staff member only by removing their
+      // access. Checked behaviourally because the shape that matters — a
+      // client writing the row directly, or calling the RPC — is exactly the
+      // one a source-text check cannot answer.
+      expect(await ok('assert_staff_warnings_are_admin_only'), isTrue,
+          reason: 'A non-manager can write a staff warning (directly or '
+              'through warn_staff), or can acknowledge a warning that is not '
+              'theirs — which would make the acknowledged_at column prove '
+              'nothing.');
+    });
+
+    test('the staff task feed updates itself', () async {
+      // The feed was a snapshot: loaded once in initState with a manual
+      // refresh button, on the one screen whose whole job is to say what to
+      // work on. The Dart side subscribes to postgres_changes, which is a
+      // silent no-op unless the tables are in the publication — 0041 left
+      // them out for ride_requests and 20260925210000 had to add
+      // driver_status by hand for exactly this reason. This asserts the
+      // publication, not the migration text, so a later DROP fails here.
+      expect(await ok('assert_staff_task_sources_are_live'), isTrue,
+          reason: 'A table behind staff_task_feed() is not in the '
+              'supabase_realtime publication, so the staff workspace '
+              'subscription is dead and the screen silently stops updating. '
+              'The assertion names the offending table.');
+    });
+  });
 }

@@ -840,8 +840,109 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     }
   }
 
-  Future<void> _showPerformance(Map<String, dynamic> staff) async {
+  /// Sends a warning: reason + severity, in one dialog.
+  ///
+  /// The reason is required and cannot be a single character. A warning with
+  /// no stated problem is indistinguishable from an insult, and it is the one
+  /// thing the person on the receiving end cannot act on.
+  Future<void> _sendWarning(Map<String, dynamic> staff) async {
+    final name = '${staff['name']}';
+    final reasonCtrl = TextEditingController();
+    var severity = 'WARNING';
+    String? validation;
+
+    final sent = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('Warn $name?'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                        value: 'WARNING',
+                        label: Text('Warning'),
+                        icon: Icon(Icons.warning_amber_rounded, size: 16)),
+                    ButtonSegment(
+                        value: 'SERIOUS',
+                        label: Text('Serious'),
+                        icon: Icon(Icons.report_problem_outlined, size: 16)),
+                  ],
+                  selected: {severity},
+                  onSelectionChanged: (sel) =>
+                      setDialogState(() => severity = sel.first),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: reasonCtrl,
+                  maxLines: 3,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    labelText: 'What is the problem? *',
+                    errorText: validation,
+                    helperText: 'They see this word for word, with your name.',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                if (reasonCtrl.text.trim().length < 3) {
+                  setDialogState(() =>
+                      validation = 'Write at least a few words.');
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: severity == 'SERIOUS'
+                    ? AppTheme.error
+                    : AppTheme.warning,
+              ),
+              child: const Text('Send warning'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final reason = reasonCtrl.text.trim();
+    reasonCtrl.dispose();
+    if (sent != true || reason.length < 3 || !mounted) return;
+
     try {
+      await const StaffGatewayService().warn(
+        staffId: '${staff['id']}',
+        reason: reason,
+        severity: severity,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Warning sent to $name')),
+      );
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().replaceFirst('Exception: ', '').split('\n').first,
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showPerformance(Map<String, dynamic> staff) async {    try {
       final client = Supabase.instance.client;
       final rows = await client
           .rpc('staff_performance', params: {'p_staff_id': staff['id']});
@@ -855,6 +956,21 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       final progress = (progressRows as List).isNotEmpty
           ? Map<String, dynamic>.from(progressRows.first as Map)
           : <String, dynamic>{};
+      // Open-warning count, in the same dialog as the progress numbers. The
+      // CEO's question is "is this person in trouble", and making them open a
+      // separate screen to answer half of it is how a warning goes unread.
+      var openWarnings = 0;
+      try {
+        final summary = await const StaffGatewayService().warningSummary();
+        final row = summary.firstWhere(
+          (r) => r['staff_id']?.toString() == staff['id']?.toString(),
+          orElse: () => const {},
+        );
+        openWarnings = (row['open_warnings'] as num?)?.toInt() ?? 0;
+      } catch (_) {
+        // The performance numbers still stand on their own; a missing warning
+        // count must not blank the dialog.
+      }
       if (!mounted) return;
       showDialog<void>(
         context: context,
@@ -875,6 +991,17 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
               Text('Task progress: ${progress['progress_percent'] ?? 0}%'),
               Text(
                   '30-day completed: ${progress['completed_last_30_days'] ?? 0}'),
+              const SizedBox(height: 8),
+              if (openWarnings > 0)
+                Text(
+                  'Open warnings: $openWarnings',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: openWarnings > 1
+                        ? AppTheme.error
+                        : AppTheme.warning,
+                  ),
+                ),
               const SizedBox(height: 8),
               Text(
                 'Target: ETB ${staff['sales_target'] ?? 0}',
@@ -1036,11 +1163,21 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   if (v == 'revoke') _revoke(s);
                                   if (v == 'delete') _deletePermanently(s);
                                   if (v == 'link') _linkAccount(s);
+                                  if (v == 'warn') _sendWarning(s);
                                 },
                                 itemBuilder: (_) => [
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
+                                  // The step between "tell them off" and
+                                  // "take their access away". Revoke already
+                                  // existed; nothing in between did, so a
+                                  // manager whose only options were silence
+                                  // or revocation had neither.
+                                  if (_canManage(s) && s['is_ceo'] != true)
+                                    const PopupMenuItem(
+                                        value: 'warn',
+                                        child: Text('Send warning')),
                                   const PopupMenuItem(
                                       value: 'referrals',
                                       child: Text('Referral codes')),
