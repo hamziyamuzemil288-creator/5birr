@@ -234,4 +234,3 @@ String _titleFor(DocReviewState state) {
       return 'Verification status unknown';
   }
 }
-}
