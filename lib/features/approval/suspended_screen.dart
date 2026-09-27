@@ -165,7 +165,7 @@ class _SuspendedViewState extends ConsumerState<_SuspendedView> {
                     child: Column(
                       children: [
                         _infoRow(
-                          Icons.pause_outline,
+                          Icons.pause_circle_outline,
                           'What this means',
                           'You cannot list services, take orders or drive '
                               'rides while the account is suspended.',
