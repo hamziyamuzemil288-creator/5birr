@@ -171,6 +171,8 @@ class UserProfileScreen extends ConsumerWidget {
                   // customer turning their existing account into a business is
                   // the case this is for, and a provider pressing it would only
                   // ever be told they already have one.
+                  _menuTile(Icons.map_outlined, 'Live Map', AppTheme.teal,
+                      onTap: () => context.push('/map')),
                   if (!auth.isProvider)
                     _menuTile(Icons.storefront_outlined, 'Become a Partner',
                         AppTheme.primaryGreen,

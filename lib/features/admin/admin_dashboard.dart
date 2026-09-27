@@ -431,6 +431,13 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           if (ref.read(authProvider).isAdmin)
                             _menuCard(Icons.settings_outlined, 'System Settings',
                                 'Fees, points & rank rules', () => context.push('/admin/settings')),
+                            // Every money value the platform charges, editable
+                            // live. Separate from System Settings because a fee
+                            // change is a money decision with its own history,
+                            // not one row among dozens of knobs.
+                            _menuCard(Icons.payments_outlined, 'Fees & Pricing',
+                                'Commission, activation and ride fares',
+                                () => context.push('/admin/fees')),
                         ],
                       ),
                     ),

@@ -281,7 +281,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                     children: [
                       Expanded(
                         child: GestureDetector(
-                          onTap: () => context.push('/user/ride-request'),
+                          // The live map is the front door for rides now: it shows
+                          // what is actually moving around you, and its sheet
+                          // carries the "Where to?" search straight into the
+                          // booking form with the destination already set.
+                          // Booking directly is still one tap away from there.
+                          onTap: () => context.push('/map'),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 14, vertical: 12),

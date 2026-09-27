@@ -16,7 +16,20 @@ import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 
 class UserRideRequestScreen extends StatefulWidget {
-  const UserRideRequestScreen({super.key});
+  const UserRideRequestScreen({
+    super.key,
+    this.initialDestinationLabel,
+    this.initialDestinationLat,
+    this.initialDestinationLng,
+  });
+
+  /// A destination handed over by the live map's "Where to?" flow. Arriving
+  /// with it already set means the rider answers that question once, on the
+  /// map, instead of being asked it again on the next screen.
+  final String? initialDestinationLabel;
+  final double? initialDestinationLat;
+  final double? initialDestinationLng;
+
   @override
   State<UserRideRequestScreen> createState() => _State();
 }
@@ -90,6 +103,22 @@ class _State extends State<UserRideRequestScreen>
     // form is never hostage to a slow fix or the permission dialog.
     _loadCategories();
     _resolvePickupLocation();
+    _applyPrefilledDestination();
+  }
+
+  /// Seed the destination from the live map. The `_destCtrl` listener would
+  /// otherwise treat this as typing and start a geocode search for text that
+  /// came from an already-resolved place — suppressed for the assignment.
+  void _applyPrefilledDestination() {
+    final lat = widget.initialDestinationLat;
+    final lng = widget.initialDestinationLng;
+    if (lat == null || lng == null) return;
+
+    _suppressDestSearch = true;
+    _destCtrl.text = widget.initialDestinationLabel ?? '';
+    _destLatLng = LatLng(lat, lng);
+    _suppressDestSearch = false;
+    _refreshFare();
   }
 
   @override

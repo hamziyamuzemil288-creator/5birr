@@ -42,6 +42,19 @@ void main() {
 
   Future<bool> ok(String fn) async => (await client.rpc(fn)) == true;
 
+  /// For assertions that return an explanatory string rather than a boolean.
+  /// The text is the evidence: it carries the live values the assertion just
+  /// measured, so the CI log shows what was actually true at that moment
+  /// instead of only that something was non-false.
+  Future<String?> rpcText(String fn) async {
+    try {
+      final result = await client.rpc(fn);
+      return result is String ? result : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   group('money: wallet ledger -> admin income (Phase 1)', () {
     test('subscription scheduler is wired (pg_cron -> charge_due_subscriptions)',
         () async {
@@ -776,6 +789,44 @@ void main() {
               'points_to_birr_rate is outside (0, 1], the dead '
               'points_per_trade key is back, or convert_points_to_wallet() '
               'is not executable by an authenticated account.');
+    });
+
+    test('every fee is data-driven, and the charged fee follows the settings', () async {
+      // Behavioural, not declarative: assert_fees_are_data_driven() compares
+      // the fee the platform would ACTUALLY charge against the arithmetic
+      // implied by system_settings, at two magnitudes. A fee hardcoded back
+      // into deduct_transaction_fee() fails this instead of quietly charging
+      // the wrong amount. The message it returns is printed below, so the CI
+      // log carries the real numbers rather than just a pass.
+      final detail = await rpcText('assert_fees_are_data_driven');
+      expect(detail, isNotNull,
+          reason: 'A fee is missing from system_settings (so it is still '
+              'code-driven), is negative or non-numeric, the charged '
+              'commission no longer equals GREATEST(percent of gross, '
+              'minimum), the fee is flat rather than percentage-based, '
+              'deduct_transaction_fee() no longer reads the fee from the '
+              'settings, the ride fare no longer matches the configured '
+              'pricing, or the CEO-only gate on fee writes has been removed.');
+      // ignore: avoid_print
+      print('    fee evidence -> $detail');
+    });
+
+    test('the live map is wired: publication, replica identity, marker feed', () async {
+      // The reported RealtimeSubscribeException was NOT a missing publication
+      // this time — ride_requests has been published since 0041. It was
+      // REPLICA IDENTITY: the driver's open-request feed filters on `status`,
+      // a non-primary-key column, and Postgres writes only the key into the
+      // WAL under the default identity, so the subscribe is rejected with a
+      // CHANNEL_ERROR. This asserts both halves stay true, and that the
+      // nearby-marker feed is reachable by a session but NOT by anon.
+      final detail = await rpcText('assert_live_map_is_wired');
+      expect(detail, isNotNull,
+          reason: 'ride_requests or driver_status is unpublished or has a '
+              'non-FULL replica identity (live tracking would silently stop), '
+              'nearby_provider_markers() is missing or not SECURITY DEFINER, '
+              'or nearby driver positions became readable by anon.');
+      // ignore: avoid_print
+      print('    live map -> $detail');
     });
 
     test('the rank ladder is readable and its boundaries behave', () async {

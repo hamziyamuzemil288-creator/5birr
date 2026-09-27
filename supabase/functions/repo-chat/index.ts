@@ -785,7 +785,7 @@ const CANNED_TOPICS: { patterns: RegExp; reply: string }[] = [
       "2. Send the amount to our Telebirr account: 0917686990 (Aliob Business).\n" +
       "3. Enter the amount, the transaction reference, and upload your payment screenshot.\n" +
       "4. Once an admin verifies it, your wallet is credited.\n\n" +
-      "Note: your FIRST recharge includes a one-time 100 birr registration fee that activates your account — so your first recharge must be at least 100 birr (anything above the fee is credited to your wallet). After that, recharges are credited in full.\n\n" +
+      "Note: your FIRST recharge includes a one-time {{registration_fee}} birr registration fee that activates your account — so your first recharge must be at least {{registration_fee}} birr (anything above the fee is credited to your wallet). After that, recharges are credited in full.\n\n" +
       "Your wallet then automatically covers the transaction fee on sales and the monthly subscription when it's due.",
   },
   {
@@ -801,9 +801,9 @@ const CANNED_TOPICS: { patterns: RegExp; reply: string }[] = [
     patterns: /\b(fees?|charges?|commission|costs?|1\s*%|five\s*birr|5\s*birr|how\s+much\s+(does\s+it\s+cost|do\s+you\s+charge|is\s+the\s+fee))\b/i,
     reply:
       "Fees:\n\n" +
-      "• Orders include a small transaction fee — about 1% of the amount, with a minimum of 5 birr — shown clearly at checkout before you pay.\n" +
-      "• Providers pay a fixed 5 Birr monthly subscription after their account is approved.\n" +
-      "• Providers also pay a one-time 100 birr registration fee with their first recharge to activate their account.\n" +
+      "• Orders include a small transaction fee — about {{fee_percent}}% of the amount, with a minimum of {{fee_min}} birr — shown clearly at checkout before you pay.\n" +
+      "• Providers pay a fixed {{subscription_fee}} Birr monthly subscription after their account is approved.\n" +
+      "• Providers also pay a one-time {{registration_fee}} birr registration fee with their first recharge to activate their account.\n" +
       "• All fees are deducted automatically from your provider wallet — no hidden charges.\n\n" +
       "If your wallet runs low (or is empty), recharging it from your dashboard keeps orders flowing.",
   },
@@ -844,9 +844,79 @@ const CANNED_TOPICS: { patterns: RegExp; reply: string }[] = [
   },
 ];
 
-function cannedReply(text: string): string | null {
+/**
+ * Live fee numbers for the assistant's answers.
+ *
+ * These used to be prose baked into the strings above, which meant the
+ * assistant could quote a fee the CEO had already changed — it would answer
+ * "100 birr registration" confidently while the wallet charged something else.
+ * Read from system_settings, which is the same source the charges read.
+ *
+ * Cached for five minutes: a fee change is rare, this runs on every chat turn,
+ * and a stale-by-minutes answer is not a correctness problem the way a
+ * hardcoded one was.
+ */
+type FeeFacts = {
+  registrationFee: number;
+  subscriptionFee: number;
+  feePercent: number;
+  feeMin: number;
+};
+
+// Mirrors the seeded defaults, so a settings outage degrades to sensible
+// numbers instead of to no answer at all.
+const FEE_FACT_FALLBACK: FeeFacts = {
+  registrationFee: 100,
+  subscriptionFee: 5,
+  feePercent: 1,
+  feeMin: 5,
+};
+
+let feeFactsCache: { at: number; facts: FeeFacts } | null = null;
+const FEE_FACT_CACHE_MS = 5 * 60 * 1000;
+
+async function feeFacts(): Promise<FeeFacts> {
+  if (feeFactsCache && Date.now() - feeFactsCache.at < FEE_FACT_CACHE_MS) {
+    return feeFactsCache.facts;
+  }
+  try {
+    const { data } = await admin.from("system_settings").select("key,value").like("key", "%fee%");
+    const byKey = new Map<string, number>();
+    for (const row of data ?? []) {
+      const raw = row.value as unknown;
+      const n = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(n)) byKey.set(row.key as string, n);
+    }
+    const subscriptionKey = [...byKey.keys()].find((k) => k.includes("subscription"));
+    const facts: FeeFacts = {
+      registrationFee: byKey.get("provider_registration_fee") ?? FEE_FACT_FALLBACK.registrationFee,
+      subscriptionFee:
+        byKey.get("provider_subscription_fee") ??
+        (subscriptionKey ? byKey.get(subscriptionKey)! : FEE_FACT_FALLBACK.subscriptionFee),
+      feePercent: byKey.get("transaction_fee_percent") ?? FEE_FACT_FALLBACK.feePercent,
+      feeMin: byKey.get("transaction_fee_min") ?? FEE_FACT_FALLBACK.feeMin,
+    };
+    feeFactsCache = { at: Date.now(), facts };
+    return facts;
+  } catch {
+    return FEE_FACT_FALLBACK;
+  }
+}
+
+/** Substitute the fee placeholders in a canned answer with live values. */
+async function applyFeeFacts(reply: string): Promise<string> {
+  if (!reply.includes("{{")) return reply;
+  const facts = await feeFacts();
+  return reply
+    .replaceAll("{{registration_fee}}", String(facts.registrationFee))
+    .replaceAll("{{subscription_fee}}", String(facts.subscriptionFee))
+    .replaceAll("{{fee_percent}}", String(facts.feePercent))
+    .replaceAll("{{fee_min}}", String(facts.feeMin));
+}
+
+async function cannedReply(text: string): Promise<string | null> {
   for (const t of CANNED_TOPICS) {
-    if (t.patterns.test(text)) return t.reply;
+    if (t.patterns.test(text)) return applyFeeFacts(t.reply);
   }
   return null;
 }
@@ -1116,7 +1186,7 @@ Deno.serve(async (req) => {
     if (fallback) return respond(user.id, fallback, { handoff: true });
 
     // 4d. Fast path: canned answers for the app's core flows.
-    const canned = cannedReply(nq);
+    const canned = await cannedReply(nq);
     if (canned) {
       return respond(user.id, canned, {
         intent: cannedIntent(nq),

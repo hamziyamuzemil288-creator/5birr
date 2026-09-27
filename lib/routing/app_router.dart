@@ -24,6 +24,7 @@ import '../features/user/user_checkout_screen.dart';
 import '../features/user/user_order_detail_screen.dart';
 import '../features/user/provider_order_waiting_screen.dart';
 import '../features/user/user_search_screen.dart';
+import '../features/user/live_map_screen.dart';
 import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
 import '../features/provider/provider_orders_screen.dart';
@@ -58,6 +59,7 @@ import '../features/admin/admin_order_payments_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/admin/admin_settings_screen.dart';
+import '../features/admin/fee_settings_screen.dart';
 import '../features/appeal/appeal_screen.dart';
 import '../features/appeal/my_appeals_screen.dart';
 import '../features/settings/account_deletion_screen.dart';
@@ -308,9 +310,32 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           body: const SafeArea(child: UserSearchScreen()),
         ),
       ),
-      GoRoute(path: '/user/ride-request', builder: (_, __) => const UserRideRequestScreen()),
+      // Destination may be handed over by the live map's "Where to?" flow as
+      // `extra`; anything else arrives as null and the screen behaves exactly
+      // as before. Parsed defensively because `extra` is untyped and a stale
+      // deep link must not crash the route (it lands on an unset destination,
+      // which the screen already requires the user to pick).
+      GoRoute(
+        path: '/user/ride-request',
+        builder: (_, state) {
+          final extra = state.extra;
+          final map = extra is Map ? Map<String, dynamic>.from(extra) : const <String, dynamic>{};
+          return UserRideRequestScreen(
+            initialDestinationLabel: map['label'] as String?,
+            initialDestinationLat: (map['lat'] as num?)?.toDouble(),
+            initialDestinationLng: (map['lng'] as num?)?.toDouble(),
+          );
+        },
+      ),
       GoRoute(path: '/user/ride-active', builder: (_, __) => const UserActiveRideScreen()),
       GoRoute(path: '/user/ride-history', builder: (_, __) => const RideHistoryScreen(isProvider: false)),
+      // The live map hub: nearby vehicles moving in real time, "Where to?"
+      // search, category shortcuts and the Safety Center. Reachable from the
+      // user dashboard, which is what the earlier finding (GPS features
+      // absent from navigation entirely) asked for.
+      GoRoute(
+          path: '/map',
+          builder: (_, __) => const LiveMapScreen(mode: LiveMapMode.rider)),
 
       // ── Service Provider ──
       GoRoute(path: '/provider', builder: (_, __) => const ServiceProviderDashboard()),
@@ -345,6 +370,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // go_router's "no routes for location" error page instead of the trip.
       GoRoute(path: '/vehicle/trip', builder: (_, __) => const DriverTripScreen()),
       GoRoute(path: '/vehicle/history', builder: (_, __) => const RideHistoryScreen(isProvider: true)),
+      // The driver's live map: availability, their own moving pin, and the open
+      // ride requests around them. Same screen as the rider's, different mode.
+      GoRoute(
+          path: '/vehicle/map',
+          builder: (_, __) => const LiveMapScreen(mode: LiveMapMode.driver)),
 
       // ── Admin ──
       GoRoute(path: '/admin', builder: (_, __) => const AdminDashboard()),
@@ -375,6 +405,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // The generic settings editor: fees, thresholds, the points awards and
       // the points-to-birr rate, editable without a migration.
       GoRoute(path: '/admin/settings', builder: (_, __) => const AdminSettingsScreen()),
+      // Fee & pricing control panel. Editing is CEO/owner-only, enforced inside
+      // admin_update_setting() — a non-owner admin sees the values and why
+      // they cannot change them, instead of buttons that would fail.
+      GoRoute(path: '/admin/fees', builder: (_, __) => const FeeSettingsScreen()),
 
       // ── Help (signed-in users) ──
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),

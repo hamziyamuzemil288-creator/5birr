@@ -80,11 +80,11 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     }
   }
 
-  /// Transaction fee percentage, read live from system_settings so the
-  /// summary always reflects the current configuration. The fee itself is
-  /// still charged server-side by deduct_transaction_fee() — this display
-  /// never alters how it's calculated.
-  double? _feePercent;
+  /// The platform commission for this order, quoted live by
+  /// platform_transaction_fee(). Display only — the charge itself is made
+  /// server-side by deduct_transaction_fee(), which calls that same function,
+  /// so this figure cannot drift from what the provider is actually charged.
+  double? _platformFee;
 
   @override
   void initState() {
@@ -104,16 +104,17 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final all = await CartService.instance.getCart();
       final items =
           all.where((i) => i.providerId == widget.providerId).toList();
-      // Fee % is informational; hide the row entirely if it can't load.
-      double? feePercent;
+      // The commission is GREATEST(transaction_fee_percent% of the order,
+      // transaction_fee_min) and is the CEO's to change at any time, so it is
+      // quoted from the server rather than recomputed here. Informational:
+      // hide the row entirely if it cannot be loaded.
+      double? platformFee;
       try {
-        final setting = await Supabase.instance.client
-            .from('system_settings')
-            .select('value')
-            .eq('key', 'transaction_fee')
-            .maybeSingle();
-        final v = (setting?['value'] as num?)?.toDouble();
-        if (v != null && v > 0) feePercent = v;
+        final subtotal = items.fold<double>(0.0, (sum, i) => sum + i.lineTotal);
+        final quoted = await Supabase.instance.client
+            .rpc('platform_transaction_fee', params: {'p_amount': subtotal});
+        final v = (quoted as num?)?.toDouble();
+        if (v != null && v > 0) platformFee = v;
       } catch (_) {}
       // Skip the ID upload for buyers who already verified one at signup
       // (older accounts / re-installed app). Best-effort: on failure the
@@ -137,7 +138,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       if (mounted) {
         setState(() {
           _items = items;
-          _feePercent = feePercent;
+          _platformFee = platformFee;
           _loading = false;
         });
       }
@@ -446,20 +447,19 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                 ),
                               ),
                             const Divider(height: 20),
-                            if (_feePercent != null) ...[
+                            if (_platformFee != null) ...[
                               Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(
-                                      'Transaction fee '
-                                      '(${_feePercent!.toStringAsFixed(0)}% '
-                                      'charged to provider)',
-                                      style: const TextStyle(
+                                  const Text(
+                                      'Platform fee '
+                                      '(charged to provider)',
+                                      style: TextStyle(
                                           fontSize: 12,
                                           color: AppTheme.textMuted)),
                                   Text(
-                                    '-${(_total * _feePercent! / 100).toStringAsFixed(2)}',
+                                    '-${_platformFee!.toStringAsFixed(2)}',
                                     style: const TextStyle(
                                         fontSize: 12,
                                         color: AppTheme.textMuted),

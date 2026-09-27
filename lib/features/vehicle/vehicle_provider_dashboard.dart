@@ -330,6 +330,8 @@ class _VehicleProviderDashboardState
                     // keeping this transport dashboard.
                     _action(Icons.shopping_bag_outlined, 'Browse & Shop',
                         () => context.push('/user')),
+                    _action(Icons.map_outlined, 'Live Map',
+                        () => context.push('/vehicle/map')),
                     _action(Icons.local_taxi_outlined, 'Ride Requests',
                         () => context.push('/vehicle/ride-requests')),
                     _action(Icons.play_circle_outline, 'Active Trip',
