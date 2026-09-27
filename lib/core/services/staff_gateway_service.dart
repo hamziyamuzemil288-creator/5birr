@@ -89,6 +89,77 @@ class StaffGatewayService {
     return channel;
   }
 
+  /// The signed-in staff member's own record: their jobs, the history of how
+  /// those jobs changed, what they have actually done, and any open warning.
+  ///
+  /// Readable by THEM and by the CEO. Not by a super admin who merely manages
+  /// them — the product rule is that an individual's record is between them and
+  /// the CEO, and `my_staff_record()` enforces that server-side rather than
+  /// trusting the caller to hide it.
+  Future<Map<String, dynamic>?> myRecord() async {
+    final rows = await Supabase.instance.client.rpc('my_staff_record');
+    if ((rows as List).isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first as Map);
+  }
+
+  /// The catalogue of assignable jobs. Read by the CEO's staff editor so the
+  /// checklist is the server's list, not a hard-coded Dart map that has to be
+  /// edited in three places whenever a job is added.
+  Future<List<Map<String, dynamic>>> jobCatalogue() async {
+    final rows = await Supabase.instance.client
+        .from('staff_jobs')
+        .select('key, label, description, group_name, sort_order')
+        .eq('is_active', true)
+        .order('sort_order');
+    return (rows as List).map((r) => Map<String, dynamic>.from(r as Map)).toList();
+  }
+
+  /// Sets a staff member's jobs to exactly [jobKeys] — add, change and remove
+  /// in one call, because from the CEO's side that is one decision and the
+  /// server writes the history diff.
+  Future<void> setJobs({
+    required String staffId,
+    required List<String> jobKeys,
+    String? reason,
+  }) async {
+    try {
+      await Supabase.instance.client.rpc(
+        'set_staff_jobs',
+        params: {
+          'p_staff_id': staffId,
+          'p_job_keys': jobKeys,
+          'p_reason': reason,
+        },
+      );
+    } catch (e) {
+      final raw = e.toString();
+      for (final code in const [
+        'ONLY_ADMINISTRATORS_CAN_ASSIGN_STAFF_JOBS',
+        'UNKNOWN_STAFF_JOB',
+        'STAFF_JOB_TOUCHES_CUSTOMER_ORDERS',
+        'STAFF_NOT_FOUND',
+      ]) {
+        if (raw.contains(code)) throw Exception(_describeJobError(code));
+      }
+      rethrow;
+    }
+  }
+
+  String _describeJobError(String code) {
+    switch (code) {
+      case 'ONLY_ADMINISTRATORS_CAN_ASSIGN_STAFF_JOBS':
+        return 'Only the CEO or a super admin can change staff jobs.';
+      case 'UNKNOWN_STAFF_JOB':
+        return 'That job is not in the catalogue. Reload the staff list.';
+      case 'STAFF_JOB_TOUCHES_CUSTOMER_ORDERS':
+        return 'Staff cannot hold a job that acts on a customer\'s order.';
+      case 'STAFF_NOT_FOUND':
+        return 'That staff member no longer exists.';
+      default:
+        return 'Could not update their jobs.';
+    }
+  }
+
   /// Sends a warning to a staff member. CEO / Super Admin only, server-side.
   Future<void> warn({
     required String staffId,

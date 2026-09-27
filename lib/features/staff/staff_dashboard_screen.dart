@@ -24,6 +24,7 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
   Map<String, dynamic> _progress = const {};
   List<String> _permissions = const [];
   List<Map<String, dynamic>> _warnings = [];
+  Map<String, dynamic>? _record;
   bool _loading = true;
   String? _error;
 
@@ -93,6 +94,7 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
         _service.progress(),
         Supabase.instance.client.rpc('my_admin_permissions'),
         _service.myWarnings(),
+        _service.myRecord(),
       ]);
       if (!mounted) return;
       setState(() {
@@ -106,6 +108,7 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
         _warnings = (results[3] as List)
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList();
+        _record = results[4] as Map<String, dynamic>?;
         _loading = false;
         _error = null;
       });
@@ -271,6 +274,10 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
                     padding: const EdgeInsets.all(16),
                     children: [
                       _welcome(auth),
+                      if (_record != null) ...[
+                        const SizedBox(height: 16),
+                        _myJobsCard(),
+                      ],
                       if (_warnings.isNotEmpty) ...[
                         const SizedBox(height: 16),
                         _warningsCard(),
@@ -346,6 +353,131 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
         ),
       ),
     );
+  }
+
+  /// The staff member's own jobs, and the record of what they have done.
+  ///
+  /// The request was that their status and their work be visible to THEM and to
+  /// the CEO. Until now the staff workspace showed a derived queue and nothing
+  /// else: no list of what they are actually assigned, and no history of how
+  /// that assignment changed, so "why can I not do X" and "when did they take
+  /// that away" were both unanswerable from the inside.
+  Widget _myJobsCard() {
+    final record = _record!;
+    final jobs = (record['jobs'] as List?) ?? const [];
+    final history = (record['job_history'] as List?) ?? const [];
+    final activity = (record['activity'] as List?) ?? const [];
+
+    return Card(
+      child: ExpansionTile(
+        // The jobs are the answer to the question a staff member opens this
+        // screen with, so they are visible without a tap. The history is the
+        // answer to a rarer question, so it waits.
+        initiallyExpanded: true,
+        leading: const Icon(Icons.badge_outlined, color: AppTheme.teal),
+        title: const Text('My jobs',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+        subtitle: Text(jobs.isEmpty
+            ? 'No jobs assigned — ask the CEO'
+            : '${jobs.length} assigned'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (jobs.isEmpty)
+                  const Text('You have no jobs assigned yet.',
+                      style: TextStyle(
+                          fontSize: 13, color: AppTheme.textSecondary))
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final job in jobs)
+                        Chip(
+                          avatar: const Icon(Icons.check, size: 15),
+                          label: Text('${job['label'] ?? job['key']}',
+                              style: const TextStyle(fontSize: 12)),
+                          backgroundColor:
+                              AppTheme.primaryGreen.withOpacity(0.08),
+                          side: BorderSide(
+                              color:
+                                  AppTheme.primaryGreen.withOpacity(0.3)),
+                        ),
+                    ],
+                  ),
+                if (history.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  const Text('Job history',
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  ...history.take(8).map(_historyLine),
+                ],
+                if (activity.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  const Text('What I have done',
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  ...activity.take(8).map(_activityLine),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _historyLine(Map<String, dynamic> h) {
+    final revoked = h['revoked_at'] != null;
+    final when = h['assigned_at']?.toString() ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Text(
+        '${revoked ? "Removed" : "Added"}: ${h['label'] ?? h['job_key']}'
+        '${when.isEmpty ? '' : ' · ${when.substring(0, 10)}'}'
+        '${h['revoked_reason'] != null ? ' — ${h['revoked_reason']}' : ''}',
+        style: TextStyle(
+          fontSize: 11.5,
+          color: revoked ? AppTheme.error : AppTheme.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  Widget _activityLine(Map<String, dynamic> a) {
+    final when = a['created_at']?.toString() ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Text(
+        '${_humanAction(a['action']?.toString() ?? '')}'
+        '${when.isEmpty ? '' : ' · ${when.substring(0, 10)}'}',
+        style: const TextStyle(fontSize: 11.5, color: AppTheme.textSecondary),
+      ),
+    );
+  }
+
+  String _humanAction(String action) {
+    switch (action) {
+      case 'task_completed':
+        return 'Completed a work item';
+      case 'jobs_added':
+        return 'You were given new jobs';
+      case 'jobs_removed':
+        return 'A job was removed from you';
+      case 'jobs_changed':
+        return 'Your jobs were changed';
+      case 'document_verified':
+        return 'Verified an identity document';
+      case 'document_rejected':
+        return 'Rejected an identity document';
+      default:
+        return action.replaceAll('_', ' ');
+    }
   }
 
   Widget _stat(String label, String value) => Column(

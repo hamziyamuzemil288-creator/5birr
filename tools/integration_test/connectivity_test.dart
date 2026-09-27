@@ -485,6 +485,32 @@ void main() {
               'nothing.');
     });
 
+    test('staff jobs are assignable, and customer ordering is not', () async {
+      // staff.permissions was a text[] behind a CHECK naming nine fixed
+      // strings, so "assign a job" meant editing a constraint and the Flutter
+      // screen carried a third copy of the same list in Dart. It is now a
+      // catalogue the CEO picks from, with the product rule — staff never act
+      // on a customer's order — as DATA rather than as an accident of which
+      // nine keys someone happened to type.
+      expect(await ok('assert_staff_job_rules_hold'), isTrue,
+          reason: 'set_staff_jobs() must refuse an unknown job, refuse a job '
+              'that touches a customer order, grant a real one, keep the '
+              'history row when it is removed, and refuse a non-manager.');
+    });
+
+    test('money and status changes cannot happen unlogged', () async {
+      // admin_cash_recharge, admin_wallet_adjustment, approve_wallet_recharge,
+      // transition_order_status, transition_ride_status, claim_ride and
+      // suspend_provider wrote no audit row at all. The audit is a trigger
+      // rather than a hand-written call in each function, because a call only
+      // sees the path that contains it — the same action through an Edge
+      // Function was logged, through the SQL editor it was not.
+      expect(await ok('assert_money_and_status_are_audited'), isTrue,
+          reason: 'A money, status, role or identity table has lost its audit '
+              'trigger, so it can change with no trace. The assertion names '
+              'the tables.');
+    });
+
     test('the staff task feed updates itself', () async {
       // The feed was a snapshot: loaded once in initState with a manual
       // refresh button, on the one screen whose whole job is to say what to

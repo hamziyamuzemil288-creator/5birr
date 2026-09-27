@@ -23,9 +23,46 @@ class AdminStaffScreen extends ConsumerStatefulWidget {
   ConsumerState<AdminStaffScreen> createState() => _AdminStaffScreenState();
 }
 
+/// The job catalogue as read from `staff_jobs`, grouped for display.
+///
+/// Falls back to the hard-coded maps when the read has not landed (or failed)
+/// so the section never renders as an empty box — but the SERVER is the
+/// authority, and set_staff_jobs() refuses anything not in the catalogue, so
+/// the fallback can only ever be a stale subset, never an invented job.
+List<MapEntry<String, List<String>>> _jobGroupsFrom(
+  List<Map<String, dynamic>> catalogue,
+) {
+  if (catalogue.isEmpty) {
+    return _AdminStaffScreenState._permissionGroups.entries
+        .map((e) => MapEntry(e.key, e.value))
+        .toList();
+  }
+  final byGroup = <String, List<String>>{};
+  for (final job in catalogue) {
+    final key = job['key']?.toString();
+    final label = job['label']?.toString();
+    if (key == null || label == null) continue;
+    byGroup.putIfAbsent(job['group_name']?.toString() ?? 'General', () => []).add(key);
+  }
+  return byGroup.entries.toList();
+}
+
+Map<String, String> _jobLabelsFrom(List<Map<String, dynamic>> catalogue) {
+  if (catalogue.isEmpty) return _AdminStaffScreenState._permissionOptions;
+  return {
+    for (final job in catalogue)
+      if (job['key'] != null && job['label'] != null)
+        job['key'].toString(): job['label'].toString(),
+  };
+}
+
 class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   List<Map<String, dynamic>> _staff = [];
   List<Map<String, dynamic>> _categories = [];
+
+  /// The assignable jobs, read from `staff_jobs`. Empty until the first load
+  /// lands, which is the only time the hard-coded fallback is used.
+  List<Map<String, dynamic>> _jobCatalogue = [];
   bool _loading = true;
   String? _error;
   bool _isSuperAdmin = false;
@@ -45,9 +82,21 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   /// Permission vocabulary. The three `view_*` entries are the
   /// reports / expenses / auth-log visibility the hierarchy spec adds;
   /// action permissions stay as before.
+  /// The job catalogue, read from the DATABASE.
+  ///
+  /// This used to be a hard-coded Dart map with a second hard-coded grouping
+  /// beside it, while the authoritative list lived in a SQL CHECK constraint —
+  /// three copies of the same nine strings, and adding a job meant editing all
+  /// three. The catalogue is now `staff_jobs` (migration 20260927000034), so
+  /// the CEO picks from what the server will actually accept.
+  ///
+  /// Populated by [_loadJobs]; the two maps below are only the fallback for
+  /// the moment before the first read lands, so the section never renders as
+  /// an empty box.
   static const _permissionOptions = {
     'sales_transactions': 'Sales & transactions',
     'registrations': 'Registrations',
+    'document_verification': 'Document verification',
     'category_management': 'Category management',
     'support_chat': 'Support / chat',
     'payment_verification': 'Payment verification',
@@ -69,6 +118,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     'Support & payments': [
       'support_chat',
       'payment_verification',
+      'document_verification',
     ],
     'Oversight & reports': [
       'admin_history',
@@ -107,6 +157,20 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         }
       }
       final rows = await client.from('staff').select().order('created_at');
+      // The job list is a SEPARATE read with its own failure handling: if it
+      // fails, the directory must still render and the editor must still open
+      // with the fallback list, rather than one unavailable table blanking the
+      // whole management screen.
+      try {
+        final jobs = await client
+            .from('staff_jobs')
+            .select('key, label, description, group_name, sort_order')
+            .eq('is_active', true)
+            .order('sort_order');
+        if (mounted) setState(() => _jobCatalogue = List<Map<String, dynamic>>.from(jobs as List));
+      } catch (_) {
+        // Fallback maps below cover this.
+      }
       final staff = List<Map<String, dynamic>>.from(rows as List);
       // Vehicle categories for sub-admin scope assignment.
       List<Map<String, dynamic>> cats = [];
@@ -390,21 +454,20 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                 _CollapsibleSection(
                   icon: Icons.verified_user_outlined,
                   title: 'Permissions',
-                  subtitle: 'What this staff member can do across the app.',
-                  countLabel: '${selected.length}/${_permissionOptions.length}',
+                  subtitle: 'What this staff member can do across the app.',                    countLabel: '${selected.length}/${_jobLabelsFrom(_jobCatalogue).length}',
                   initiallyExpanded: true,
                   trailing: [_AllNoneButtons(
                     onAll: () => setSheetState(() {
-                      for (final key in _permissionOptions.keys) {
+                      for (final key in _jobLabelsFrom(_jobCatalogue).keys) {
                         if (!selected.contains(key)) selected.add(key);
                       }
                     }),
                     onNone: () => setSheetState(() {
-                      selected.removeWhere(_permissionOptions.containsKey);
+                      selected.removeWhere(_jobLabelsFrom(_jobCatalogue).containsKey);
                     }),
                   )],
                   children: [
-                    for (final group in _permissionGroups.entries) ...[
+                    for (final group in _jobGroupsFrom(_jobCatalogue)) ...[
                       Padding(
                         padding:
                             const EdgeInsets.only(left: 16, top: 6, bottom: 2),
@@ -421,7 +484,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                       ...group.value.map(
                         (key) => CheckboxListTile(
                           dense: true,
-                          title: Text(_permissionOptions[key]!,
+                          title: Text(_jobLabelsFrom(_jobCatalogue)[key] ?? key,
                               style: const TextStyle(fontSize: 13)),
                           value: selected.contains(key),
                           onChanged: (on) => setSheetState(() {
