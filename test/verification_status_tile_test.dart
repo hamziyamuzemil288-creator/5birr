@@ -1,11 +1,15 @@
 // Regression tests for VerificationStatusTile.
 //
-// The bug being guarded: a verified and an unverified account rendered the
-// SAME entry in the profile menu, so there was no way to see verification
-// status and no way to tell whether an upload had worked. A future edit that
-// collapses two of these states back into identical visuals would restore that
-// bug silently, so the first test asserts the states are mutually distinct
-// rather than merely correct one at a time.
+// The bug being guarded: the profile menu reported a fixed "Verified" for every
+// account, so a user who had uploaded nothing, a user whose ID was sitting
+// unread in the review queue, and a user an admin had actually approved all
+// looked identical. Two edits could restore that silently — collapsing two
+// states back into the same visuals, or wiring the tile to the GATING status
+// (DocCheckStatus) again, which is generous on purpose and says "you may work",
+// not "you are verified".
+//
+// The first two tests therefore assert the properties, not just the copy: the
+// states are mutually distinct, and "in review" is not "verified".
 //
 // The loader and the tap action are injected because the real ones go through
 // ProviderDocGate, which needs a live Supabase client.
@@ -19,6 +23,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 Widget _host(Widget child) => MaterialApp(home: Scaffold(body: child));
 
+const _titles = {
+  'Verification',
+  'Identity verified',
+  'ID awaiting review',
+  'ID not accepted',
+  'ID under investigation',
+  'Verify your identity',
+  'Verification status unknown',
+};
+
 /// The visible label text of a pumped tile, used to compare states.
 String _titleOf(WidgetTester tester) {
   final texts = tester
@@ -27,20 +41,14 @@ String _titleOf(WidgetTester tester) {
       .whereType<String>();
   // Titles are the longest-lived strings in the layout; take the one that is
   // not the subtitle/chip of a known state.
-  const titles = {
-    'Verification',
-    'Identity verified',
-    'Verify your identity',
-    'Verification status unknown',
-  };
-  return texts.firstWhere(titles.contains, orElse: () => '<none>');
+  return texts.firstWhere(_titles.contains, orElse: () => '<none>');
 }
 
 void main() {
   testWidgets('verified state is visually distinct and says so',
       (tester) async {
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () async => DocCheckStatus.satisfied,
+      reviewLoader: () async => DocReviewState.verified,
     )));
     await tester.pumpAndSettle();
 
@@ -51,10 +59,26 @@ void main() {
     expect(find.text('Verify your identity'), findsNothing);
   });
 
+  testWidgets('a document nobody has reviewed is NOT shown as verified',
+      (tester) async {
+    // THE reported bug. MANUAL_REVIEW satisfies the GATING check, so wiring
+    // the tile to DocCheckStatus.satisfied rendered the green "Verified" chip
+    // for an ID that was still sitting unread in the queue.
+    await tester.pumpWidget(_host(VerificationStatusTile(
+      reviewLoader: () async => DocReviewState.pending,
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ID awaiting review'), findsOneWidget);
+    expect(find.text('In review'), findsOneWidget);
+    expect(find.text('Identity verified'), findsNothing);
+    expect(find.text('Verified'), findsNothing);
+  });
+
   testWidgets('unverified state is visually distinct and says so',
       (tester) async {
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () async => DocCheckStatus.required,
+      reviewLoader: () async => DocReviewState.none,
     )));
     await tester.pumpAndSettle();
 
@@ -64,10 +88,22 @@ void main() {
     expect(find.text('Verified'), findsNothing);
   });
 
-  testWidgets('failed check is a third, distinct state — not "not verified"',
+  testWidgets('a rejected document says so instead of reading as unverified',
       (tester) async {
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () async => DocCheckStatus.checkFailed,
+      reviewLoader: () async => DocReviewState.rejected,
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ID not accepted'), findsOneWidget);
+    expect(find.text('Rejected'), findsOneWidget);
+    expect(find.text('Identity verified'), findsNothing);
+  });
+
+  testWidgets('failed check is its own state — not "not verified"',
+      (tester) async {
+    await tester.pumpWidget(_host(VerificationStatusTile(
+      reviewLoader: () async => DocReviewState.unknown,
     )));
     await tester.pumpAndSettle();
 
@@ -78,41 +114,39 @@ void main() {
     expect(find.text('Verified'), findsNothing);
   });
 
-  testWidgets('the three states never render the same headline',
+  testWidgets('the six states never render the same headline',
       (tester) async {
     final seen = <String>{};
-    for (final status in [
-      DocCheckStatus.satisfied,
-      DocCheckStatus.required,
-      DocCheckStatus.checkFailed,
-    ]) {
+    for (final status in DocReviewState.values) {
       // Distinct keys force a fresh State each pass. Without them the element
       // is reused, initState does not re-run, and the tile would keep showing
       // the first status.
       await tester.pumpWidget(_host(VerificationStatusTile(
         key: ValueKey(status),
-        statusLoader: () async => status,
+        reviewLoader: () async => status,
       )));
       await tester.pumpAndSettle();
       seen.add(_titleOf(tester));
     }
-    expect(seen.length, 3,
-        reason: 'verified, unverified and unknown must look different — '
-            'that is the entire point of this widget');
+    expect(seen.length, DocReviewState.values.length,
+        reason: 'every review state must look different — that is the '
+            'entire point of this widget');
   });
 
   testWidgets('loads before deciding, so it never flashes a wrong state',
       (tester) async {
-    final completer = Completer<DocCheckStatus>();
+    final completer = Completer<DocReviewState>();
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () => completer.future,
+      reviewLoader: () => completer.future,
     )));
     await tester.pump();
 
     expect(find.text('Checking your documents…'), findsOneWidget);
     expect(find.text('Not verified'), findsNothing);
+    // Especially not the green one.
+    expect(find.text('Verified'), findsNothing);
 
-    completer.complete(DocCheckStatus.satisfied);
+    completer.complete(DocReviewState.verified);
     await tester.pumpAndSettle();
     expect(find.text('Identity verified'), findsOneWidget);
   });
@@ -124,9 +158,9 @@ void main() {
     // "Not verified" until an app restart.
     var calls = 0;
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () async {
+      reviewLoader: () async {
         calls++;
-        return calls == 1 ? DocCheckStatus.required : DocCheckStatus.satisfied;
+        return calls == 1 ? DocReviewState.none : DocReviewState.pending;
       },
       onTapAction: (_) async {},
     )));
@@ -136,14 +170,14 @@ void main() {
     await tester.tap(find.byType(VerificationStatusTile));
     await tester.pumpAndSettle();
 
-    expect(find.text('Identity verified'), findsOneWidget);
+    expect(find.text('ID awaiting review'), findsOneWidget);
     expect(calls, 2, reason: 'the tap must re-read the status');
   });
 
   testWidgets('survives a throwing loader without blanking or crashing',
       (tester) async {
     await tester.pumpWidget(_host(VerificationStatusTile(
-      statusLoader: () async => throw StateError('boom'),
+      reviewLoader: () async => throw StateError('boom'),
     )));
     await tester.pumpAndSettle();
     expect(find.text('Verification status unknown'), findsOneWidget);
@@ -158,17 +192,13 @@ void main() {
     addTearDown(tester.view.reset);
 
     for (final scale in [1.0, 1.3, 1.8, 2.0]) {
-      for (final status in [
-        DocCheckStatus.satisfied,
-        DocCheckStatus.required,
-        DocCheckStatus.checkFailed,
-      ]) {
+      for (final status in DocReviewState.values) {
         await tester.pumpWidget(MaterialApp(
           home: MediaQuery(
             data: MediaQueryData(textScaler: TextScaler.linear(scale)),
             child: Scaffold(
               body: VerificationStatusTile(
-                statusLoader: () async => status,
+                reviewLoader: () async => status,
               ),
             ),
           ),

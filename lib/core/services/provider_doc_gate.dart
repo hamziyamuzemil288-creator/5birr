@@ -26,6 +26,44 @@ enum DocCheckStatus {
   checkFailed,
 }
 
+/// What the user should be told about their identity check.
+///
+/// WHY THIS IS NOT [DocCheckStatus]
+/// ------------------------------
+/// [DocCheckStatus] answers a GATING question — "may this person work?" — and
+/// it answers it generously on purpose: a document that is merely queued for
+/// review must not lock a provider out of their own business, so MANUAL_REVIEW
+/// satisfies it. That generosity is correct for gating and completely wrong for
+/// display.
+///
+/// Reusing it for the profile tile is what produced the reported bug: the tile
+/// read `satisfied` for a freshly uploaded, never-looked-at ID and rendered a
+/// green "Identity verified" chip. There was not even an admin decision to
+/// display — `user_documents.verification_status` had no VERIFIED/REJECTED
+/// value until migration 20260927000030 added them.
+///
+/// Gating must keep using [DocCheckStatus]. Anything that SHOWS a state must
+/// use this.
+enum DocReviewState {
+  /// No accepted identity document on file.
+  none,
+
+  /// A document is on file and nobody has looked at it yet.
+  pending,
+
+  /// Verified — automatically by the QR agent, or by an administrator.
+  verified,
+
+  /// An administrator refused it; a new document is needed.
+  rejected,
+
+  /// The verification agent flagged it as suspected fraud.
+  flagged,
+
+  /// The check itself failed. We do not know.
+  unknown,
+}
+
 /// Document-verification gate (Task 7 item 3): providers no longer upload
 /// documents at signup. Instead the FIRST protected action — uploading a
 /// product/vehicle, or claiming/accepting an order — requires the docs.
@@ -79,6 +117,53 @@ class ProviderDocGate {
     }
   }
 
+  /// The honest display state: what is actually on file, and has anybody
+  /// actually verified it.
+  ///
+  /// Precedence when several documents exist (a rejected one plus a freshly
+  /// uploaded replacement, say): the most advanced state wins, so uploading a
+  /// new ID after a rejection immediately reads as "in review" again rather
+  /// than staying stuck on "rejected".
+  Future<DocReviewState> reviewState({String? userId}) async {
+    final uid = userId ?? _client.auth.currentUser?.id;
+    if (uid == null) return DocReviewState.none;
+    try {
+      final rows = await _client
+          .from('user_documents')
+          .select('document_type, verification_status')
+          .eq('user_id', uid);
+      var sawPending = false;
+      var sawRejected = false;
+      var sawFlagged = false;
+      for (final r in rows as List) {
+        if (!acceptedDocTypes.containsKey(r['document_type'] as String)) {
+          continue;
+        }
+        switch ((r['verification_status'] as String?) ?? 'MANUAL_REVIEW') {
+          case 'AUTO_APPROVED':
+          case 'VERIFIED':
+            return DocReviewState.verified;
+          case 'REJECTED':
+            sawRejected = true;
+          case 'SUSPECTED_FRAUD':
+            sawFlagged = true;
+          default:
+            // MANUAL_REVIEW, and anything a future version adds that we do
+            // not recognise: shown as "still waiting", never as verified.
+            sawPending = true;
+        }
+      }
+      if (sawPending) return DocReviewState.pending;
+      if (sawRejected) return DocReviewState.rejected;
+      if (sawFlagged) return DocReviewState.flagged;
+      return DocReviewState.none;
+    } catch (e) {
+      debugPrint('ProviderDocGate.reviewState failed for $uid: '
+          '${e.runtimeType}: $e');
+      return DocReviewState.unknown;
+    }
+  }
+
   /// Whether the document gate should let a protected action through.
   ///
   /// FAIL-OPEN, and that is deliberate: a transient network error or an
@@ -89,8 +174,10 @@ class ProviderDocGate {
   /// Do NOT use this to decide whether to SHOW the user anything. A failed
   /// check returns true here, so a caller prompting on `!isSatisfied()` hides
   /// its own notice precisely when the check is broken — the user is left
-  /// with no prompt and an open gate. Prompting code must use
-  /// [checkStatus] instead; only gating code belongs here.
+  /// with no prompt and an open gate. [checkStatus] answers the same gating
+  /// question with a third state, but it is still not a DISPLAY status:
+  /// anything shown to the user must use [reviewState], which distinguishes
+  /// "queued for review" from "verified".
   Future<bool> isSatisfied({String? userId}) async {
     final status = await checkStatus(userId: userId);
     return status != DocCheckStatus.required;
@@ -114,19 +201,29 @@ class ProviderDocGate {
     // "Verify your account" (or the profile menu entry) on an already-verified
     // account returned instantly having opened nothing and said nothing —
     // indistinguishable from a dead button.
-    final status = await checkStatus();
+    final status = await reviewState();
 
     switch (status) {
-      case DocCheckStatus.satisfied:
+      case DocReviewState.verified:
         final addAnother = await _showAlreadyVerified(context);
         if (addAnother != true || !context.mounted) return true;
-      case DocCheckStatus.checkFailed:
+      case DocReviewState.unknown:
         // The gate itself fails OPEN, so protected actions still work. But a
         // failed check is not a passed check, and silently opening the upload
         // sheet would be misleading — say what happened and offer a retry.
         final retry = await _showCheckFailed(context);
         if (retry != true || !context.mounted) return true;
-      case DocCheckStatus.required:
+      // Nothing on file, a document waiting for review, a refused one and a
+      // flagged one all go straight to the upload sheet. That is the change:
+      // this used to branch on the GATING status, where a document merely
+      // queued for review reads as `satisfied`, so tapping through from the
+      // "we received your document" notice answered "you are already
+      // verified, add another?" — and a user whose ID had been REFUSED was
+      // told the same thing.
+      case DocReviewState.none:
+      case DocReviewState.pending:
+      case DocReviewState.rejected:
+      case DocReviewState.flagged:
         break;
     }
 

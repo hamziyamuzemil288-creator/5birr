@@ -30,7 +30,7 @@ class _State extends State<AdminUserManagementScreen> {
     try {
       final data = await Supabase.instance.client
           .from('profiles')
-          .select('*, user_documents(document_type, storage_path, verification_status, agent_verdict)')
+          .select('*, user_documents(id, document_type, storage_path, verification_status, agent_verdict)')
           .eq('status', _filter)
           .order('created_at', ascending: false);
       if (mounted) {
@@ -137,6 +137,7 @@ class _State extends State<AdminUserManagementScreen> {
     showDialog(
       context: context,
       builder: (_) => _DocumentPreviewDialog(
+        documentId: nationalIdDoc['id'] as String?,
         storagePath: nationalIdDoc['storage_path'] as String,
         userName: user['full_name'] ?? 'Unknown',
         docType: nationalIdDoc['document_type'] as String?,
@@ -144,7 +145,11 @@ class _State extends State<AdminUserManagementScreen> {
             nationalIdDoc['verification_status'] as String?,
         agentVerdict: nationalIdDoc['agent_verdict'] as Map<String, dynamic>?,
       ),
-    );
+    ).then((_) {
+      // A verdict changes what the user sees on their own profile, so the row
+      // behind the dialog is stale the moment one is written.
+      if (mounted) _load();
+    });
   }
 
   @override
@@ -401,6 +406,7 @@ class _PointsLineState extends State<_PointsLine> {
 }
 
 class _DocumentPreviewDialog extends StatefulWidget {
+  final String? documentId;
   final String storagePath;
   final String userName;
   final String? docType;
@@ -410,6 +416,7 @@ class _DocumentPreviewDialog extends StatefulWidget {
   const _DocumentPreviewDialog({
     required this.storagePath,
     required this.userName,
+    this.documentId,
     this.docType,
     this.verificationStatus,
     this.agentVerdict,
@@ -422,11 +429,68 @@ class _DocumentPreviewDialog extends StatefulWidget {
 class _DocumentPreviewDialogState extends State<_DocumentPreviewDialog> {
   String? _signedUrl;
   bool _loading = true;
+  bool _reviewing = false;
+  String? _reviewError;
 
   @override
   void initState() {
     super.initState();
     _loadImage();
+  }
+
+  /// Writes the administrator's decision.
+  ///
+  /// This has to go through review_user_document() and never through a direct
+  /// UPDATE of the column: until migration 20260927000030 the status enum had
+  /// no VERIFIED value at all, and prevent_document_verification_forgery()
+  /// refuses a client that changes the column without is_admin() — so an
+  /// approval written by hand either failed outright or, had the enum allowed
+  /// it, would have bypassed the audit trail. The RPC is admin-only server-side
+  /// and writes an admin_history row plus a notification for the user.
+  Future<void> _review(String decision) async {
+    final id = widget.documentId;
+    if (id == null || _reviewing) return;
+
+    String? note;
+    if (decision == 'REJECTED') {
+      // A refusal with no reason is not actionable for the user, who is told
+      // only that the document was not accepted.
+      note = await showDialog<String>(
+        context: context,
+        builder: (_) => const _RejectReasonDialog(),
+      );
+      if (note == null || !mounted) return;
+    }
+
+    setState(() {
+      _reviewing = true;
+      _reviewError = null;
+    });
+    try {
+      await Supabase.instance.client.rpc(
+        'review_user_document',
+        params: {'p_document_id': id, 'p_decision': decision, 'p_note': note},
+      );
+      if (!mounted) return;
+      // Captured BEFORE the pop: this dialog's context is unmounted the moment
+      // Navigator.pop runs, and looking a Messenger up from it afterwards
+      // throws — which turned a successful approval into a crash and left the
+      // verdict written with no confirmation on screen.
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      messenger.showSnackBar(SnackBar(
+        content: Text(decision == 'VERIFIED'
+            ? '${widget.userName} is now verified'
+            : 'Document rejected — ${widget.userName} was notified'),
+      ));
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _reviewing = false;
+          _reviewError = friendlyError(e, context: 'Could not save the decision');
+        });
+      }
+    }
   }
 
   Future<void> _loadImage() async {
@@ -468,39 +532,21 @@ class _DocumentPreviewDialogState extends State<_DocumentPreviewDialog> {
                 ),
               ],
             ),
-            // QR agent verdict (Task 4): what the agent decided and why.
+            // QR agent verdict (Task 4) OR the administrator's own decision.
             if (widget.verificationStatus != null)
               Container(
                 width: double.infinity,
-                color: widget.verificationStatus == 'AUTO_APPROVED'
-                    ? AppTheme.primaryGreen.withOpacity(0.10)
-                    : widget.verificationStatus == 'SUSPECTED_FRAUD'
-                        ? AppTheme.error.withOpacity(0.10)
-                        : AppTheme.warning.withOpacity(0.10),
+                color: _statusColor(widget.verificationStatus!)
+                    .withOpacity(0.10),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Row(
                   children: [
-                    Icon(
-                      widget.verificationStatus == 'AUTO_APPROVED'
-                          ? Icons.verified_outlined
-                          : widget.verificationStatus == 'SUSPECTED_FRAUD'
-                              ? Icons.gpp_bad_outlined
-                              : Icons.pending_outlined,
-                      size: 18,
-                      color: widget.verificationStatus == 'AUTO_APPROVED'
-                          ? AppTheme.primaryGreen
-                          : widget.verificationStatus == 'SUSPECTED_FRAUD'
-                              ? AppTheme.error
-                              : AppTheme.warning,
-                    ),
+                    Icon(_statusIcon(widget.verificationStatus!),
+                        size: 18, color: _statusColor(widget.verificationStatus!)),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        widget.verificationStatus == 'AUTO_APPROVED'
-                            ? 'QR verified — auto-approved'
-                            : widget.verificationStatus == 'SUSPECTED_FRAUD'
-                                ? 'Flagged: suspected fraud — review manually'
-                                : 'Not auto-verified — manual review',
+                        _statusLabel(widget.verificationStatus!),
                         style: const TextStyle(
                             fontSize: 12, fontWeight: FontWeight.w600),
                       ),
@@ -530,14 +576,165 @@ class _DocumentPreviewDialogState extends State<_DocumentPreviewDialog> {
             ),
             Container(
               padding: const EdgeInsets.all(12),
-              child: const Text(
-                'Signed URL expires in 5 minutes',
-                style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_reviewError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        _reviewError!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.error),
+                      ),
+                    ),
+                  // The decision itself. This row did not exist: there was no
+                  // admin action to take, because the status enum had no
+                  // VERIFIED value — so an ID could be looked at and never
+                  // approved, and the user was told "verified" regardless.
+                  if (widget.documentId != null)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed:
+                                _reviewing ? null : () => _review('REJECTED'),
+                            icon: const Icon(Icons.close, size: 16,
+                                color: AppTheme.error),
+                            label: const Text('Reject',
+                                style: TextStyle(
+                                    fontSize: 13, color: AppTheme.error)),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(
+                                  color: AppTheme.error, width: 1.2),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed:
+                                _reviewing ? null : () => _review('VERIFIED'),
+                            icon: _reviewing
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white),
+                                  )
+                                : const Icon(Icons.verified_outlined,
+                                    size: 16),
+                            label: Text(_reviewing ? 'Saving…' : 'Verify',
+                                style: const TextStyle(fontSize: 13)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primaryGreen,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Signed URL expires in 5 minutes',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                  ),
+                ],
               ),
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+/// Asks the administrator why a document was refused, and returns the reason.
+///
+/// Its own widget rather than a builder closure so the TextEditingController
+/// has an owner that disposes it — a controller created inside a `builder:`
+/// is never disposed and leaks for the life of the screen.
+class _RejectReasonDialog extends StatefulWidget {
+  const _RejectReasonDialog();
+
+  @override
+  State<_RejectReasonDialog> createState() => _RejectReasonDialogState();
+}
+
+class _RejectReasonDialogState extends State<_RejectReasonDialog> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Why was this rejected?'),
+      content: TextField(
+        controller: _ctrl,
+        maxLines: 3,
+        autofocus: true,
+        decoration: const InputDecoration(
+            hintText: 'e.g. the photo is too dark to read the ID number'),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+            child: const Text('Reject')),
+      ],
+    );
+  }
+}
+
+// The five document states, spelled out in one place. The three the agent can
+// produce and the two an administrator can (migration 20260927000030) must not
+// be allowed to converge on the same colour and icon — that is the same class
+// of bug as the profile tile, one screen over.
+Color _statusColor(String status) {
+  switch (status) {
+    case 'AUTO_APPROVED':
+    case 'VERIFIED':
+      return AppTheme.primaryGreen;
+    case 'REJECTED':
+    case 'SUSPECTED_FRAUD':
+      return AppTheme.error;
+    default:
+      return AppTheme.warning;
+  }
+}
+
+IconData _statusIcon(String status) {
+  switch (status) {
+    case 'AUTO_APPROVED':
+    case 'VERIFIED':
+      return Icons.verified_outlined;
+    case 'REJECTED':
+      return Icons.gpp_bad_outlined;
+    case 'SUSPECTED_FRAUD':
+      return Icons.report_problem_outlined;
+    default:
+      return Icons.pending_outlined;
+  }
+}
+
+String _statusLabel(String status) {
+  switch (status) {
+    case 'AUTO_APPROVED':
+      return 'QR verified — auto-approved';
+    case 'VERIFIED':
+      return 'Verified by an administrator';
+    case 'REJECTED':
+      return 'Rejected by an administrator';
+    case 'SUSPECTED_FRAUD':
+      return 'Flagged: suspected fraud — review manually';
+    default:
+      return 'Waiting for review — nobody has looked at this yet';
   }
 }

@@ -15,9 +15,16 @@ import '../theme/app_theme.dart';
 /// banner faded, and after a successful upload the entry still looked exactly
 /// as it had before: no way to tell whether the upload had worked.
 ///
-/// This renders all three real states distinctly and re-reads the status after
+/// This renders all six real states distinctly and re-reads the status after
 /// the upload flow closes, so the tile turns green the moment a document is
-/// accepted rather than only looking right after an app restart.
+/// actually VERIFIED rather than only looking right after an app restart.
+///
+/// It reads [DocReviewState], NOT [DocCheckStatus]. The gating status says
+/// "you may work", which is deliberately generous — a document merely queued
+/// for review satisfies it — and using it here is what made this tile claim
+/// "Identity verified" for an ID no human had ever opened. There was not even
+/// an admin decision to display until migration 20260927000030 added the
+/// VERIFIED / REJECTED states.
 ///
 /// It uses a hand-built row rather than ListTile on purpose: ListTile's fixed
 /// height and single-line subtitle clip at large text scales, and this list has
@@ -27,13 +34,13 @@ import '../theme/app_theme.dart';
 class VerificationStatusTile extends StatefulWidget {
   const VerificationStatusTile({
     super.key,
-    this.statusLoader,
+    this.reviewLoader,
     this.onTapAction,
   });
 
   /// Overridable for tests. The real loader goes through ProviderDocGate, which
   /// needs a live Supabase client a widget test cannot provide.
-  final Future<DocCheckStatus> Function()? statusLoader;
+  final Future<DocReviewState> Function()? reviewLoader;
 
   /// Overridable for tests, for the same reason.
   final Future<void> Function(BuildContext context)? onTapAction;
@@ -44,9 +51,9 @@ class VerificationStatusTile extends StatefulWidget {
 
 class _VerificationStatusTileState extends State<VerificationStatusTile> {
   /// Null until the first check returns. Rendered as "Checking…" rather than
-  /// guessing — defaulting to [DocCheckStatus.required] would flash
-  /// "Not verified" at a verified user on every open.
-  DocCheckStatus? _status;
+  /// guessing — defaulting to [DocReviewState.none] would flash "Not verified"
+  /// at a verified user on every open.
+  DocReviewState? _status;
 
   /// Guards against a slow first check landing after a newer one and
   /// overwriting it with stale state.
@@ -62,14 +69,14 @@ class _VerificationStatusTileState extends State<VerificationStatusTile> {
 
   Future<void> _load() async {
     final token = ++_request;
-    final loader = widget.statusLoader ?? ProviderDocGate.instance.checkStatus;
-    DocCheckStatus result;
+    final loader = widget.reviewLoader ?? ProviderDocGate.instance.reviewState;
+    DocReviewState result;
     try {
       result = await loader();
     } catch (_) {
-      // checkStatus already folds its own failures into checkFailed; this only
+      // reviewState already folds its own failures into unknown; this only
       // covers an injected loader that throws.
-      result = DocCheckStatus.checkFailed;
+      result = DocReviewState.unknown;
     }
     if (!mounted || token != _request) return;
     setState(() => _status = result);
@@ -180,9 +187,9 @@ class _VerificationStatusTileState extends State<VerificationStatusTile> {
   }
 }
 
-/// What the tile shows for a given status. Split out so the three states are
-/// spelled out in one place and cannot quietly converge on the same visuals —
-/// which is precisely the bug this widget fixes.
+/// What the tile shows for a given state. Split out so every state is spelled
+/// out in one place and cannot quietly converge on the same visuals — which is
+/// precisely the bug this widget exists to prevent.
 class _TileVisual {
   const _TileVisual({
     required this.icon,
@@ -199,7 +206,7 @@ class _TileVisual {
   final String? chip;
 }
 
-_TileVisual _visualFor(DocCheckStatus? status) {
+_TileVisual _visualFor(DocReviewState? status) {
   switch (status) {
     case null:
       return const _TileVisual(
@@ -208,15 +215,44 @@ _TileVisual _visualFor(DocCheckStatus? status) {
         title: 'Verification',
         subtitle: 'Checking your documents…',
       );
-    case DocCheckStatus.satisfied:
+    case DocReviewState.verified:
       return const _TileVisual(
         icon: Icons.verified_user,
         color: AppTheme.primaryGreen,
         title: 'Identity verified',
-        subtitle: 'An accepted ID document is on file.',
+        subtitle: 'Your ID was checked and accepted.',
         chip: 'Verified',
       );
-    case DocCheckStatus.required:
+    case DocReviewState.pending:
+      // The state this bug lived in. A document is on file and NOBODY has
+      // looked at it, which used to render the green "Verified" chip above.
+      return const _TileVisual(
+        icon: Icons.hourglass_top_rounded,
+        color: AppTheme.info,
+        title: 'ID awaiting review',
+        subtitle: 'We received your document. Our team checks it shortly — '
+            'you can keep working meanwhile.',
+        chip: 'In review',
+      );
+    case DocReviewState.rejected:
+      return const _TileVisual(
+        icon: Icons.gpp_bad_outlined,
+        color: AppTheme.error,
+        title: 'ID not accepted',
+        subtitle: 'Our team could not accept your document. Tap to upload a '
+            'clearer one.',
+        chip: 'Rejected',
+      );
+    case DocReviewState.flagged:
+      return const _TileVisual(
+        icon: Icons.report_problem_outlined,
+        color: AppTheme.error,
+        title: 'ID under investigation',
+        subtitle: 'Your document was flagged for a manual check. Our team '
+            'will be in touch.',
+        chip: 'Flagged',
+      );
+    case DocReviewState.none:
       return const _TileVisual(
         icon: Icons.badge_outlined,
         color: AppTheme.gold,
@@ -224,7 +260,7 @@ _TileVisual _visualFor(DocCheckStatus? status) {
         subtitle: 'Not verified — upload an ID to unlock provider actions.',
         chip: 'Not verified',
       );
-    case DocCheckStatus.checkFailed:
+    case DocReviewState.unknown:
       return const _TileVisual(
         icon: Icons.cloud_off_outlined,
         color: AppTheme.error,

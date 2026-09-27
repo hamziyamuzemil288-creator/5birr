@@ -23,7 +23,13 @@ class VerificationNotice extends StatefulWidget {
 class _VerificationNoticeState extends State<VerificationNotice> {
   bool _visible = false;
   bool _checking = true;
+  String _message = _uploadPrompt;
   Timer? _dismissTimer;
+
+  static const _uploadPrompt =
+      'Verify your account — upload an ID document to unlock provider actions.';
+  static const _pendingMessage =
+      'We received your ID — our team is checking it. Nothing is blocked.';
 
   @override
   void initState() {
@@ -32,10 +38,7 @@ class _VerificationNoticeState extends State<VerificationNotice> {
   }
 
   Future<void> _check() async {
-    // Only relevant for providers (documents gate provider actions); other
-    // roles skip the notice entirely.
-    //
-    // Deliberately checkStatus() and NOT isSatisfied(). isSatisfied() fails
+    // Deliberately reviewState() and NOT isSatisfied(). isSatisfied() fails
     // OPEN — correct for gating, wrong for prompting — so a failed check
     // returned true and this notice computed `_visible = !true = false`.
     // The one moment the user most needs to be told something was exactly the
@@ -43,11 +46,16 @@ class _VerificationNoticeState extends State<VerificationNotice> {
     //
     // So: show unless we positively know they are verified. A failed check is
     // not knowledge, and the notice's own text is safe guidance either way.
-    final status = await ProviderDocGate.instance.checkStatus();
+    final state = await ProviderDocGate.instance.reviewState();
     if (!mounted) return;
     setState(() {
       _checking = false;
-      _visible = status != DocCheckStatus.satisfied;
+      _visible = state != DocReviewState.verified;
+      // Someone who already uploaded and is waiting on us must not be told to
+      // upload again — that was the second half of the reported bug.
+      _message = state == DocReviewState.pending
+          ? _pendingMessage
+          : _uploadPrompt;
     });
     if (_visible) {
       _dismissTimer = Timer(const Duration(seconds: 5), () {
@@ -91,11 +99,10 @@ class _VerificationNoticeState extends State<VerificationNotice> {
                   const Icon(Icons.verified_user_outlined,
                       size: 20, color: AppTheme.primaryGreen),
                   const SizedBox(width: 10),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Verify your account — upload an ID document to unlock '
-                      'provider actions.',
-                      style: TextStyle(
+                      _message,
+                      style: const TextStyle(
                           fontSize: 12.5, color: AppTheme.textPrimary),
                     ),
                   ),
