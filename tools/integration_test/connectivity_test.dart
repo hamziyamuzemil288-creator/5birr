@@ -569,29 +569,33 @@ void main() {
     });
 
     test('REPORT: every client write policy, quoted', () async {
-      // The summary buckets classify; this one quotes. The "unguarded" bucket
-      // turned out to be 90% noise -- it flags the absence of is_admin(), but
-      // for a user-owned table is_admin() is the wrong check and cart_items,
-      // favorites and order_messages are correctly scoped to auth.uid(). The
-      // one that mattered, email_otp_codes, is WITH CHECK (true) with no
-      // SELECT, UPDATE or DELETE, and is deliberate: anonymous signup must
-      // request a code before it has a session.
+      // The summary buckets classify; this one quotes, because classifying from
+      // the catalog went wrong three times: a quoted relation name that does
+      // not resolve, a candidate list taken from a view that spans schemas, and
+      // -- the one that got here -- reading pg_policies.qual for INSERT
+      // policies, whose entire rule lives in with_check. All 21 INSERT
+      // policies came back "WIDE" and were about to be treated as findings,
+      // including user_roles_admin_write, which is WITH CHECK (is_admin()).
       //
-      // Judging that required reading the policy, and reading it from the
-      // migration files is unreliable -- 20260927000014 drops a policy 0002
-      // created, and only the database knows which won. So this prints the
-      // enforced expression for every one, and a human decides.
+      // All three were invisible to a passing build. This is found only by
+      // reading what the output SAYS rather than whether it ran, which is why
+      // the report prints and why it fails when it cannot.
+      //
+      // Judging a policy is a product decision, so this prints both
+      // expression columns and lets a human read them.
       final rows = await client.rpc('client_write_policy_detail');
       expect(rows, isA<List>(), reason: 'client_write_policy_detail failed; a '
           'broken report is a finding, not a pass.');
       final wide = <String>[];
       for (final row in (rows as List)) {
         final r = Map<String, dynamic>.from(row as Map);
-        final line = '${r['verdict'] == 'WIDE' ? 'WIDE ' : '      '}'
-            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']}\n'
-            '        ${r['qual']}';
+        final using = '${r['using_expr'] ?? ''}';
+        final check = '${r['check_expr'] ?? ''}';
         // ignore: avoid_print
-        print('WRITE POLICY | $line');
+        print('WRITE POLICY | ${r['verdict'] == 'WIDE' ? 'WIDE ' : '      '}'
+            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']}'
+            '${using.isEmpty ? '' : '\n          USING: $using'}'
+            '${check.isEmpty ? '' : '\n          CHECK: $check'}');
         if (r['verdict'] == 'WIDE') wide.add('${r['table_name']} (${r['cmd']})');
       }
       // ignore: avoid_print
