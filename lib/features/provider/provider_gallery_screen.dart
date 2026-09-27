@@ -91,7 +91,7 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
         await _client.storage
             .from(_bucket)
             .upload(path, file, fileOptions: const FileOptions(upsert: true));
-        await _client.rpc('add_gallery_image', {
+        await _client.rpc('add_gallery_image', params: {
           'p_provider_id': widget.providerId,
           'p_storage_path': path,
           'p_caption': null,
@@ -138,7 +138,8 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
     if (ok != true || !mounted) return;
 
     try {
-      await _client.rpc('delete_gallery_image', {'p_image_id': image.id});
+      await _client
+          .rpc('delete_gallery_image', params: {'p_image_id': image.id});
       await _load();
       if (mounted) _toast('Photo removed.');
     } catch (e) {

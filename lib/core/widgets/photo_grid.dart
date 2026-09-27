@@ -106,23 +106,25 @@ class PhotoGrid extends StatelessWidget {
         errorBuilder: (_, __, ___) => const _Fallback(),
       );
     } else if (item.path != null && item.bucket != null) {
-      // Resolve through the client so private buckets and signed URLs both
-      // work; a gallery row that stored only a path is the normal case.
-      image = FutureBuilder<List<String>>(
-        future: Supabase.instance.client.storage.from(item.bucket!).createSignedUrls(
-              [item.path!],
-              3600,
-            ),
+      // Resolve through the client so a row that stored only a path renders.
+      // createSignedUrl works for public and private buckets alike (a public
+      // bucket just serves a signed URL that resolves), so one call covers
+      // both `provider-gallery` and `product-images` without the widget
+      // having to know which is which.
+      image = FutureBuilder<String>(
+        future: Supabase.instance.client.storage
+            .from(item.bucket!)
+            .createSignedUrl(item.path!, 3600),
         builder: (context, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const _Fallback(showSpinner: true);
           }
-          final urls = snap.data;
-          if (urls == null || urls.isEmpty || urls.first.isEmpty) {
+          final url = snap.data;
+          if (url == null || url.isEmpty) {
             return const _Fallback();
           }
           return Image.network(
-            urls.first,
+            url,
             fit: BoxFit.cover,
             width: double.infinity,
             height: double.infinity,

@@ -78,7 +78,7 @@ class _AccountDeletionScreenState extends State<AccountDeletionScreen> {
     }
     setState(() => _submitting = true);
     try {
-      await _client.rpc('request_account_deletion', {
+      await _client.rpc('request_account_deletion', params: {
         'p_reason': reason,
         'p_supporting_info':
             _infoCtrl.text.trim().isEmpty ? null : _infoCtrl.text.trim(),

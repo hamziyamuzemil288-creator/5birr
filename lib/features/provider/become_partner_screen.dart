@@ -132,7 +132,7 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
     }
 
     try {
-      await Supabase.instance.client.rpc('submit_partner_application', {
+      await Supabase.instance.client.rpc('submit_partner_application', params: {
         'p_provider_type': type,
         'p_business_name': name,
         'p_business_description':

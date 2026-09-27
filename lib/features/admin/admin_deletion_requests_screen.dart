@@ -102,7 +102,7 @@ class _AdminDeletionRequestsScreenState
 
     setState(() => _working = true);
     try {
-      await _client.rpc('reject_account_deletion', {
+      await _client.rpc('reject_account_deletion', params: {
         'p_request_id': row['id'],
         'p_actor_id': _client.auth.currentUser?.id,
         'p_note': note,
