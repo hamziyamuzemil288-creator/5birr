@@ -5,6 +5,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class ProviderBusinessProfileScreen extends StatefulWidget {
   const ProviderBusinessProfileScreen({super.key});
@@ -29,6 +30,11 @@ class _State extends State<ProviderBusinessProfileScreen> {
   double? _lng;
   bool _capturingGps = false;
   String? _gpsMessage;
+  // A failed load left _profile null and the form blank but fully editable,
+  // inviting the provider to retype their details — then Save would hit
+  // `_profile!['id']` and fail on a null check. Never show an editable form
+  // we could not populate.
+  String? _error;
 
   @override
   void initState() {
@@ -68,10 +74,17 @@ class _State extends State<ProviderBusinessProfileScreen> {
             _lng = (prov['location_lng'] as num?)?.toDouble();
           }
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(
+              e, context: 'Could not load your business profile');
+        });
+      }
     }
   }
 
@@ -139,7 +152,9 @@ class _State extends State<ProviderBusinessProfileScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : SingleChildScrollView(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Form(
                 key: _formKey,

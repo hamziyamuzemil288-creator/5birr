@@ -9,6 +9,7 @@ import '../../core/services/cart_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class UserProductDetailScreen extends ConsumerStatefulWidget {
   final String productId;
@@ -23,6 +24,10 @@ class _State extends ConsumerState<UserProductDetailScreen> {
   bool _loading = true;
   bool _fav = false;
   bool _adding = false;
+  // Same distinction as the provider detail screen: a deleted product and a
+  // dropped connection both used to render "Product not found".
+  String? _error;
+  bool _notFound = false;
   // Unit-priced items (per kg / liter) are bought in decimal amounts.
   final _qtyCtrl = TextEditingController();
 
@@ -58,10 +63,20 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           _fav = fav;
           _reviews = reviews;
           _loading = false;
+          _error = null;
+          _notFound = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _notFound = isNotFound(e);
+          if (!_notFound) {
+            _error = friendlyError(e, context: 'Could not load this product');
+          }
+        });
+      }
     }
   }
 
@@ -72,7 +87,13 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           body: const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen)));
     }
-    if (_product == null) {
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Product')),
+        body: LoadErrorView(message: _error!, onRetry: _load),
+      );
+    }
+    if (_product == null || _notFound) {
       return Scaffold(
           appBar: AppBar(title: const Text('Product')),
           body: const Center(child: Text('Product not found')));

@@ -272,6 +272,10 @@ class _PointsCard extends StatefulWidget {
 class _PointsCardState extends State<_PointsCard> {
   int _points = 0;
   bool _loading = true;
+  // A failed read used to leave _points at 0, so the card confidently showed
+  // "0 points" to a user who may well have a balance. Say we do not know
+  // instead, and let them retry in place.
+  bool _failed = false;
 
   @override
   void initState() {
@@ -286,9 +290,15 @@ class _PointsCardState extends State<_PointsCard> {
         setState(() {
           _points = p;
           _loading = false;
+          _failed = false;
         });
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _failed = true;
+        });
+      }
     }
   }
 
@@ -331,11 +341,32 @@ class _PointsCardState extends State<_PointsCard> {
                         height: 16,
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: AppTheme.primaryGreen))
-                    : Text('$_points points',
-                        style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.primaryGreenDark)),
+                    : _failed
+                        ? InkWell(
+                            onTap: () {
+                              setState(() {
+                                _loading = true;
+                                _failed = false;
+                              });
+                              _load();
+                            },
+                            child: const Row(
+                              children: [
+                                Text('Could not load points',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        color: AppTheme.textMuted)),
+                                SizedBox(width: 6),
+                                Icon(Icons.refresh,
+                                    size: 14, color: AppTheme.textMuted),
+                              ],
+                            ),
+                          )
+                        : Text('$_points points',
+                            style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.primaryGreenDark)),
               ],
             ),
           ),

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class VehicleManagementScreen extends StatefulWidget {
   const VehicleManagementScreen({super.key});
@@ -13,6 +14,7 @@ class VehicleManagementScreen extends StatefulWidget {
 class _State extends State<VehicleManagementScreen> {
   List<Map<String, dynamic>> _vehicles = [];
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -44,10 +46,16 @@ class _State extends State<VehicleManagementScreen> {
         setState(() {
           _vehicles = List<Map<String, dynamic>>.from(data as List);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load this page');
+        });
+      }
     }
   }
 
@@ -92,7 +100,9 @@ class _State extends State<VehicleManagementScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.teal))
-          : _vehicles.isEmpty
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : _vehicles.isEmpty
               ? Center(
                   child: Column(
                   mainAxisSize: MainAxisSize.min,

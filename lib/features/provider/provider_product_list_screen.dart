@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class ProviderProductListScreen extends StatefulWidget {
   const ProviderProductListScreen({super.key});
@@ -13,6 +14,7 @@ class ProviderProductListScreen extends StatefulWidget {
 class _State extends State<ProviderProductListScreen> {
   List<Map<String, dynamic>> _products = [];
   bool _loading = true;
+  String? _error;
   String? _providerId;
 
   @override
@@ -45,10 +47,16 @@ class _State extends State<ProviderProductListScreen> {
         setState(() {
           _products = List<Map<String, dynamic>>.from(data as List);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load this page');
+        });
+      }
     }
   }
 
@@ -109,7 +117,9 @@ class _State extends State<ProviderProductListScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : _products.isEmpty
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : _products.isEmpty
               ? Center(
                   child: Column(
                   mainAxisSize: MainAxisSize.min,

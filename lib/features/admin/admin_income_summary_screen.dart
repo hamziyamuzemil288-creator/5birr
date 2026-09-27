@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminIncomeSummaryScreen extends StatefulWidget {
   const AdminIncomeSummaryScreen({super.key});
@@ -24,6 +25,11 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
   // and have no amount column, so that query errored silently.)
   List<Map<String, dynamic>> _txFees = [];
   List<Map<String, dynamic>> _monthlyFees = [];
+  // A snackbar was the only signal here, and it disappears after a few
+  // seconds — leaving a Total Income of 0.00 on screen with no indication
+  // that the ledger was never actually read. Money totals must not look
+  // authoritative when the read failed.
+  String? _error;
 
   @override
   void initState() {
@@ -32,7 +38,10 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final client = Supabase.instance.client;
       final String startIso =
@@ -77,8 +86,9 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
     } catch (e) {
       // Surface failures instead of silently rendering a fake zero summary.
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(friendlyError(e, context: 'Could not load income data'))));
+        setState(() {
+          _error = friendlyError(e, context: 'Could not load income data');
+        });
       }
     }
     if (mounted) setState(() => _loading = false);
@@ -170,7 +180,9 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
                 padding: const EdgeInsets.all(16),

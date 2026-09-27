@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminPaymentVerificationScreen extends StatefulWidget {
   const AdminPaymentVerificationScreen({super.key});
@@ -16,6 +17,10 @@ class _State extends State<AdminPaymentVerificationScreen>
   List<Map<String, dynamic>> _approved = [];
   List<Map<String, dynamic>> _rejected = [];
   bool _loading = true;
+  // This is the queue admins work through to release people's money. A
+  // failed load previously rendered an empty Pending tab, which reads as
+  // "nobody is waiting" while real recharge requests sit unapproved.
+  String? _error;
 
   @override
   void initState() {
@@ -54,7 +59,12 @@ class _State extends State<AdminPaymentVerificationScreen>
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load pending payments');
+        });
+      }
     }
   }
 
@@ -147,7 +157,9 @@ class _State extends State<AdminPaymentVerificationScreen>
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : TabBarView(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : TabBarView(
               controller: _tabCtrl,
               children: [
                 _list(_pending, showActions: true),

@@ -4,6 +4,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/payment_methods_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminPaymentMethodsScreen extends StatefulWidget {
   const AdminPaymentMethodsScreen({super.key});
@@ -14,6 +15,7 @@ class AdminPaymentMethodsScreen extends StatefulWidget {
 class _State extends State<AdminPaymentMethodsScreen> {
   List<Map<String, dynamic>> _methods = [];
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -28,10 +30,16 @@ class _State extends State<AdminPaymentMethodsScreen> {
         setState(() {
           _methods = data;
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load payment methods');
+        });
+      }
     }
   }
 
@@ -165,11 +173,11 @@ class _State extends State<AdminPaymentMethodsScreen> {
         backgroundColor: AppTheme.primaryGreen,
         onPressed: () => _addOrEdit(),
         child: const Icon(Icons.add, color: Colors.white),
-      ),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : _methods.isEmpty
+      ),      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : _methods.isEmpty
               ? const Center(
                   child: Text('No payment methods configured',
                       style: TextStyle(color: AppTheme.textMuted)))

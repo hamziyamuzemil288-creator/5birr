@@ -13,6 +13,7 @@ import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class UserRideRequestScreen extends StatefulWidget {
   const UserRideRequestScreen({super.key});
@@ -39,6 +40,10 @@ class _State extends State<UserRideRequestScreen>
   bool _loading = true;
   bool _submitting = false;
   bool _fareLoading = false;
+  // Separate from _error, which carries form/submit copy. This one is a
+  // failed fetch: without the vehicle categories the pickup form cannot be
+  // completed at all, and the user was left with an empty selector.
+  String? _loadError;
   String? _fareError;
   double? _fareEstimate;
   String? _error;
@@ -162,10 +167,17 @@ class _State extends State<UserRideRequestScreen>
         setState(() {
           _vehicleCategories = List<Map<String, dynamic>>.from(cats as List);
           _loading = false;
+          _loadError = null;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _loadError =
+              friendlyError(e, context: 'Could not load vehicle types');
+        });
+      }
     }
   }
 
@@ -509,7 +521,9 @@ class _State extends State<UserRideRequestScreen>
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : SingleChildScrollView(
+          : _loadError != null
+              ? LoadErrorView(message: _loadError!, onRetry: _loadCategories)
+              : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
