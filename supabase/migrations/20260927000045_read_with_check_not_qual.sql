@@ -99,9 +99,12 @@ AS $$
       -- The rule that actually applies. INSERT is decided by WITH CHECK;
       -- SELECT, UPDATE, DELETE and ALL are decided by USING.
       CASE WHEN w.cmd = 'INSERT' THEN w.check_expr ELSE w.using_expr END AS effective,
-      -- An UPDATE has two halves and only one of them is optional, so both are
-      -- required for it to count as scoped.
-      CASE WHEN w.cmd = 'UPDATE' THEN w.using_expr AND w.check_expr
+      -- An UPDATE has two halves and only one of them is optional, so both must
+      -- be present for it to count as scoped. The comparison is <> '' and not
+      -- a bare AND: these are text columns, and `text AND text` is
+      -- "argument of AND must be type boolean, not type text".
+      CASE WHEN w.cmd = 'UPDATE'
+           THEN (w.using_expr <> '' AND w.check_expr <> '')
            ELSE true END AS both_halves_scoped
     FROM writes w
   )
