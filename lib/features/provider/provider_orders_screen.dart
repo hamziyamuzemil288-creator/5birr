@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 import '../../core/utils/order_number_format.dart';
 import '../user/user_order_detail_screen.dart' show orderStatusColor;
 
@@ -26,6 +28,7 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
   Map<String, String> _userNames = {};
   String _filter = 'All';
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -80,10 +83,16 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
           _orders = orders;
           _userNames = names;
           _loading = false;
+          _error = null;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your orders');
+        });
+      }
     }
   }
 
@@ -129,7 +138,9 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('My Orders')),
-      body: _loading
+      body: _error != null
+          ? LoadErrorView(message: _error!, onRetry: _load)
+          : _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : _orders.isEmpty

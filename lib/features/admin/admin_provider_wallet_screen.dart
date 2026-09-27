@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminProviderWalletScreen extends StatefulWidget {
   final String providerId;
@@ -16,6 +18,10 @@ class _State extends State<AdminProviderWalletScreen> {
   List<Map<String, dynamic>> _transactions = [];
   List<Map<String, dynamic>> _rechargeRequests = [];
   bool _loading = true;
+  // A failed load used to leave _wallet null, and the screen then rendered
+  // that as a balance of 0.00 ETB — an admin reconciling a provider's money
+  // would be told the wallet was empty when the request had merely failed.
+  String? _error;
 
   @override
   void initState() {
@@ -56,10 +62,16 @@ class _State extends State<AdminProviderWalletScreen> {
           _rechargeRequests =
               List<Map<String, dynamic>>.from(recharges as List);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load this wallet');
+        });
+      }
     }
   }
 
@@ -69,6 +81,12 @@ class _State extends State<AdminProviderWalletScreen> {
       return Scaffold(
           body: const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen)));
+    }
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Provider Wallet')),
+        body: LoadErrorView(message: _error!, onRetry: _load),
+      );
     }
     final balance = (_wallet?['balance'] as num?)?.toDouble() ?? 0;
     final profile =

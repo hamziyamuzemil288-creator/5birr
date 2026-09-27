@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class UserNotificationsScreen extends StatefulWidget {
   const UserNotificationsScreen({super.key});
@@ -12,6 +14,7 @@ class UserNotificationsScreen extends StatefulWidget {
 class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -30,10 +33,16 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
         setState(() {
           _notifications = List<Map<String, dynamic>>.from(data as List);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load your notifications');
+        });
+      }
     }
   }
 
@@ -53,7 +62,9 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
       appBar: AppBar(title: const Text('Notifications')),
       body: _loading
           ? _buildLoadingSkeleton()
-          : _notifications.isEmpty
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : _notifications.isEmpty
               ? _buildEmptyState()
               : RefreshIndicator(
                   onRefresh: _load,

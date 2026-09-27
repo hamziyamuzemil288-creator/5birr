@@ -4,6 +4,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
 import '../../core/utils/order_number_format.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminTransactionHistoryScreen extends StatefulWidget {
   const AdminTransactionHistoryScreen({super.key});
@@ -14,6 +16,7 @@ class AdminTransactionHistoryScreen extends StatefulWidget {
 class _State extends State<AdminTransactionHistoryScreen> {
   List<Map<String, dynamic>> _transactions = [];
   bool _loading = true;
+  String? _error;
   DateTime? _startDate;
   DateTime? _endDate;
   String? _typeFilter;
@@ -49,10 +52,16 @@ class _State extends State<AdminTransactionHistoryScreen> {
         setState(() {
           _transactions = List<Map<String, dynamic>>.from(data as List);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load transactions');
+        });
+      }
     }
   }
 
@@ -203,7 +212,9 @@ class _State extends State<AdminTransactionHistoryScreen> {
             child: _loading
                 ? const Center(
                     child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-                : _transactions.isEmpty
+                : _error != null
+                    ? LoadErrorView(message: _error!, onRetry: _load)
+                    : _transactions.isEmpty
                     ? const Center(
                         child: Text('No transactions found',
                             style: TextStyle(color: AppTheme.textMuted)))

@@ -3,7 +3,9 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/city_service.dart';
+import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/cart_icon_button.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class UserCategoryScreen extends StatefulWidget {
   final String categoryId;
@@ -17,6 +19,7 @@ class _State extends State<UserCategoryScreen> {
   List<Map<String, dynamic>> _subcategories = [];
   List<Map<String, dynamic>> _products = [];
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -60,10 +63,16 @@ class _State extends State<UserCategoryScreen> {
           _subcategories = List<Map<String, dynamic>>.from(subs as List);
           _products = prodsRaw;
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load this category');
+        });
+      }
     }
   }
 
@@ -77,7 +86,9 @@ class _State extends State<UserCategoryScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
                 padding: const EdgeInsets.all(16),

@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminExpenseScreen extends StatefulWidget {
   const AdminExpenseScreen({super.key});
@@ -14,6 +15,10 @@ class AdminExpenseScreen extends StatefulWidget {
 class _AdminExpenseScreenState extends State<AdminExpenseScreen> {
   bool _loading = true;
   List<Map<String, dynamic>> _expenses = [];
+  // The load used to end in a bare `catch (_) {}`, so any failure left the
+  // expense list empty and the screen reported a total of zero with no
+  // indication that anything had gone wrong.
+  String? _error;
 
   @override
   void initState() {
@@ -30,7 +35,12 @@ class _AdminExpenseScreenState extends State<AdminExpenseScreen> {
           .order('created_at', ascending: false)
           .limit(500);
       _expenses = List<Map<String, dynamic>>.from(data as List);
-    } catch (_) {}
+      if (mounted) setState(() => _error = null);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = friendlyError(e, context: 'Could not load expenses'));
+      }
+    }
     if (mounted) setState(() => _loading = false);
   }
 
@@ -160,7 +170,9 @@ class _AdminExpenseScreenState extends State<AdminExpenseScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: Column(
                 children: [

@@ -4,6 +4,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/provider_trust_section.dart';
 
 class UserProviderDetailScreen extends StatefulWidget {
@@ -20,6 +22,10 @@ class _State extends State<UserProviderDetailScreen> {
   ProviderTrustStats? _trust;
   bool _loading = true;
   bool _fav = false;
+  // A dropped connection used to land on the same "Provider not found" screen
+  // as a deleted provider, so a network blip read as "this shop is gone".
+  String? _error;
+  bool _notFound = false;
 
   @override
   void initState() {
@@ -60,10 +66,20 @@ class _State extends State<UserProviderDetailScreen> {
           _trust = trust;
           _fav = fav;
           _loading = false;
+          _error = null;
+          _notFound = false;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _notFound = isNotFound(e);
+          if (!_notFound) {
+            _error = friendlyError(e, context: 'Could not load this provider');
+          }
+        });
+      }
     }
   }
 
@@ -74,7 +90,13 @@ class _State extends State<UserProviderDetailScreen> {
           body: const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen)));
     }
-    if (_provider == null) {
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Provider')),
+        body: LoadErrorView(message: _error!, onRetry: _load),
+      );
+    }
+    if (_provider == null || _notFound) {
       return Scaffold(
           appBar: AppBar(title: const Text('Provider')),
           body: const Center(child: Text('Provider not found')));

@@ -8,6 +8,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/city_service.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 /// Push listings with no known location to the end, preserving the server's
 /// order within each group.
@@ -54,6 +56,7 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
   List<Map<String, dynamic>> _results = [];
   bool _loading = false;
   bool _searched = false;
+  String? _error;
   Timer? _debounce;
 
   // Live GPS: distance-from-user comes from the real device position.
@@ -126,10 +129,16 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
           final rows = List<Map<String, dynamic>>.from(data as List);
           _results = rankLocationLessLast(rows);
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Search is unavailable right now');
+        });
+      }
     }
   }
 
@@ -182,12 +191,17 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
           child: _loading
               ? const Center(
                   child:
-                      CircularProgressIndicator(color: AppTheme.primaryGreen))
-              : !_searched
-                  ? const Center(
-                      child: Text('Search for products and services',
-                          style: TextStyle(color: AppTheme.textMuted)))
-                  : _results.isEmpty
+                      CircularProgressIndicator(color: AppTheme.primaryGreen))                  : !_searched
+                      ? const Center(
+                          child: Text('Search for products and services',
+                              style: TextStyle(color: AppTheme.textMuted)))
+                      : _error != null
+                          // _search takes the query, so retry re-runs it
+                          // against whatever is currently in the box.
+                          ? LoadErrorView(
+                              message: _error!,
+                              onRetry: () => _search(_ctrl.text.trim()))
+                          : _results.isEmpty
                       ? const Center(
                           child: Text('No results found',
                               style: TextStyle(color: AppTheme.textMuted)))

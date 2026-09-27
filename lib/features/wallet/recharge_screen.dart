@@ -8,6 +8,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/services/wallet_service.dart';
 import '../../core/services/payment_methods_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class RechargeScreen extends StatefulWidget {
   const RechargeScreen({super.key});
@@ -24,6 +25,10 @@ class _RechargeScreenState extends State<RechargeScreen> {
   bool _loading = true;
   bool _submitting = false;
   String? _error;
+  // Distinct from _error, which is form-validation copy ("Enter a valid
+  // amount"). This one is a failed fetch: the payment-method list could not
+  // be loaded, and without it the user just sees an empty selector.
+  String? _loadError;
   String? _success;
   final _picker = ImagePicker();
   // One-time activation: until the first recharge is approved (which withholds
@@ -67,10 +72,16 @@ class _RechargeScreenState extends State<RechargeScreen> {
         setState(() {
           _methods = methods;
           _loading = false;
+          _loadError = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _loadError = friendlyError(e, context: 'Could not load payment methods');
+        });
+      }
     }
   }
 
@@ -159,7 +170,9 @@ class _RechargeScreenState extends State<RechargeScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : SingleChildScrollView(
+          : _loadError != null
+              ? LoadErrorView(message: _loadError!, onRetry: _load)
+              : SingleChildScrollView(
               padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

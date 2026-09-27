@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/primary_button.dart';
 
 /// Shown when the signed-in user's profile.status is REJECTED.
@@ -95,7 +96,7 @@ class _RejectedScreenState extends ConsumerState<RejectedScreen> {
       if (!mounted) return;
       setState(() => _resubmitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not resubmit: ${e.toString()}')),
+        SnackBar(content: Text(friendlyError(e, context: 'Could not resubmit'))),
       );
     }
   }
@@ -123,8 +124,7 @@ class _RejectedScreenState extends ConsumerState<RejectedScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Could not send request: ${e.toString()}')),
+        SnackBar(content: Text(friendlyError(e, context: 'Could not send your request'))),
       );
     } finally {
       if (mounted) setState(() => _sendingTicket = false);

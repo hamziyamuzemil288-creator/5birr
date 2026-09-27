@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/csv_export.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 
 class AdminReportsScreen extends StatefulWidget {
   const AdminReportsScreen({super.key});
@@ -13,6 +15,7 @@ class _State extends State<AdminReportsScreen> {
   bool _loading = true;
   List<Map<String, dynamic>> _categories = [];
   Map<String, dynamic> _stats = {};
+  String? _error;
   String _selectedSector = 'ALL';
   
   static const _sectors = ['ALL', 'PRODUCT', 'SERVICE', 'VEHICLE'];
@@ -96,10 +99,16 @@ class _State extends State<AdminReportsScreen> {
             'products_by_category': productCountsByCat,
           };
           _loading = false;
+          _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load the reports');
+        });
+      }
     }
   }
 
@@ -151,7 +160,9 @@ class _State extends State<AdminReportsScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryGreen))
-          : RefreshIndicator(
+          : _error != null
+              ? LoadErrorView(message: _error!, onRetry: _load)
+              : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
                 padding: const EdgeInsets.all(16),

@@ -93,9 +93,15 @@ String friendlyError(Object error, {String? context}) {
   else if (_any(lower, [
     '404',
     'not found',
+    'pgrst116',
     'pgrst202',
     'does not exist',
   ])) {
+    // PGRST116 is what `.single()` raises on zero rows, with the message
+    // "JSON object requested, multiple (or no) rows returned" — it contains
+    // neither "not found" nor a 404, so without this it would fall through
+    // to the malformed-data branch and tell the user the response was
+    // unexpected when the real answer is simply "there is no such record".
     message = 'That item could not be found. It may have been removed.';
   }
   // ── Duplicate / constraint violations ──
@@ -159,4 +165,22 @@ bool _any(String lower, List<String> needles) {
     if (lower.contains(n)) return true;
   }
   return false;
+}
+
+/// True when [error] means "this record genuinely is not there", as opposed
+/// to "the request failed".
+///
+/// Screens with a dedicated not-found state need this distinction: without
+/// it, a dropped connection on a detail page and a deleted record produce
+/// the same user-visible screen, and the user is told the thing they were
+/// looking for does not exist when it very much does.
+bool isNotFound(Object error) {
+  final lower = error.toString().toLowerCase();
+  return _any(lower, [
+    'pgrst116',
+    'pgrst202',
+    'not found',
+    'does not exist',
+    '404',
+  ]);
 }

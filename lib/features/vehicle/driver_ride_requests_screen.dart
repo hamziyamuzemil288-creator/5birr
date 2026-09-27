@@ -8,6 +8,8 @@ import '../../core/services/location_service.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/services/provider_doc_gate.dart';
 import '../../core/services/resilient_subscription.dart';
+import '../../core/utils/friendly_error.dart';
+import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/realtime_status_banner.dart';
 
 class DriverRideRequestsScreen extends StatefulWidget {
@@ -21,6 +23,7 @@ class _State extends State<DriverRideRequestsScreen> {
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   List<Map<String, dynamic>> _requests = [];
   bool _loading = true;
+  String? _error;
   String? _providerId;
 
   // Live GPS: lets the driver see how far each open request is.
@@ -34,6 +37,27 @@ class _State extends State<DriverRideRequestsScreen> {
   }
 
   Future<void> _init() async {
+    // Previously unguarded: if the provider lookup threw, the exception escaped
+    // this method, _loading was never cleared, and the driver sat on a
+    // spinner forever with no way to tell whether the screen was broken or
+    // there was simply no work nearby.
+    try {
+      // Retry replaces the realtime subscription. Without cancelling the
+      // previous one first it would be orphaned — still live, still calling
+      // setState, never disposed — so two feeds would drive one screen.
+      _rideSub?.cancel();
+      await _initInner();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = friendlyError(e, context: 'Could not load ride requests');
+        });
+      }
+    }
+  }
+
+  Future<void> _initInner() async {
     final client = Supabase.instance.client;
     final userId = client.auth.currentUser?.id;
     if (userId == null) return;
@@ -114,9 +138,11 @@ class _State extends State<DriverRideRequestsScreen> {
       }
     } catch (e) {
       if (mounted) {
+        // Keep the specific "someone beat you to it" wording, but stop
+        // interpolating the raw exception for every other failure.
         final msg = e.toString().contains('RIDE_ALREADY_TAKEN')
             ? 'This ride was just taken by another driver'
-            : 'Failed to claim ride: $e';
+            : friendlyError(e, context: 'Could not claim this ride');
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
       }
@@ -164,7 +190,12 @@ class _State extends State<DriverRideRequestsScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.teal))
-          : _requests.isEmpty
+          : _error != null
+              ? LoadErrorView(
+                  message: _error!,
+                  icon: Icons.local_taxi_outlined,
+                  onRetry: _init)
+              : _requests.isEmpty
               ? const Center(
                   child: Column(
                   mainAxisSize: MainAxisSize.min,
