@@ -61,9 +61,22 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze (non-blocking)
-        run: flutter analyze
-        continue-on-error: true
+      # Analyzer ERRORS block the build; infos and warnings do not.
+      #
+      # This step used to be `continue-on-error: true`, which meant it
+      # reported 6 undefined-method errors in auth_provider.dart and CI
+      # carried on — the failure only surfaced 3 minutes later in the APK
+      # build, with the analyzer output buried in a non-blocking step. Every
+      # real defect this session reached the build step should have been
+      # caught here instead.
+      #
+      # It cannot simply be made blocking: the project has ~330 pre-existing
+      # info-level lints, and plain `flutter analyze` exits non-zero on
+      # infos too, so that would fail every push over pre-existing noise.
+      # --no-fatal-infos/--no-fatal-warnings fail the build on errors only,
+      # which is the part that actually breaks compilation.
+      - name: Analyze (errors block the build)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       # Phase 3 safety net: run the app test suite on every push/PR so a
       # broken connection is caught in CI, not on the live dashboard. The
