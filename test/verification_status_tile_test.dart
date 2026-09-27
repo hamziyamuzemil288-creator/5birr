@@ -191,6 +191,10 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
+    // Each combination is checked and its exception CONSUMED, so a failure
+    // names the exact state and scale. Letting the first one escape reported
+    // only "a RenderFlex overflowed by 10.0 pixels" against a line number,
+    // which is no way to find the culprit among six states x four scales.
     for (final scale in [1.0, 1.3, 1.8, 2.0]) {
       for (final status in DocReviewState.values) {
         await tester.pumpWidget(MaterialApp(
@@ -204,7 +208,30 @@ void main() {
           ),
         ));
         await tester.pumpAndSettle();
+        final overflow = tester.takeException();
+        expect(overflow, isNull,
+            reason: 'the tile overflows at text scale $scale in state '
+                '$status (title "${_titleFor(status)}")');
       }
     }
   });
+}
+
+/// The headline a given state renders, for failure messages.
+String _titleFor(DocReviewState state) {
+  switch (state) {
+    case DocReviewState.verified:
+      return 'Identity verified';
+    case DocReviewState.pending:
+      return 'ID awaiting review';
+    case DocReviewState.rejected:
+      return 'ID not accepted';
+    case DocReviewState.flagged:
+      return 'ID under investigation';
+    case DocReviewState.none:
+      return 'Verify your identity';
+    case DocReviewState.unknown:
+      return 'Verification status unknown';
+  }
+}
 }
