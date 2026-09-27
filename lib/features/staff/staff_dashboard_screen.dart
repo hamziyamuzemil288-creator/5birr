@@ -500,14 +500,26 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
   // the price of the data crossing as JSON rather than as a typed row.
   Widget _historyLine(dynamic raw) {
     final h = Map<String, dynamic>.from(raw as Map);
-    final revoked = h['revoked_at'] != null;
-    final when = h['assigned_at']?.toString() ?? '';
+    final addedAt = h['assigned_at']?.toString() ?? '';
+    final revokedAt = h['revoked_at']?.toString();
+    final revoked = revokedAt != null && revokedAt.isNotEmpty;
+    final label = '${h['label'] ?? h['job_key']}';
+    String day(String v) => v.length >= 10 ? v.substring(0, 10) : v;
+
+    // One row per grant episode, closed when the job was taken away, so a
+    // closed row has to show BOTH dates. This used to print "Added" for the
+    // grant and "Removed" for a separate row, because removal wrote a second
+    // row beside an open orphan -- so a person who had lost a job still saw an
+    // "Added" line with no end to it.
+    final line = revoked
+        ? 'Added ${day(addedAt)} → removed ${day(revokedAt)}: $label'
+        : 'Added: $label${addedAt.isEmpty ? '' : ' · ${day(addedAt)}'}';
+    final reason = h['revoked_reason']?.toString() ?? '';
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Text(
-        '${revoked ? "Removed" : "Added"}: ${h['label'] ?? h['job_key']}'
-        '${when.isEmpty ? '' : ' · ${when.substring(0, 10)}'}'
-        '${h['revoked_reason'] != null ? ' — ${h['revoked_reason']}' : ''}',
+        '$line${reason.isEmpty ? '' : ' — $reason'}',
         style: TextStyle(
           fontSize: 11.5,
           color: revoked ? AppTheme.error : AppTheme.textSecondary,
