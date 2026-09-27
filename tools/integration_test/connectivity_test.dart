@@ -185,6 +185,26 @@ void main() {
     });
   });
 
+  group('orders cannot be forged by a client', () {
+    test('no non-admin INSERT path exists on orders', () async {
+      // orders carried a policy allowing any authenticated user to insert
+      // their own row with an arbitrary status, total_amount and
+      // provider_id. The anon key ships in the app bundle, so anyone could
+      // POST a COMPLETED order to /rest/v1/orders and then use it as a
+      // ticket for a fabricated review of any product (reviews.target_id
+      // has no FK), plus a bypass of server-side pricing and junk in every
+      // admin report.
+      //
+      // Dropping the policy is safe because nothing inserts into orders
+      // except create_order_secure(), which is SECURITY DEFINER and is
+      // called by the order-create edge function over service_role.
+      expect(await ok('assert_orders_not_client_insertable'), isTrue,
+          reason: 'A non-admin INSERT policy exists on orders again, so a '
+              'client can forge orders — including COMPLETED ones, which '
+              'unlock fabricated reviews on any product.');
+    });
+  });
+
   group('suspended providers cannot trade', () {
     test('orders are refused for providers that are not APPROVED', () async {
       // Suspension gated the provider out of the app, hid their products
