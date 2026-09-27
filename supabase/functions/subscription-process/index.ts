@@ -23,7 +23,15 @@ Deno.serve(async (req) => {
       .from("subscriptions")
       .select("provider_id, next_due_date, status")
       .lte("next_due_date", new Date().toISOString())
-      .in("status", ["ACTIVE", "DUE", "GRACE"]);
+      // SUSPENDED is included deliberately. This function is what sets a
+      // subscription to SUSPENDED, so excluding that status here meant the
+      // state it created was terminal: a suspended provider who recharged
+      // was never charged again and never restored. The notification we send
+      // them literally promises "Recharge your wallet to reactivate" — which
+      // did nothing. With SUSPENDED included, a provider whose balance now
+      // covers the fee is charged, deducted_subscription_fee sets the
+      // subscription back to ACTIVE, and the restore below lifts the account.
+      .in("status", ["ACTIVE", "DUE", "GRACE", "SUSPENDED"]);
 
     if (error) return json({ error: error.message }, 500);
 
@@ -42,6 +50,30 @@ Deno.serve(async (req) => {
           p_provider_id: sub.provider_id,
           p_period: period,
         });
+        // deduct_subscription_fee puts the subscription back to ACTIVE, but
+        // nothing restores the ACCOUNT: provider_profiles.status is still
+        // SUSPENDED from when the fee could not be paid. Restore it here, and
+        // trg_sync_profile_status carries it to profiles.status so the app
+        // stops gating the user.
+        if (!rpcError && sub.status === "SUSPENDED") {
+          // Guarded on the row still being SUSPENDED, so an admin suspension
+          // issued in the meantime is not silently undone by a payment.
+          const { data: restored } = await admin
+            .from("provider_profiles")
+            .update({ status: "APPROVED" })
+            .eq("id", sub.provider_id)
+            .eq("status", "SUSPENDED")
+            .select("user_id")
+            .maybeSingle();
+          if (restored) {
+            await admin.from("notifications").insert({
+              user_id: restored.user_id,
+              type: "APPROVAL",
+              title: "Account reactivated",
+              body: "Your subscription payment went through and your account is active again.",
+            });
+          }
+        }
         results.push({ provider_id: sub.provider_id, charged: !rpcError, data, error: rpcError?.message });
       } else {
         // Move to grace or suspend based on how many days overdue.
