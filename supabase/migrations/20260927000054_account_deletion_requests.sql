@@ -30,11 +30,11 @@
 -- Deleting auth.users today fails for almost any real account. Of the columns
 -- that reference it, ten CASCADE (profiles, user_roles, provider_profiles,
 -- user_documents, favorites, notifications, ...) and those go cleanly. The
--- other nine are NOT NULL with no action:
+-- other eight are NOT NULL with no action:
 --
 --   orders.user_id            reviews.user_id          ride_requests.user_id
 --   support_tickets.user_id   payment_agreements.user_id
---   ride_ratings.rater_id     appeals.user_id
+--   ride_ratings.rater_id
 --   admin_actions.admin_id    admin_wallet_actions.admin_id
 --
 -- Every one of those is a RECORD, not personal data: an order is money that
@@ -47,7 +47,7 @@
 -- the person does not, and the profile row that gave the row its display name
 -- is deleted by the existing CASCADE — so an orphaned order renders with no
 -- name rather than with a name the person asked to be forgotten. NOT NULL is
--- dropped on exactly those nine columns and nowhere else. Nothing that reads
+-- dropped on exactly those eight columns and nowhere else. Nothing that reads
 -- them is a client: the app resolves names through profiles, and every RLS
 -- predicate of the form `user_id = auth.uid()` simply stops matching a NULL,
 -- which is the correct outcome for an account that no longer exists.
@@ -501,9 +501,22 @@ GRANT EXECUTE ON FUNCTION public.delete_user_account(uuid, uuid) TO service_role
 -- ===========================================================================
 -- 10. Make the account deletable
 -- ===========================================================================
--- Ten CASCADE FKs already clean up the personal tables. These nine are records
--- and are detached rather than destroyed — see the header. Dropping NOT NULL
--- is confined to these nine columns and to nothing else.
+-- Ten CASCADE FKs already clean up the personal tables. These eight are
+-- records and are detached rather than destroyed — see the header. Dropping
+-- NOT NULL is confined to these eight columns and to nothing else.
+--
+-- `appeals` was on this list and is not any more: 20260927000053 drops that
+-- table, and it runs immediately before this one, so casting its name to
+-- regclass aborted the whole block with
+--
+--   ERROR: relation "public.appeals" does not exist (SQLSTATE 42P01)
+--
+-- on every deploy attempt. Two fixes, because they are different mistakes:
+-- the stale name is gone, and the lookup below now resolves through
+-- to_regclass(), which yields NULL for a missing table instead of raising, so
+-- a table dropped by a later migration can never abort this again. The IF
+-- guard was already there for exactly that reason; the cast is what made it
+-- unreachable.
 DO $$
 DECLARE
   t text;
@@ -512,7 +525,7 @@ DECLARE
 BEGIN
   FOREACH t IN ARRAY ARRAY[
     'orders', 'reviews', 'ride_requests', 'support_tickets',
-    'payment_agreements', 'ride_ratings', 'appeals',
+    'payment_agreements', 'ride_ratings',
     'admin_actions', 'admin_wallet_actions'
   ] LOOP
     c := CASE t
@@ -522,13 +535,18 @@ BEGIN
            ELSE 'user_id'
          END;
 
+    IF to_regclass(format('public.%I', t)) IS NULL THEN
+      -- Dropped since this list was written. Nothing to detach.
+      CONTINUE;
+    END IF;
+
     SELECT conname INTO fk
       FROM pg_constraint
-     WHERE conrelid = format('public.%I', t)::regclass
+     WHERE conrelid = to_regclass(format('public.%I', t))
        AND contype = 'f'
        AND conkey = ARRAY[
              (SELECT attnum FROM pg_attribute
-               WHERE attrelid = format('public.%I', t)::regclass
+               WHERE attrelid = to_regclass(format('public.%I', t))
                  AND attname = c)];
 
     IF fk IS NOT NULL THEN
