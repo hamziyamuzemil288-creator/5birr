@@ -641,6 +641,28 @@ void main() {
               'The staff workspace history card reads those rows.');
     });
 
+    test('no function is shadowed by a superseded overload', () async {
+      // update_staff had two live signatures: the five-argument one from
+      // 20260922000001, and the wider one a later migration replaced it with.
+      // 20260923 dropped the six-argument version explicitly and missed this
+      // one, so both were live.
+      //
+      // Nothing was visibly broken, and that is the point: PostgREST resolves a
+      // call by argument NAME, so a call whose names fit exactly one overload
+      // works. Every caller in the app happens to send a distinctive name, so
+      // the ambiguity only bites a caller sending a smaller subset -- which is
+      // what the assertion added in 20260927000047 did, and it came back as
+      // 42725 "function is not unique". A "Set active" toggle posting
+      // {p_staff_id, p_is_active} would have failed the same way, in
+      // production, for a user with no way to tell why.
+      expect(await ok('assert_no_stale_function_overloads'), isTrue,
+          reason: 'A public function has a superseded overload beside it: same '
+              'name, parameter names a strict subset with matching types. Any '
+              'call whose argument names fit both fails with 42725 "function '
+              'is not unique", and which callers are affected depends only on '
+              'which optional parameters they happen to send.');
+    });
+
     test('the client write surface is closed, not just reported', () async {
       // The test above prints; this one decides. Turning the report into an
       // assertion is only safe once its numbers have been read, and they now
