@@ -2,7 +2,14 @@
 //
 // Phase 3: integration-verification safety net (see CONNECTIONS.md).
 // Verifies the app's cross-actor connections end to end against the LIVE
-// Supabase project using READ-ONLY RPC assertions — it writes no app data.
+// Supabase project.
+//
+// Most assertions are read-only. A few are WRITE tests: they do the real work
+// inside a subtransaction that is always rolled back (the function raises a
+// sentinel to force the unwind), so real rows with real triggers are
+// exercised and nothing is left behind. Those exist because the read-only
+// ones pass vacuously when a whole feature is dead — see the
+// assert_recent_approved_recharges_credited note below.
 //
 // Run:   flutter test tools/integration_test/connectivity_test.dart \
 //          --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
@@ -243,6 +250,76 @@ void main() {
               'PENDING_PROVIDER with its items, or accepted an order from a '
               'non-approved provider. This is the write path, so this failing '
               'means customers cannot check out.');
+    });
+  });
+
+  group('the server/client discriminator is correct', () {
+    test('a client is never classified as a server write', () async {
+      // Every client-write guard decides whether to enforce itself with one
+      // shared helper, so this single question has two ways to be wrong and
+      // both have already happened:
+      //
+      //  * 0030 tested current_user inside a SECURITY DEFINER trigger, where
+      //    current_user is always the function owner — so every caller,
+      //    clients included, read as "the server" and the guards disabled
+      //    themselves. That left the wallet balance guard inert.
+      //  * 00015/16/17 tested session_user, which PostgREST never changes
+      //    from `authenticator` — so edge functions still read as clients
+      //    and were refused their own writes.
+      //
+      // This is behavioural, not a source grep: it evaluates the helper in
+      // the caller's own context (a Data API call as anon) and requires the
+      // answer to be false.
+      expect(await ok('assert_server_write_discriminator'), isTrue,
+          reason: 'is_server_write() reports true for an ordinary client '
+              'call, so every client-write guard is standing down and a '
+              'client can write rows that only the server may write.');
+    });
+  });
+
+  group('server-mediated admin actions can authorize', () {
+    test('the six edge-function RPCs accept service_role and still refuse clients',
+        () async {
+      // These RPCs are reached through Edge Functions that build a
+      // service-role client after authenticating the caller themselves. Under
+      // service_role auth.uid() is NULL, so the guard
+      //
+      //   admin_can(...) OR p_admin_id IS DISTINCT FROM auth.uid()
+      //
+      // was true on both halves and raised INSUFFICIENT_PERMISSION on every
+      // call, before touching a row. Wallet recharges and the whole provider
+      // approval pipeline were dead, silently, with no ledger entry and no
+      // audit row to notice.
+      expect(await ok('assert_admin_rpc_service_role_access'), isTrue,
+          reason: 'One of the six admin RPCs reached through an edge function '
+              '(approve_wallet_recharge, approve/reject/request_correction/'
+              'suspend/unsuspend_provider) either stopped exempting '
+              'service_role — so that admin action fails for everyone — or '
+              'lost its client-side permission and identity checks, which '
+              'would let any caller perform admin actions.');
+    });
+  });
+
+  group('wallet crediting actually works (write test)', () {
+    test('a real recharge is credited through the service-role path, then rolled back',
+        () async {
+      // assert_recent_approved_recharges_credited, above, cannot answer this
+      // question: it asks whether no approved recharge from the last 7 days
+      // lacks a ledger row, which is trivially true when nothing was ever
+      // approved. It stayed green through a total outage of the feature.
+      //
+      // This one reproduces the edge function's context with
+      // set_config('role','service_role') and calls approve_wallet_recharge
+      // for real — the failure only ever appeared under service_role, so a
+      // test that called it as itself would have passed against the broken
+      // code. It then checks the balance, the request status and the ledger
+      // row, and that a second approval does not pay twice.
+      expect(await ok('assert_wallet_crediting_writes'), isTrue,
+          reason: 'approve_wallet_recharge did not credit the wallet through '
+              'the service-role path (250.00 in, 250.00 balance, one RECHARGE '
+              'ledger row, still 250.00 after a second attempt), or a direct '
+              'client call was allowed. This is the revenue path, so this '
+              'failing means providers cannot be paid at all.');
     });
   });
 
