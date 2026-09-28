@@ -115,7 +115,10 @@ Dart is asserted against source.
 
 | Property | Where it is pinned |
 |----------|-------------------|
-| Every fee follows `system_settings` | `assert_fees_are_data_driven()` (migration 62) |
+| Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
+| Every fee switch actually switches | `assert_fee_switches_are_wired()` (migration 73) |
+| The CEO reports are callable, not merely present | `assert_ceo_reports_are_callable()` (migration 72) |
+| The CEO authority itself is intact | `assert_ceo_authority_is_wired()` (migration 69) |
 | Live map is actually live | `assert_live_map_is_wired()` (migration 61) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
 | Category → tab mapping against real seed rows | `test/category_tabs_test.dart` |

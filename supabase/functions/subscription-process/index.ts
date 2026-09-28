@@ -19,6 +19,22 @@ Deno.serve(async (req) => {
       .from("system_settings").select("value").eq("key", "subscription_grace_period_days").single()
     ).data?.value ?? 3);
 
+    // Fee switch. When the monthly subscription is switched off this run must
+    // charge nobody, put nobody into grace, and suspend nobody. Without this
+    // check the daily cron kept suspending accounts for a bill the platform had
+    // stopped sending — the SQL scheduler charge_due_subscriptions() honours the
+    // same switch, and the two must not disagree about whether a fee is owed.
+    // A missing row reads as enabled, matching coalesce(..., true) in SQL.
+    const { data: feeSwitch } = await admin
+      .from("system_settings").select("value").eq("key", "fee_enabled_subscription").maybeSingle();
+    if (feeSwitch?.value === false) {
+      return json({
+        processed: 0,
+        results: [],
+        subscription_fee_enabled: false,
+      });
+    }
+
     const { data: due, error } = await admin
       .from("subscriptions")
       .select("provider_id, next_due_date, status")

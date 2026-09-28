@@ -541,6 +541,46 @@ void main() {
               'or ceo_payroll_report() no longer reads them. Error: $error');
     });
 
+    test('the CEO authority itself is still wired', () async {
+      // Migration 69's own assertion, and until now nothing called it. It
+      // checks the three things the CEO workspace rests on and none of which
+      // this suite reached otherwise: is_ceo() still exists (a dropped or
+      // renamed function would silently lock the owner out of every CEO-only
+      // action), staff.is_ceo still exists (the column the REAL definition
+      // reads — is_ceo() would keep compiling and quietly return false for
+      // every CEO staff row if it were renamed), and admin_history still
+      // exists as somewhere to record a deletion.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_ceo_authority_is_wired');
+      expect(detail, isNotNull,
+          reason: 'assert_ceo_authority_is_wired() could not run at all. '
+              'Error: $error');
+      expect(detail, isNot(contains('CEO_AUTHORITY_NOT_WIRED')),
+          reason: 'The CEO authority has been dismantled: $detail');
+    });
+
+    test('the CEO payroll and finance reports are CALLED, not just present',
+        () async {
+      // The gap this closes: the suite proved ceo_payroll_report() EXISTS and
+      // never called it, so migration 69's first deploy shipped a
+      // ceo_city_finance() that read pp.provider_city — a column on
+      // support_tickets, not on provider_profiles — and the 42703 was found by
+      // a human reading the deploy log. A catalogue check cannot see a
+      // function that exists, is wired, and raises the first time somebody
+      // opens the Finance tab. This assertion calls both reports and checks
+      // every key lib/features/ceo/ceo_dashboard.dart reads, so a rename, a
+      // dropped join or a vanishing column fails HERE, on the deploy that
+      // ships it.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_ceo_reports_are_callable');
+      expect(detail, isNotNull,
+          reason: 'assert_ceo_reports_are_callable() could not run at all, so '
+              'nothing verified the CEO reports. Error: $error');
+      expect(detail, isNot(contains('CEO_REPORTS_NOT_CALLABLE')),
+          reason: 'A CEO report raised, returned NULL, or lost a key the '
+              'workspace reads: $detail');
+    });
+
     test('staff jobs are assignable, and customer ordering is not', () async {
       // staff.permissions was a text[] behind a CHECK naming nine fixed
       // strings, so "assign a job" meant editing a constraint and the Flutter
@@ -853,6 +893,29 @@ void main() {
               'pricing, or the CEO-only gate on fee writes has been removed.');
       // ignore: avoid_print
       print('    fee evidence -> $detail');
+    });
+
+    test('every fee switch actually switches', () async {
+      // The four fee_enabled_* switches were stored and inert until migration
+      // 73 — the CEO could flip one and nothing at all would happen. A switch
+      // that changes nothing is worse than no switch, because it teaches
+      // everyone that the fee surface is decorative. This is the assertion that
+      // says otherwise out loud: it checks that each of the five functions
+      // which applies a charge still reads its switch, and behaviourally checks
+      // the two that can be called directly in BOTH directions (on = the
+      // settings arithmetic, off = exactly 0). All four default to on, so this
+      // passing means the switches are wired, not that they are in any
+      // particular position.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_fee_switches_are_wired');
+      expect(detail, isNotNull,
+          reason: 'assert_fee_switches_are_wired() could not run at all, so '
+              'nothing verified the fee switches. Error: $error');
+      expect(detail, isNot(contains('FEE_SWITCHES_NOT_WIRED')),
+          reason: 'A fee switch is stored but inert, or a switched-off fee is '
+              'still being charged: $detail');
+      // ignore: avoid_print
+      print('    fee switch evidence -> $detail');
     });
 
     test('the error sink, its RLS and the hot-path indexes are wired', () async {

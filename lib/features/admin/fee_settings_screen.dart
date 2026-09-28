@@ -100,6 +100,44 @@ class _FeeChange {
       );
 }
 
+/// The on/off switch that belongs to one fee group.
+///
+/// A fee and its switch are the same decision seen twice — what the fee costs,
+/// and whether it is charged at all — so they live on the same card rather than
+/// on a second screen the CEO has to know to visit.
+///
+/// The mapping is group -> switch key because `admin_fee_catalogue()` already
+/// groups the numeric fees; the switch is not in that catalogue on purpose.
+/// The catalogue is parsed as a NUMBER by this screen, so a boolean in it would
+/// be read as a missing value and the toggle would write a number into a
+/// boolean key. The two surfaces are kept apart for that reason.
+class _FeeSwitch {
+  const _FeeSwitch(this.key, this.label);
+
+  final String key;
+  final String label;
+}
+
+/// Every group that has a charge also has a switch. Group names are the
+/// `fee_group` values `admin_fee_catalogue()` returns.
+///
+/// All four are enforced server-side since migration 73: the switch is read by
+/// `platform_transaction_fee()`, `deduct_subscription_fee()`,
+/// `charge_due_subscriptions()`, `approve_wallet_recharge()` and
+/// `calculate_fare_estimate()` respectively, and
+/// `assert_fee_switches_are_wired()` fails Connectivity CI if any of those
+/// stops reading its switch.
+const Map<String, _FeeSwitch> _switchByGroup = {
+  'TRANSACTION': _FeeSwitch(
+      'fee_enabled_transaction', 'Charge the platform commission'),
+  'SUBSCRIPTION': _FeeSwitch(
+      'fee_enabled_subscription', 'Charge the monthly subscription'),
+  'ACTIVATION': _FeeSwitch(
+      'fee_enabled_registration', 'Charge the one-time activation fee'),
+  'RIDE DEFAULTS': _FeeSwitch(
+      'fee_enabled_ride', 'Apply the platform ride fare model'),
+};
+
 /// Fee & pricing control panel.
 ///
 /// Every money value the platform charges is editable here, live: a change
@@ -109,10 +147,16 @@ class _FeeChange {
 /// `platform_transaction_fee()` returns, which is the number the wallet is
 /// debited by.
 ///
+/// Each charge also has an ON/OFF switch on its card. Both halves write
+/// `system_settings` through the same `admin_update_setting()` call — the
+/// amount and whether to charge it at all are the same fee, so they are the
+/// same control surface — and each is read live by the money function that
+/// applies it (see `_switchByGroup`).
+///
 /// Editing is CEO/owner only, enforced server-side by `admin_update_setting()`
 /// (the product already distinguishes the owner from ordinary admins via
 /// `is_ceo()`). A non-owner admin sees the values and a reason, rather than
-/// buttons that would fail.
+/// buttons that would fail. That gate now covers the switches too.
 class FeeSettingsScreen extends StatefulWidget {
   const FeeSettingsScreen({super.key});
 
@@ -124,6 +168,9 @@ class _FeeSettingsScreenState extends State<FeeSettingsScreen> {
   List<_Fee> _fees = const [];
   List<_FeeChange> _history = const [];
   List<Map<String, dynamic>> _vehicleCategories = const [];
+  /// Enabled state per switch key. A key that is absent could not be read, and
+  /// its switch is not rendered at all rather than drawn in a state we guessed.
+  Map<String, bool> _switches = const {};
   bool _canEdit = false;
   bool _loading = true;
   String? _error;
@@ -151,11 +198,35 @@ class _FeeSettingsScreenState extends State<FeeSettingsScreen> {
           .eq('is_active', true)
           .order('sort_order');
 
+      // The on/off switch for each group. Read one key at a time through
+      // fee_switch_state() rather than selecting system_settings directly, so
+      // the default shown when a row is missing is decided server-side by the
+      // same coalesce(..., true) the money functions use. A switch that
+      // displayed OFF while the server charged would be the worst of both.
+      // Best-effort on purpose. A database that predates the switches has no
+      // fee_switch_state() to call, and that must not take the fee editor down
+      // with it — the amounts are the older feature and keep working. A switch
+      // whose state cannot be read is not rendered at all, rather than drawn in
+      // a state we guessed and then silently disagree with the server about.
+      final switches = <String, bool>{};
+      try {
+        for (final s in _switchByGroup.values) {
+          final row =
+              await client.rpc('fee_switch_state', params: {'p_key': s.key});
+          if (row is Map && row['enabled'] is bool) {
+            switches[s.key] = row['enabled'] as bool;
+          }
+        }
+      } catch (_) {
+        // Leave `switches` empty: no switch is shown, the fees still are.
+      }
+
       if (!mounted) return;
       setState(() {
         _fees = (fees as List)
             .map((r) => _Fee.fromRow(Map<String, dynamic>.from(r as Map)))
             .toList();
+        _switches = switches;
         _canEdit = canEdit == true;
         _history = (history as List)
             .map((r) => _FeeChange.fromRow(Map<String, dynamic>.from(r as Map)))
@@ -451,18 +522,94 @@ class _FeeSettingsScreenState extends State<FeeSettingsScreen> {
             borderRadius: BorderRadius.circular(14),
             side: const BorderSide(color: AppTheme.cardBorder),
           ),
-          child: Column(
-            children: [
-              for (var i = 0; i < groups[key]!.length; i++) ...[
-                if (i > 0) const Divider(height: 1),
-                _feeTile(groups[key]![i]),
-              ],
-            ],
-          ),
+          child: Column(children: _groupChildren(key, groups[key]!)),
         ),
         const SizedBox(height: 12),
       ],
     ];
+  }
+
+  /// The switch — when the group has one and its state could be read — then
+  /// the fee rows. Built imperatively so the divider logic lives in one place
+  /// instead of once per branch of a collection literal.
+  List<Widget> _groupChildren(String group, List<_Fee> fees) {
+    final children = <Widget>[];
+    final sw = _switchByGroup[group];
+    final state = sw == null ? null : _switches[sw.key];
+    if (sw != null && state != null) {
+      children.add(_switchTile(sw, state));
+      if (fees.isNotEmpty) children.add(const Divider(height: 1));
+    }
+    for (var i = 0; i < fees.length; i++) {
+      if (i > 0) children.add(const Divider(height: 1));
+      children.add(_feeTile(fees[i]));
+    }
+    return children;
+  }
+
+  /// The charge itself, on or off.
+  ///
+  /// The subtitle states what the switch does in terms of the money below it,
+  /// not in terms of the setting key, because "is this charged" is the question
+  /// the person tapping it is asking. Without a working write the switch is not
+  /// offered at all: a control that appears to save and does not is how the
+  /// whole fee surface loses its credibility.
+  Widget _switchTile(_FeeSwitch sw, bool enabled) {
+    return SwitchListTile(
+      value: enabled,
+      onChanged: _canEdit ? (v) => _toggleSwitch(sw, v) : null,
+      title: Text(
+        sw.label,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text(
+        enabled
+            ? 'ON — charged at the values below.'
+            : 'OFF — not charged. The values below are kept, so turning it back '
+                'on restores the same amount.',
+        style: TextStyle(
+          fontSize: 12,
+          color: enabled ? AppTheme.primaryGreenDark : AppTheme.warning,
+        ),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    );
+  }
+
+  /// Flips one fee switch.
+  ///
+  /// Optimistic, then reverted on failure: a switch that stays in the new
+  /// position after the write was refused shows a state the server does not
+  /// have, and the next charge proves it. The reload on success is what makes
+  /// the switch show the truth rather than our guess at it.
+  Future<void> _toggleSwitch(_FeeSwitch sw, bool value) async {
+    final previous = _switches[sw.key] ?? !value;
+    setState(() => _switches = {..._switches, sw.key: value});
+    try {
+      await Supabase.instance.client.rpc('admin_update_setting', params: {
+        'p_key': sw.key,
+        'p_value': value,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(value
+              ? '${sw.label}: switched ON'
+              : '${sw.label}: switched OFF'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _switches = {..._switches, sw.key: previous});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(friendlyError(e, context: 'Could not change this switch')),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   Widget _feeTile(_Fee fee) {

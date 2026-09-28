@@ -545,10 +545,10 @@ class _FinanceSection extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 8),
           child: ListTile(
             leading: const Icon(Icons.tune, color: AppTheme.primaryGreen),
-            title: const Text('Fee values and edits'),
+            title: const Text('Fees: on/off and amounts'),
             subtitle: const Text(
-                'Every fee, subscription and charge lives in one editor, with '
-                'the audit trail of who changed what.'),
+                'Switch each charge on or off and edit what it costs, in one '
+                'editor, with the audit trail of who changed what.'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => context.push('/admin/fees'),
           ),
