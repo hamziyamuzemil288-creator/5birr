@@ -51,7 +51,6 @@ class Product {
     this.reviewCount = 0,
     this.salesCount = 0,
     this.likeCount = 0,
-    this.likeCount = 0,
     this.metadata,
     required this.createdAt,
     required this.updatedAt,
@@ -80,8 +79,6 @@ class Product {
       reviewCount: json['review_count'] as int? ?? 0,
       salesCount: json['sales_count'] as int? ?? 0,
       likeCount: (json['like_count'] as num?)?.toInt() ?? 0,
-      likeCount: (json['like_count'] as num?)?.toInt() ?? 0,
-      metadata: json['metadata'] as Map<String, dynamic>?,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
     );
