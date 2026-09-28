@@ -586,10 +586,11 @@ void main() {
                 'it is not reporting what it claims to. The safety net is '
                 'reporting silence as success.');
       }
-      expect(byKind['expected'], hasLength(20),
+      expect(byKind['expected'], hasLength(21),
           reason: 'The expected list in client_write_surface_report() is the '
               'contract for what the app writes client-side. It has drifted '
-              'from test/client_write_surface_test.dart, which pins 20.');
+              'from test/client_write_surface_test.dart, which pins 21 '
+              '(20 plus client_error_logs).');
     });
 
     test('REPORT: every client write policy, quoted', () async {
@@ -823,7 +824,11 @@ void main() {
               'policy was replaced by an UPDATE/DELETE one (a crash report '
               'can be hidden), the flood-guard trigger is not attached, one '
               'of the hot-path indexes was not created, or the authenticated '
-              'role has no statement_timeout.');
+              'role has no statement_timeout. Migration 64 shipped this '
+              'returning boolean while rpcText() only accepts String, so a '
+              'correct database reported as null here; 65 changed it to '
+              'RETURNS text. If this goes null again with the function '
+              'present, the return type has changed again — it must be text.');
       // ignore: avoid_print
       print('    resilience -> $detail');
     });

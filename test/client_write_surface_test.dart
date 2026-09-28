@@ -142,17 +142,23 @@ void main() {
   });
 
   test('the allowlist and the database expected-list cannot drift', () {
-    // The same 20 tables are written out by hand inside the SQL function,
+    // The same 21 tables are written out by hand inside the SQL function,
     // because a migration cannot read a Dart file. Two hand-maintained copies
     // of one list is exactly how they drift, so the size is pinned here and a
     // mismatch surfaces in review rather than as a permission error later.
+    //
+    // 21, not 20: client_error_logs was added to the list above and to the
+    // SQL expected list, but this pin was left at 20 — which is the drift this
+    // test exists to catch, sitting inside the test itself.
     expect(
       expectedClientWrites.length,
-      20,
+      21,
       reason: 'expectedClientWrites changed size. If a table was added or '
           'removed, the expected list inside client_write_surface_report() in '
           'supabase/migrations/20260927000042_... must change to match, or the '
-          'report will classify a table wrongly.',
+          'report will classify a table wrongly. The list was last restated in '
+          '20260927000065, which also restored that function''s existence '
+          'guard.',
     );
   });
 }
