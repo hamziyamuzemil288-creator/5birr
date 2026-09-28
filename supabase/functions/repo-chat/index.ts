@@ -650,13 +650,37 @@ function isGreeting(text: string): boolean {
   return GREETING_RE.test(text.trim());
 }
 
+// ── The greeting.
+//
+// This is not a hello. It is the only moment the assistant can save someone
+// the work of describing their problem, so it names the reasons people
+// actually open this chat and offers to route them. The list below is drawn
+// from flows that EXIST in the app today -- every entry maps to a real screen
+// or a real in-app form, and the footer names the entry points for each kind
+// of account so nobody has to work out which one they are first.
+//
+// THREE VARIANTS, not one, because the greeting fires on every "hi" and a
+// repeated wall of text stops being read. They differ in wording; they carry
+// the same menu, because the menu is the point and round-robin must not be a
+// lottery over what help is available.
+//
+// Kept to four lines of body text. A first-time user who is already frustrated
+// does not read past the fold, and a menu longer than the screen is a wall.
+const GREETING_BODY =
+  "Pick whichever is closest — I'll take you straight to it:\n" +
+  "•  **Verification or a rejection** — your documents, or why an application was turned down\n" +
+  "•  **Appeal or report something** — a dispute, spam, fraud, or a suspension\n" +
+  "•  **Payment or recharge delayed** — a recharge or order payment that hasn't landed\n" +
+  "•  **An order or a ride problem** — wrong, missing, late, or a driver issue\n" +
+  "•  **Your account** — profile, phone number, password, or closing your account\n\n" +
+  "Not sure where you fit? Just describe it and I'll work it out.\n" +
+  "_New here? Tip: ask me \"what can you do\" for the full list._";
+
 const GREETING_REPLIES = [
-  "Hi! 👋 I'm the Aliob assistant. I can help with registering, buying and orders, " +
-    "escrow and payments, wallet recharges, fees, points, and rides.\n\n" +
-    "What can I help you with today?",
-  "Hello! 👋 Welcome to Aliob — ask me anything about buying, selling, rides, " +
-    "payments or your account.",
-  "Hi there! 😊 What can I do for you today?",
+  "Hi! 👋 I'm the Aliob assistant.\n\n" + GREETING_BODY,
+  "Hello! 👋 Welcome to Aliob.\n\n" + GREETING_BODY,
+  "Hi there! 😊 Tell me what's going on and I'll point you to the right place.\n\n" +
+    GREETING_BODY,
 ];
 
 // ── Small talk: friendly, varied, anchored so real questions are never

@@ -202,6 +202,110 @@ other buyers before a payment is confirmed.
 
 ---
 
+## Verification, rejections and appeals
+
+**My documents were rejected, or my application was turned down. What now?**
+
+Open **Submit an appeal** from the assistant, or go to **Profile → Submit an
+appeal** in the app. Choose the issue type that matches, describe what
+happened, attach photos if you have them, and give the phone number or email
+the team should use to reach you. You can track it afterwards.
+
+**How do I check on an appeal I already filed?**
+
+Go to **Check my appeals** — the assistant can open it for you, or find it
+under your profile. Each case shows its current state and, once it is decided,
+the resolution recorded against it.
+
+**How long does an appeal take?**
+
+The assistant cannot give you a time. A person reviews it. If it has been
+sitting for a while, say so in the chat and it will be flagged to the team
+rather than left to wait.
+
+## Payments and recharges
+
+**I sent a recharge and my wallet still shows the old balance.**
+
+Recharges are not automatic — someone verifies the payment before the money
+lands. Check **Wallet** first for a pending recharge request; if it is listed
+there, it has been received and is waiting on verification. If nothing is
+listed at all, the request did not reach us: send the details (amount, method,
+reference or screenshot) and the assistant will raise it with the team.
+
+**How do I add money?**
+
+Open **Recharge my wallet** — the assistant can take you straight there.
+
+**I paid a provider and the order does not show the payment as received.**
+
+Open the order itself (**My orders**, then the order) so the case carries the
+order reference, and report it from there. Payment proofs are verified by a
+person, so a short wait is normal; a long one is not, and that is worth
+reporting.
+
+## Reporting spam, fraud or someone suspicious
+
+**Someone is asking me to pay outside the app, or something feels wrong.**
+
+Do not send money outside the app. Use **Submit an appeal** and choose the
+wrongdoing or dispute type — the assistant opens the form already tagged —
+and include the chat or the listing. This routes to staff for review rather
+than being handled by the assistant.
+
+**I was suspended or banned and I think it is a mistake.**
+
+Submit an appeal with the account type selected. The assistant will not
+overturn a suspension or guess at why it happened; a person reviews it.
+
+## Orders
+
+**Where is my order?**
+
+Ask the assistant and it can check the status for you, or open **My orders**
+and tap the order. Each order shows its stage and its order number.
+
+**My order is wrong, missing, late, or the seller is not responding.**
+
+Open the order itself and report it from there so the case carries the order
+number. Add what you expected and what arrived. If it turns into a dispute
+over money, it moves to the appeal flow and a person decides.
+
+## Rides
+
+**Where is my ride / my driver?**
+
+Ask the assistant for your ride status, or open your active ride. If you need
+to reach the driver, use the in-app contact — the assistant never shares
+phone numbers.
+
+**I am a driver and I am not getting any ride requests.**
+
+Open **Ride requests** on your driver dashboard. Two common causes, in order:
+location is off, or you are not set to available. Both are on the driver
+dashboard. The app will ask you once to turn location on when you go
+available; if you chose **Not now**, a reminder stays on the screen until you
+do.
+
+## Your account
+
+**How do I change my name, phone number or password?**
+
+**My profile** in the app (or ask the assistant to open it).
+
+**How do I close my account?**
+
+Account deletion is a request, not an instant action — it is reviewed before
+anything is removed. Submit the request from your profile or through
+**Submit an appeal** with the account type selected. The assistant cannot
+delete an account for you.
+
+**What if the assistant cannot answer my question?**
+
+It will say so and point you at the right in-app path rather than guessing —
+a support ticket for an app problem, or an appeal for anything that needs a
+person's judgement. That is a deliberate answer, not a failure.
+
 # UI strings reference (for the help assistant)
 
 Common buttons and labels in the app:
