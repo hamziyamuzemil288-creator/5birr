@@ -38,7 +38,7 @@ class AsyncView<T> extends StatefulWidget {
     this.errorBuilder,
     this.loadingBuilder,
     this.skeletonHeight = 220,
-    this.context,
+    this.errorContext,
     this.policy = const RetryPolicy.standard(),
     this.timeout = const Duration(seconds: 20),
     this.onRefreshed,
@@ -63,7 +63,12 @@ class AsyncView<T> extends StatefulWidget {
   final double skeletonHeight;
 
   /// Prefix for the failure message, e.g. 'Could not load your orders'.
-  final String? context;
+  ///
+  /// Named `errorContext` rather than `context` because a `context` field
+  /// shadows the `BuildContext` parameter of `build()` in the same class —
+  /// which is a compile error at best and, inside a closure, a widget that
+  /// quietly loses its element at worst.
+  final String? errorContext;
 
   final RetryPolicy policy;
   final Duration timeout;
@@ -98,7 +103,7 @@ class _AsyncViewState<T> extends State<AsyncView<T>> {
         widget.loader,
         policy: widget.policy,
         timeout: widget.timeout,
-        context: widget.context,
+        context: widget.errorContext,
       );
       if (!mounted) return;
       setState(() {
@@ -213,7 +218,7 @@ class AsyncListView<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     return AsyncView<List<T>>(
       loader: loader,
-      context: context,
+      errorContext: errorContext,
       loadingBuilder: loadingBuilder ??
           (_) => _ListSkeleton(
               count: skeletonItemCount, padding: padding),
@@ -254,7 +259,11 @@ class AsyncListView<T> extends StatelessWidget {
           slivers: [
             SliverToBoxAdapter(child: header!),
             SliverToBoxAdapter(
-              child: ListView.builder(
+              // `separated`, not `builder`: separatorBuilder is a named
+              // parameter of ListView.separated and does not exist on
+              // ListView.builder. Defaulting to a 12px gap keeps the list
+              // readable when the caller passes no separator.
+              child: ListView.separated(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 padding: padding,

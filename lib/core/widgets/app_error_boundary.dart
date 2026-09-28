@@ -20,8 +20,6 @@
 /// all of it goes to the log where the CEO can see it.
 library;
 
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
