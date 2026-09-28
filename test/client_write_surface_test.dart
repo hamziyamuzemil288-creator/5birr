@@ -58,6 +58,11 @@ const Set<String> expectedClientWrites = {
   'payment_methods',
   'payment_proofs',
   'product_images',
+  // A like is written directly under RLS, with no SECURITY DEFINER wrapper:
+  // the ownership policy IS the check. Migration 68 added the table, 70 added
+  // it here. Leaving it out reads as a new writable hole rather than a
+  // missing entry -- Connectivity CI caught exactly that.
+  'product_likes',
   'products',
   'profiles',
   'provider_profiles',
@@ -142,7 +147,7 @@ void main() {
   });
 
   test('the allowlist and the database expected-list cannot drift', () {
-    // The same 21 tables are written out by hand inside the SQL function,
+    // The same 22 tables are written out by hand inside the SQL function,
     // because a migration cannot read a Dart file. Two hand-maintained copies
     // of one list is exactly how they drift, so the size is pinned here and a
     // mismatch surfaces in review rather than as a permission error later.
@@ -152,7 +157,7 @@ void main() {
     // test exists to catch, sitting inside the test itself.
     expect(
       expectedClientWrites.length,
-      21,
+      22,
       reason: 'expectedClientWrites changed size. If a table was added or '
           'removed, the expected list inside client_write_surface_report() in '
           'supabase/migrations/20260927000042_... must change to match, or the '

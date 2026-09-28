@@ -607,11 +607,11 @@ void main() {
                 'it is not reporting what it claims to. The safety net is '
                 'reporting silence as success.');
       }
-      expect(byKind['expected'], hasLength(21),
+      expect(byKind['expected'], hasLength(22),
           reason: 'The expected list in client_write_surface_report() is the '
               'contract for what the app writes client-side. It has drifted '
-              'from test/client_write_surface_test.dart, which pins 21 '
-              '(20 plus client_error_logs).');
+              'from test/client_write_surface_test.dart, which pins 22 '
+              '(20 plus client_error_logs and product_likes).');
     });
 
     test('REPORT: every client write policy, quoted', () async {
