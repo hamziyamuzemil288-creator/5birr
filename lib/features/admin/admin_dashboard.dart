@@ -141,6 +141,16 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         backgroundColor: AppTheme.primaryGreenDark,
         elevation: 0,
         actions: [
+          // The way into the CEO workspace. Rendered only for a CEO account,
+          // because for anyone else the destination explains it is CEO-only
+          // and offering it would be a dead end. The real check is server-side
+          // in is_ceo(); this only decides whether to show the door.
+          if (ref.watch(authProvider).isCeo)
+            IconButton(
+              tooltip: 'CEO workspace',
+              icon: const Icon(Icons.workspace_premium),
+              onPressed: () => context.push('/ceo'),
+            ),
           if (hasPending)
             Badge(
               label: Text('${_pendingProviders + _pendingUsers + _pendingRecharges}',

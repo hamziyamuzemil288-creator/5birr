@@ -11,7 +11,13 @@ import '../utils/friendly_error.dart';
 import '../utils/phone_formatter.dart';
 
 /// Application roles matching the Supabase `app_role` enum.
-enum AppUserRole { user, vehicleProvider, serviceProvider, admin }
+///
+/// [ceo] is deliberately separate from [admin] rather than a stronger flavour
+/// of it. A CEO account holds BOTH rows, so `isAdmin` is still true for them
+/// and every existing admin gate keeps working; [ceo] only ever ADDS the
+/// destructive authority an admin does not have. Treating it as a replacement
+/// for admin would have meant auditing every screen that gates on isAdmin.
+enum AppUserRole { user, vehicleProvider, serviceProvider, admin, ceo }
 
 /// Complete auth state for the application.
 class AuthState {
@@ -74,6 +80,14 @@ class AuthState {
 
   bool get isAuthenticated => user != null;
   bool get isAdmin => roles.contains(AppUserRole.admin);
+
+  /// True for the CEO.
+  ///
+  /// This is a UI convenience only. Every destructive action is re-checked
+  /// server-side (`is_ceo()` in Postgres, and the user-admin Edge Function for
+  /// auth deletion) — a Flutter gate is a way to avoid showing a button that
+  /// will be refused, never a way to protect one.
+  bool get isCeo => roles.contains(AppUserRole.ceo);
   bool get isStaffMember => isStaffGateway && isAdmin;
   bool get isVehicleProvider => roles.contains(AppUserRole.vehicleProvider);
   bool get isServiceProvider => roles.contains(AppUserRole.serviceProvider);
@@ -247,6 +261,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   AppUserRole _parseRole(String role) {
     switch (role) {
+      // Checked before ADMIN, though order does not matter here: this switch
+      // maps one stored string to one enum value and the caller collects every
+      // role into a list, so a CEO ends up holding both admin and ceo.
+      case 'CEO':
+        return AppUserRole.ceo;
       case 'ADMIN':
         return AppUserRole.admin;
       case 'VEHICLE_PROVIDER':

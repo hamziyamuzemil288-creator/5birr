@@ -39,6 +39,7 @@ import '../features/wallet/wallet_screen.dart';
 import '../features/wallet/recharge_screen.dart';
 import '../features/wallet/points_screen.dart';
 import '../features/admin/admin_dashboard.dart';
+import '../features/ceo/ceo_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
 import '../features/admin/admin_staff_screen.dart';
@@ -375,6 +376,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/vehicle/map',
           builder: (_, __) => const LiveMapScreen(mode: LiveMapMode.driver)),
+
+      // ── CEO ──
+      // Above the admin tier, not replacing it. A CEO account also holds
+      // ADMIN, so /admin/* stays reachable; this route only adds the views and
+      // the one destructive act an admin does not have. The screen re-checks
+      // isCeo and renders an explanation rather than the workspace for anyone
+      // else, and every query behind it is checked again server-side by
+      // is_ceo() -- this route registration is navigation, not protection.
+      GoRoute(path: '/ceo', builder: (_, __) => const CeoDashboard()),
 
       // ── Admin ──
       GoRoute(path: '/admin', builder: (_, __) => const AdminDashboard()),
