@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../models/product.dart';
 import 'rank_badge.dart';
+import 'product_engagement.dart';
 
 class ProductCard extends StatelessWidget {
   final Product product;
@@ -84,11 +85,31 @@ class ProductCard extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(product.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600)),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(product.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.w600)),
+                      ),
+                      // Popular is a CEO-tunable social signal, not a claim we
+                      // verify here: the threshold lives in system_settings
+                      // and the count is maintained by a database trigger.
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: PopularMark(
+                            productId: product.id,
+                            fallbackCount: product.likeCount),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  // Who is selling it. One tap to their existing detail
+                  // screen; it adds no new surface of its own.
+                  ProviderNameTag(providerId: product.providerId),
                   const SizedBox(height: 2),
                   Text(product.formattedDisplayPrice,
                       style: const TextStyle(
@@ -124,6 +145,8 @@ class ProductCard extends StatelessWidget {
                       // so a grid of cards costs one round trip, not twelve.
                       const Spacer(),
                       RankBadge(providerId: product.providerId),
+                      const SizedBox(width: 4),
+                      LikeButton(productId: product.id, fallbackCount: product.likeCount),
                     ],
                   ),
                 ],

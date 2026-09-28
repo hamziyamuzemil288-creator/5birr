@@ -10,6 +10,7 @@ import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/product_engagement.dart';
 
 class UserProductDetailScreen extends ConsumerStatefulWidget {
   final String productId;
@@ -176,11 +177,49 @@ class _State extends ConsumerState<UserProductDetailScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(p['name'] ?? '',
-                      style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary)),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(p['name'] ?? '',
+                            style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary)),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: PopularMark(
+                          productId: widget.productId,
+                          fallbackCount:
+                              (p['like_count'] as num?)?.toInt() ?? 0,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  // Who is selling it, and the social signal for it. Both sit
+                  // under the name rather than in the app bar: the heart in the
+                  // app bar is a FAVOURITE (saved for later), which is a
+                  // different act from a LIKE (a signal to other buyers), and
+                  // two hearts on one screen is only readable if they are not
+                  // in the same place.
+                  Row(
+                    children: [
+                      if (p['provider_id'] != null)
+                        Flexible(
+                          child: ProviderNameTag(
+                              providerId: p['provider_id'] as String),
+                        ),
+                      const Spacer(),
+                      LikeButton(
+                        productId: widget.productId,
+                        fallbackCount:
+                            (p['like_count'] as num?)?.toInt() ?? 0,
+                        large: true,
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 8),
                   Text(
                       isUnitPriced

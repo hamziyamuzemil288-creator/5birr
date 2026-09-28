@@ -20,6 +20,11 @@ class Product {
   final double rating;
   final int reviewCount;
   final int salesCount;
+
+  /// Denormalised like count, maintained by a database trigger on
+  /// `product_likes`. Never computed in Dart: a list query must not count
+  /// rows, which is the whole reason the column exists.
+  final int likeCount;
   final Map<String, dynamic>? metadata;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -45,6 +50,8 @@ class Product {
     this.rating = 0,
     this.reviewCount = 0,
     this.salesCount = 0,
+    this.likeCount = 0,
+    this.likeCount = 0,
     this.metadata,
     required this.createdAt,
     required this.updatedAt,
@@ -72,6 +79,8 @@ class Product {
       rating: (json['rating'] as num?)?.toDouble() ?? 0,
       reviewCount: json['review_count'] as int? ?? 0,
       salesCount: json['sales_count'] as int? ?? 0,
+      likeCount: (json['like_count'] as num?)?.toInt() ?? 0,
+      likeCount: (json['like_count'] as num?)?.toInt() ?? 0,
       metadata: json['metadata'] as Map<String, dynamic>?,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
