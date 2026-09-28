@@ -92,7 +92,7 @@ void main() {
           .map(const SocketException('Connection refused'))
           .message
           .toLowerCase();
-      expect(message, contains('connection') || message.contains('internet'));
+      expect(message, anyOf(contains('connection'), contains('internet')));
       // The converse rule: an internet message must not talk about GPS.
       expect(message, isNot(contains('location')));
       expect(message, isNot(contains('gps')));

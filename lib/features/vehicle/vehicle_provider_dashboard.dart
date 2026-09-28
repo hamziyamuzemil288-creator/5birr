@@ -39,6 +39,11 @@ class _VehicleProviderDashboardState
   @override
   void initState() {
     super.initState();
+    // The user leaves for the OS location settings and comes back. That is
+    // the single most likely moment for the location state to have changed,
+    // and it is the moment the driver is least willing to do anything else,
+    // so re-check on resume rather than making them toggle again.
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
@@ -208,16 +213,6 @@ class _VehicleProviderDashboardState
     if (r.success && _providerProfile?['id'] != null && _isOnline) {
       _startLocationUpdates(_providerProfile!['id']);
     }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    // The user leaves for the OS location settings and comes back. That is
-    // the single most likely moment for the location state to have changed,
-    // and it is the moment the driver is least willing to do anything else,
-    // so re-check automatically rather than making them tap again.
-    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
