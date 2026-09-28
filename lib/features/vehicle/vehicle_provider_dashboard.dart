@@ -7,6 +7,7 @@ import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/location_prompt.dart';
 import '../../core/services/points_service.dart';
 import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
@@ -22,7 +23,8 @@ class VehicleProviderDashboard extends ConsumerStatefulWidget {
 }
 
 class _VehicleProviderDashboardState
-    extends ConsumerState<VehicleProviderDashboard> {
+    extends ConsumerState<VehicleProviderDashboard>
+    with WidgetsBindingObserver {
   Map<String, dynamic>? _providerProfile;
   Map<String, dynamic>? _driverStatus;
   int _vehicleCount = 0;
@@ -115,21 +117,32 @@ class _VehicleProviderDashboardState
     try {
       final isCurrentlyOnline = _driverStatus?['is_online'] ?? false;
       if (!isCurrentlyOnline) {
-        // Going online - need a real GPS fix (and the runtime permission).
+        // Going available. Ask ONCE for location, and let the driver say no:
+        // staying available without a live fix is allowed, because the
+        // alternative is a driver who cannot work because a permission
+        // dialog annoyed them. "Not now" is recorded, and re-arms only when
+        // they deliberately toggle availability again.
+        if (!LocationPrompt.instance.answered) {
+          final wantsIt = await LocationPrompt.offerOnce(
+            context,
+            title: 'Turn on location?',
+            reason: 'Turn on location to receive nearby ride requests. '
+                'You can still go available without it.',
+          );
+          if (!mounted) return;
+          if (wantsIt) {
+            await LocationService.instance.openLocationSettings();
+          }
+        }
+
+        // Need a real GPS fix (and the runtime permission) to be dispatched
+        // to at all. Failure here is a LOCATION problem and is described in
+        // location words - never "offline", which would send the driver to
+        // troubleshoot their internet connection for a switched-off GPS.
         final r = await LocationService.instance.getCurrentPositionDetailed();
         if (!r.success) {
           if (mounted) {
-            final openSettings = r.status == LocationStatus.deniedForever ||
-                r.status == LocationStatus.serviceDisabled;
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(_onlineBlockedMessage(r.status)),
-              action: openSettings
-                  ? SnackBarAction(
-                      label: 'Open settings',
-                      onPressed: () =>
-                          LocationService.instance.openLocationSettings())
-                  : null,
-            ));
+            setState(() => _locationHint = r.status);
           }
           setState(() => _togglingOnline = false);
           return;
@@ -138,6 +151,7 @@ class _VehicleProviderDashboardState
         await LocationService.instance.setDriverOnline(
             _providerProfile!['id'], true,
             lat: pos.latitude, lng: pos.longitude);
+        if (mounted) setState(() => _locationHint = null);
         // Start location updates
         _startLocationUpdates(_providerProfile!['id']);
       } else {
@@ -171,21 +185,51 @@ class _VehicleProviderDashboardState
     );
   }
 
-  String _onlineBlockedMessage(LocationStatus status) {
-    switch (status) {
-      case LocationStatus.serviceDisabled:
-        return 'Turn on GPS to go online';
-      case LocationStatus.deniedForever:
-        return 'Location permission blocked — enable it in app settings';
-      case LocationStatus.denied:
-        return 'Location permission is required to go online';
-      default:
-        return 'Could not get your location — try again';
+  /// The live location state, kept so the dashboard can show a quiet hint
+  /// while the driver is available without a fix. Null means there is
+  /// nothing to say.
+  LocationStatus? _locationHint;
+
+  /// Re-checks location and clears the hint when it is healthy.
+  ///
+  /// Called on resume as well as from the hint's own button, so returning
+  /// from the OS location settings updates the state without the driver
+  /// having to toggle anything again.
+  Future<void> _checkLocation() async {
+    final r = await LocationService.instance.getCurrentPositionDetailed();
+    if (!mounted) return;
+    setState(() {
+      if (r.success) {
+        _locationHint = null;
+      } else {
+        _locationHint = r.status;
+      }
+    });
+    if (r.success && _providerProfile?['id'] != null && _isOnline) {
+      _startLocationUpdates(_providerProfile!['id']);
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // The user leaves for the OS location settings and comes back. That is
+    // the single most likely moment for the location state to have changed,
+    // and it is the moment the driver is least willing to do anything else,
+    // so re-check automatically rather than making them tap again.
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkLocation();
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
     super.dispose();
   }
@@ -450,9 +494,28 @@ class _VehicleProviderDashboardState
           color: AppTheme.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppTheme.cardBorder),
-        ),
-        child: Column(
-          children: [
+        ),                child: Column(
+                  children: [
+                    // Persistent location hint. Present only after a driver
+                    // went available without a fix, and worded as a
+                    // LOCATION problem - the whole point of this bar is that
+                    // "Not now" leaves an explanation behind rather than
+                    // silence, without turning into a nagging dialog.
+                    if (_locationHint != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: LocationHintBar(
+                          status: _locationHint!,
+                          onOpenSettings: () async {
+                            if (LocationMessages.needsSettings(_locationHint!)) {
+                              await LocationService.instance
+                                  .openLocationSettings();
+                            }
+                            _checkLocation();
+                          },
+                          onDismiss: () => setState(() => _locationHint = null),
+                        ),
+                      ),
             Icon(icon, color: AppTheme.teal, size: 22),
             const SizedBox(height: 6),
             Text(value,

@@ -11,6 +11,7 @@ import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/location_prompt.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -216,7 +217,36 @@ class _State extends State<UserRideRequestScreen>
     final r = await LocationService.instance.getCurrentPositionDetailed();
     if (!mounted) return;
     setState(() => _locStatus = r.status);
-    if (r.success) _applyPickupPosition(r.position!);
+    if (r.success) {
+      _applyPickupPosition(r.position!);
+      return;
+    }
+    // GPS is off or permission is missing. That is NOT the same as being
+    // offline and must not be described that way - the user goes and fixes
+    // their phone's location, not their router. Manual entry remains
+    // available (type an address, or pick on the map), so this is a hint
+    // rather than a block.
+    _showLocationHint(r.status);
+  }
+
+  /// A quiet, dismissible bar explaining why there is no GPS fix, pointing
+  /// at the manual options that still work.
+  void _showLocationHint(LocationStatus status) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text(LocationMessages.forStatus(status)),
+        action: LocationMessages.needsSettings(status)
+            ? SnackBarAction(
+                label: 'Settings',
+                onPressed: () =>
+                    LocationService.instance.openLocationSettings())
+            : SnackBarAction(
+                label: 'Pick on map',
+                onPressed: _pickPickupOnMap),
+      ));
   }
 
   /// Applies a GPS fix to the pickup state, clearing any manual override,
