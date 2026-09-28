@@ -22,73 +22,65 @@
 --   * public.wallets EXISTS keyed on provider_id, with wallet_transactions
 --     carrying gross_amount / platform_fee / net_amount. Fee revenue is real.
 --
--- ── The CEO role: why it is built this way ────────────────────────────────
+-- ── The CEO authority already exists; this migration does not add it ───────
 --
--- app_role is an enum: USER, VEHICLE_PROVIDER, SERVICE_PROVIDER, ADMIN. A CEO
--- is NOT a replacement for ADMIN -- a CEO is an admin who can additionally do
--- things no admin may do, and the load-bearing example is deleting another
--- ADMIN (the existing user-admin function explicitly refuses that).
+-- There is nothing to create. public.is_ceo(p_user_id uuid) has existed since
+-- 20260922000012 and was made definitive by 20260923000003_true_admin_as_ceo.
+-- It is true when EITHER a staff row has is_ceo AND is_active, OR the account
+-- holds the ADMIN app_role and has no staff row at all.
 --
--- So 'CEO' is added as its own app_role, and is_ceo() is true for it.
--- is_admin() is deliberately NOT changed. A CEO account holds BOTH the ADMIN
--- and CEO rows, so:
+-- That last clause is the owner-as-CEO model: the account that owns the app is
+-- the CEO already, with no role row to insert. It is not an app_role enum
+-- value and it is not staff.is_super_admin -- both of those would be a second,
+-- competing definition of a thing that already works.
 --
---   * every existing admin RLS policy keeps working untouched, because
---     is_admin() still returns true for them;
---   * is_ceo() is strictly narrower, so no existing policy silently gains
---     authority;
---   * the admin login and role system is not modified at all.
+-- An earlier draft of this file redefined is_ceo() and added a 'CEO' enum
+-- value. The deploy failed with
+--   ERROR: cannot change name of input parameter "p_user_id" (SQLSTATE 42P13)
+-- because CREATE OR REPLACE cannot rename an existing function's argument.
+-- That error is the only reason the mistake was caught before it shipped a
+-- duplicate definition that would have disagreed with the real one.
 --
--- That is the whole reason not to have is_admin() return true for CEO. Making
--- it do so would widen every admin policy in the database at once, and the
--- brief explicitly says not to disturb existing working RLS except to add the
--- CEO authority properly.
---
--- is_ceo() also accepts staff.is_super_admin, because that flag already
--- existed and silently ignoring it would leave an existing super-admin without
--- the authority their record claims.
+-- So this file only ADDS: staff columns, the payroll and finance reports, the
+-- fee toggles, and an assertion that calls the real is_ceo() rather than
+-- restating it.
 -- =============================================================================
 
--- ─────────────────────────────────────────────────────────────────────────────
--- 1. The role
--- ─────────────────────────────────────────────────────────────────────────────
-do $$
-begin
-  if not exists (
-    select 1 from pg_enum e
-      join pg_type t on t.oid = e.enumtypid
-     where t.typname = 'app_role' and e.enumlabel = 'CEO'
-  ) then
-    alter type app_role add value 'CEO';
-  end if;
-end $$;
-
--- Reads the enum the safe way: 'CEO' is compared as text so this function does
--- not depend on the new label having been committed before the CREATE
--- FUNCTION that references it (ALTER TYPE ADD VALUE is not usable in the same
--- transaction that inserts it on older servers).
-create or replace function public.is_ceo(p_user uuid default auth.uid())
-returns boolean
-language sql
-stable
-security definer
-set search_path = public, pg_temp
-as $$
-  select
-    exists (
-      select 1 from public.user_roles
-       where user_id = p_user and role::text = 'CEO'
-    )
-    or exists (
-      select 1 from public.staff
-       where user_id = p_user and is_super_admin and is_active
-    );
-$$;
-
-comment on function public.is_ceo(uuid) is
-  'True for the CEO app_role or for a staff record flagged is_super_admin. Strictly narrower than is_admin(): a CEO account also holds ADMIN, so existing admin policies are unaffected.';
-
-grant execute on function public.is_ceo(uuid) to authenticated, service_role;
+-- -----------------------------------------------------------------------------
+-- 1. There is NOTHING TO ADD HERE. The CEO authority already exists.
+--
+-- This section previously redefined is_ceo() and added a 'CEO' app_role value.
+-- Both were wrong, and the deploy failed on the first one with
+-- `cannot change name of input parameter "p_user_id"` (SQLSTATE 42P13) --
+-- Postgres refusing a CREATE OR REPLACE that renames an existing function's
+-- argument, which is how the mistake was found.
+--
+-- What already exists, verified by reading it:
+--
+--   20260922000012_role_hierarchy_and_ride_fare.sql
+--     ALTER TABLE public.staff ADD COLUMN is_ceo boolean NOT NULL DEFAULT false;
+--     is_ceo(p_user_id uuid DEFAULT auth.uid())
+--
+--   20260923000003_true_admin_as_ceo.sql  (the definitive one)
+--     is_ceo() is true when EITHER
+--       * a staff row has is_ceo AND is_active, OR
+--       * the account holds the ADMIN app_role AND has NO staff row
+--         -- the "external true Admin", i.e. the owner's own account
+--
+-- That second clause IS the owner-as-CEO model: the account that owns the app
+-- is already the CEO, with no extra role row to insert and nothing to grant.
+--
+-- Two specifics a re-implementation gets wrong:
+--
+--   * The column is `staff.is_ceo`, not `staff.is_super_admin`. Using the
+--     latter returns false for every real CEO staff row.
+--   * The role is NOT an app_role enum value. It is a staff boolean plus the
+--     external-admin rule, so a 'CEO' label would be a second, competing
+--     definition of the same thing -- and widening is_admin() to include it
+--     would widen every admin policy in the database at once.
+--
+-- Anything in this feature must CALL is_ceo(), never restate it.
+-- -----------------------------------------------------------------------------
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. Staff: city, salary and job role
@@ -392,18 +384,25 @@ as $$
 declare
   v_missing text[] := '{}';
 begin
-  if not exists (
-    select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
-     where t.typname = 'app_role' and e.enumlabel = 'CEO'
-  ) then
-    v_missing := array_append(v_missing, 'app_role has no CEO value');
-  end if;
-
+  -- The CEO authority is pre-existing, so this asserts it is STILL there
+  -- rather than that this migration created it. A dropped or renamed is_ceo()
+  -- would silently lock the owner out of every CEO-only action.
   if not exists (
     select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.proname = 'is_ceo'
   ) then
     v_missing := array_append(v_missing, 'is_ceo() missing');
+  end if;
+
+  -- And that the column the REAL definition reads still exists. The definition
+  -- keys on staff.is_ceo; if that column were renamed, is_ceo() would keep
+  -- compiling and quietly return false for every CEO staff row.
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public' and table_name = 'staff'
+       and column_name = 'is_ceo'
+  ) then
+    v_missing := array_append(v_missing, 'staff.is_ceo missing (is_ceo() would read false)');
   end if;
 
   -- The deletion log must be able to hold a CEO deletion. admin_history is the
@@ -426,7 +425,7 @@ begin
     return concat('CEO_AUTHORITY_NOT_WIRED: ', array_to_string(v_missing, '; '));
   end if;
 
-  return 'CEO role + is_ceo() + staff city/salary/job_role + admin_history deletion log: wired';
+  return 'is_ceo() present + staff.is_ceo present + city/salary/job_role + admin_history deletion log: wired';
 end;
 $$;
 

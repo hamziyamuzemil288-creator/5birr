@@ -12,12 +12,13 @@ import '../utils/phone_formatter.dart';
 
 /// Application roles matching the Supabase `app_role` enum.
 ///
-/// [ceo] is deliberately separate from [admin] rather than a stronger flavour
-/// of it. A CEO account holds BOTH rows, so `isAdmin` is still true for them
-/// and every existing admin gate keeps working; [ceo] only ever ADDS the
-/// destructive authority an admin does not have. Treating it as a replacement
-/// for admin would have meant auditing every screen that gates on isAdmin.
-enum AppUserRole { user, vehicleProvider, serviceProvider, admin, ceo }
+/// There is deliberately no `ceo` member. The CEO is NOT an app_role value in
+/// the database: `public.is_ceo()` is true for a staff row flagged `is_ceo`,
+/// or for the account that holds ADMIN and has no staff row at all — the
+/// external true Admin, i.e. the owner's own account. A `ceo` enum member here
+/// would parse a role string that is never written, so it would always be
+/// false and the CEO would see an empty workspace.
+enum AppUserRole { user, vehicleProvider, serviceProvider, admin }
 
 /// Complete auth state for the application.
 class AuthState {
@@ -81,13 +82,21 @@ class AuthState {
   bool get isAuthenticated => user != null;
   bool get isAdmin => roles.contains(AppUserRole.admin);
 
-  /// True for the CEO.
+  /// True for the CEO: the owner's own account.
   ///
-  /// This is a UI convenience only. Every destructive action is re-checked
+  /// This mirrors `public.is_ceo()` exactly, using state this class already
+  /// has. That function is true for the "external true Admin": an account
+  /// holding the ADMIN app_role with NO staff row. The negative half is
+  /// already computed here — [isStaffMember] is `isStaffGateway && isAdmin`,
+  /// and a staff gateway is precisely an admin that DOES have a staff row. So
+  /// "ADMIN and no staff row" is `isAdmin && !isStaffMember`, with no second
+  /// source of truth and no extra round trip.
+  ///
+  /// A UI convenience only. Every destructive action is re-checked
   /// server-side (`is_ceo()` in Postgres, and the user-admin Edge Function for
-  /// auth deletion) — a Flutter gate is a way to avoid showing a button that
-  /// will be refused, never a way to protect one.
-  bool get isCeo => roles.contains(AppUserRole.ceo);
+  /// auth deletion); a Flutter gate avoids showing a button that will be
+  /// refused, it does not protect one.
+  bool get isCeo => isAdmin && !isStaffMember;
   bool get isStaffMember => isStaffGateway && isAdmin;
   bool get isVehicleProvider => roles.contains(AppUserRole.vehicleProvider);
   bool get isServiceProvider => roles.contains(AppUserRole.serviceProvider);
@@ -261,11 +270,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   AppUserRole _parseRole(String role) {
     switch (role) {
-      // Checked before ADMIN, though order does not matter here: this switch
-      // maps one stored string to one enum value and the caller collects every
-      // role into a list, so a CEO ends up holding both admin and ceo.
-      case 'CEO':
-        return AppUserRole.ceo;
       case 'ADMIN':
         return AppUserRole.admin;
       case 'VEHICLE_PROVIDER':
