@@ -203,11 +203,27 @@ stable
 security definer
 set search_path = public, pg_temp
 as $$
+  -- Both city columns are real, and this reads both: provider_profiles.city
+  -- (added by the multi-city migration) is the provider's own record, and
+  -- profiles.city is the account-level signup city. Coalescing them means a
+  -- provider who only ever set one of the two is still scoped to their city
+  -- instead of landing in 'Unassigned'.
+  --
+  -- The first deploy of this migration failed with 42703 on
+  -- `pp.provider_city`: that column exists on support_tickets, not on
+  -- provider_profiles, and it was copied in here from that table's shape.
+  -- 'Unassigned' is a real group, not a dropped row, so the per-city subtotals
+  -- still add up to the company total rather than quietly omitting providers.
   with provider_city as (
     select
       pp.id as provider_id,
-      coalesce(nullif(btrim(pp.city), ''), nullif(btrim(pp.provider_city), ''), 'Unassigned') as city
+      coalesce(
+        nullif(btrim(pp.city), ''),
+        nullif(btrim(pr.city), ''),
+        'Unassigned'
+      ) as city
     from public.provider_profiles pp
+    left join public.profiles pr on pr.id = pp.user_id
   ),
   city_rows as (
     select
