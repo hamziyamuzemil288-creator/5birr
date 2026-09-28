@@ -1,0 +1,50 @@
+-- =============================================================================
+-- 20260927000066 — Reload PostgREST's schema cache
+-- =============================================================================
+-- assert_resilience_is_wired() is still reported as `Expected: not null,
+-- Actual: <null>` by the connectivity suite, having been fixed once already.
+--
+-- What is established so far:
+--
+--   * Migration 64 shipped it RETURNS boolean. The suite reads assertions
+--     through rpcText(), which is `result is String ? result : null`, so a
+--     correct database reported as null. Migration 65 changed it to
+--     RETURNS text. That fix is real and is applied.
+--   * Migration 65's other two changes are CONFIRMED WORKING against the live
+--     database: both write-surface tests went green (43 pass/3 fail ->
+--     45 pass/1 fail) on the same deploy.
+--   * It is NOT the security mode. assert_document_review_is_admin_only()
+--     (migration 30) is RETURNS boolean with no SECURITY clause and no
+--     pinned search_path, and it passes. A draft of this migration made
+--     assert_resilience_is_wired SECURITY DEFINER on the theory that reading
+--     pg_policies as anon was the cause; that theory is contradicted by a
+--     test that passes without those properties, so it was discarded rather
+--     than shipped.
+--
+-- What remains, and is the most likely cause: PostgREST resolves an RPC's
+-- return type from a CACHED view of the schema. Migration 65 changed this
+-- function's return type from boolean to text. If the cache still holds the
+-- old signature, PostgREST deserialises the result as the old type, the Dart
+-- client receives a bool, and `result is String` is false — producing exactly
+-- the observed null with a function that is present, correct, and returning a
+-- string. The other functions migration 65 touched did not change signature,
+-- which is consistent with them being unaffected.
+--
+-- This is stated as a hypothesis, not a conclusion, and the same commit adds
+-- a diagnostic to the connectivity test so that if it is wrong the next run
+-- reports the actual error instead of collapsing it into a null again. That
+-- distinction is the point: three deploy cycles have now been spent guessing
+-- at this one function, and the cost of being wrong three more times is
+-- higher than the cost of one run that prints the answer.
+--
+-- NOTIFY is safe and idempotent. PostgREST reloads on this signal; if the
+-- cache is already correct the reload is a no-op costing one re-introspection.
+-- The command is a no-op on a plain Postgres with no PostgREST listening,
+-- which is what local development is.
+--
+-- No schema, RLS, policy, index or function body is changed here. If the
+-- reload does not fix it, the diagnostic names the cause and the fix belongs
+-- in a migration that is actually about that cause.
+-- =============================================================================
+
+notify pgrst, 'reload schema';

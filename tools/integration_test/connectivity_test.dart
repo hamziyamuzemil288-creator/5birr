@@ -55,6 +55,27 @@ void main() {
     }
   }
 
+  /// [rpcText] with the failure kept instead of discarded.
+  ///
+  /// `rpcText` collapses three different outcomes into one null: the function
+  /// reported a real problem, the function is not executable by the role this
+  /// suite calls as, and the RPC threw because the function is missing or its
+  /// body raised. Only the first is a finding about the database; the other two
+  /// are findings about the test. Reporting them all as `Expected: not null,
+  /// Actual: <null>` is what made assert_resilience_is_wired take three deploy
+  /// cycles to pin down, and each cycle cost a guess rather than an answer.
+  ///
+  /// Returns (value, error). Callers assert on `value` and print `error`.
+  Future<(String?, String?)> rpcTextDiagnosed(String fn) async {
+    try {
+      final result = await client.rpc(fn);
+      if (result is String) return (result, null);
+      return (null, 'returned ${result.runtimeType} ($result), not a String');
+    } catch (e) {
+      return (null, '$e');
+    }
+  }
+
   group('money: wallet ledger -> admin income (Phase 1)', () {
     test('subscription scheduler is wired (pg_cron -> charge_due_subscriptions)',
         () async {
@@ -817,7 +838,8 @@ void main() {
       // its RLS or a hot-path index is missing, failures become invisible
       // rather than loud — which is the failure mode this test exists to
       // catch, so it cannot itself be a thing that silently passes.
-      final detail = await rpcText('assert_resilience_is_wired');
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_resilience_is_wired');
       expect(detail, isNotNull,
           reason: 'client_error_logs is missing or has RLS disabled (every '
               'crash report is forgeable or unwritable), the append-only '
@@ -827,8 +849,10 @@ void main() {
               'role has no statement_timeout. Migration 64 shipped this '
               'returning boolean while rpcText() only accepts String, so a '
               'correct database reported as null here; 65 changed it to '
-              'RETURNS text. If this goes null again with the function '
-              'present, the return type has changed again — it must be text.');
+              'RETURNS text. If this is null again WITH the function present, '
+              'read the error below before changing anything — it is now '
+              'either a genuine finding or a broken RPC, and they are no '
+              'longer reported the same way. Diagnostic: $error');
       // ignore: avoid_print
       print('    resilience -> $detail');
     });
