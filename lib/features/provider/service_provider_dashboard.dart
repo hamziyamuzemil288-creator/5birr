@@ -268,9 +268,13 @@ class _ServiceProviderDashboardState
     );
   }
 
-  /// The entries of one dashboard tab. Thin on purpose — it exists so the
-  /// tab definitions read as data rather than as a nested widget list.
-  List<Widget> _actionList(List<Widget> actions) => actions;
+  /// The entries of one dashboard tab, as a single widget.
+  ///
+  /// Returns a Column rather than a List<Widget> because a DashboardTab's
+  /// builder is a WidgetBuilder: handing it a list is a type error, and
+  /// returning the raw list is what made this compile-fail.
+  Widget _actionList(List<Widget> actions) =>
+      Column(children: actions);
 
   /// Compact wallet balance strip: balance at a glance + one-tap recharge.
   Widget _walletCard() {

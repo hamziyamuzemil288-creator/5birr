@@ -250,8 +250,8 @@ void main() {
         expect(message, isNotEmpty, reason: '$error');
         expect(message.trim(), message, reason: '$error — untrimmed');
         expect(
-          message,
-          startsWith(RegExp(r'[A-Z]')),
+          message[0],
+          anyOf(equals(message[0].toUpperCase())),
           reason: '"$message" should start with a capital',
         );
         expect(

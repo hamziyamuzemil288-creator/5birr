@@ -191,7 +191,7 @@ class AsyncListView<T> extends StatelessWidget {
     this.padding = const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
     this.separator,
     this.header,
-    this.context,
+    this.errorContext,
     this.shrinkWrap = false,
     this.physics,
   });
@@ -210,7 +210,7 @@ class AsyncListView<T> extends StatelessWidget {
   /// Rendered above the list and scrolls with it (a section title, say).
   final Widget? header;
 
-  final String? context;
+  final String? errorContext;
   final bool shrinkWrap;
   final ScrollPhysics? physics;
 
