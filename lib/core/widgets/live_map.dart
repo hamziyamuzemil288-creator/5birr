@@ -138,8 +138,15 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
       // Only start a new glide when the SERVER sent a different position.
       // Re-seeding on every parent rebuild would snap a moving marker back to
       // its last reported point and freeze it there.
+      //
+      // Same position again means the vehicle is not moving at the speed we
+      // last derived. Carrying the old number forward is what made a parked
+      // car's pin drive itself 250 m down the road and stay there: the feed
+      // rounds to ~110 m, so a stationary car reports an identical point every
+      // poll, forever, and each poll re-asserted the speed it had when it was
+      // last seen moving.
       if (track.serverTarget == v.position) {
-        track.speedMps = v.speedMps ?? track.speedMps;
+        track.speedMps = v.speedMps ?? 0;
         continue;
       }
 
@@ -320,6 +327,18 @@ class _VehicleTrack {
   /// across the city on its own is worse than one that sits still.
   static const double _maxExtrapolationMetres = 250;
 
+  /// How long after a fix dead-reckoning is still believable.
+  ///
+  /// The point of extrapolating is to bridge the gap until the *next* fix
+  /// arrives, which is one poll interval away (8 s). Holding a heading for far
+  /// longer than that stops being a bridge and becomes a guess: a car that
+  /// stopped at a light, or turned into a driveway, keeps gliding along its
+  /// last heading for as long as the app is open. Bounding the extrapolation
+  /// by time as well as distance means an un-refreshed vehicle always comes to
+  /// rest on the last position the server actually reported, rather than
+  /// somewhere it was never seen.
+  static const double _maxExtrapolationSeconds = 10;
+
   LatLng positionAt(DateTime now) {
     final elapsedSeconds = now.difference(startedAt).inMilliseconds / 1000.0;
     final t = (elapsedSeconds / _glideSeconds).clamp(0.0, 1.0);
@@ -327,9 +346,12 @@ class _VehicleTrack {
 
     final speed = speedMps ?? 0;
     if (t >= 1.0 && speed > 0.6 && toHeading != null) {
-      final extra =
-          ((elapsedSeconds - _glideSeconds) * speed).clamp(0.0, _maxExtrapolationMetres);
-      if (extra > 0.5) return _offset(base, toHeading!, extra);
+      final sinceArrival = elapsedSeconds - _glideSeconds;
+      if (sinceArrival <= _maxExtrapolationSeconds) {
+        final extra =
+            (sinceArrival * speed).clamp(0.0, _maxExtrapolationMetres);
+        if (extra > 0.5) return _offset(base, toHeading!, extra);
+      }
     }
     return base;
   }

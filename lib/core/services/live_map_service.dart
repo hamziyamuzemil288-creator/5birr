@@ -85,7 +85,12 @@ class LiveMapVehicle {
     final metres = const Distance().as(LengthUnit.Meter, from, to);
 
     // Below ~8 m the movement is GPS jitter, not travel; keeping the old
-    // heading is what stops a parked car spinning on its axis.
+    // heading is what stops a parked car spinning on its axis. The old SPEED
+    // must not be carried with it, though: the feed rounds positions to
+    // ~110 m, so a car stopped at a light reports a byte-identical point on
+    // every poll and would keep the 12 m/s it had while moving indefinitely.
+    // The map then dead-reckons that phantom speed forever, and the pin
+    // drives off on its own. No movement means no speed.
     if (metres < 8) {
       return LiveMapVehicle(
         providerId: providerId,
@@ -98,7 +103,6 @@ class LiveMapVehicle {
         categorySlug: categorySlug,
         categoryName: categoryName,
         headingDegrees: previous.headingDegrees,
-        speedMps: previous.speedMps,
       );
     }
 
@@ -114,7 +118,12 @@ class LiveMapVehicle {
       categorySlug: categorySlug,
       categoryName: categoryName,
       headingDegrees: _bearingDegrees(from, to),
-      speedMps: seconds > 0 ? metres / seconds : previous.speedMps,
+      // A vehicle whose fix has not advanced is being reported from the same
+      // instant, so dividing by it would fabricate an enormous speed. Fall
+      // back to the previous one only in that case.
+      speedMps: seconds > 0
+          ? metres / seconds
+          : previous.speedMps,
     );
   }
 }
