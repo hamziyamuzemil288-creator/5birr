@@ -117,17 +117,23 @@ void main() {
   });
 
   group('business sentinels from our own triggers', () {
-    void sentinel(String code, AppFailureKind expected, String readable) {
+    /// [sentinelName] is the text the trigger RAISEs; the PostgREST `code`
+    /// is always P0001, which is how a `RAISE EXCEPTION` reaches the client.
+    /// The two are different fields and conflating them is what made the
+    /// first version of this test assert against a code of
+    /// `insufficient_balance` and reach the generic validation branch.
+    void sentinel(
+        String sentinelName, AppFailureKind expected, String readable) {
       final mapped = AppFailureMapper.map(
         PostgrestExceptionDouble(
           status: 400,
-          message: 'insufficient_balance',
-          rawCode: code,
+          message: sentinelName,
+          rawCode: 'P0001',
         ),
       );
-      expect(mapped.kind, expected, reason: code);
-      expect(mapped.message, contains(readable), reason: code);
-      expect(mapped.message, isNot(contains(code)),
+      expect(mapped.kind, expected, reason: sentinelName);
+      expect(mapped.message, contains(readable), reason: sentinelName);
+      expect(mapped.message, isNot(contains(sentinelName)),
           reason: 'the internal sentinel name must not reach the user');
     }
 

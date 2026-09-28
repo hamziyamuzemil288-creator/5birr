@@ -131,6 +131,9 @@ void main() {
     });
 
     test('retryIf can veto a retryable failure', () async {
+      // The predicate DECIDES whether to retry, so a false here is a veto.
+      // The failure is 503-specific and the caller only wants to ride out a
+      // rate limit - anything else should be surfaced immediately.
       var calls = 0;
       await expectLater(
         withRetry<String>(
@@ -138,15 +141,39 @@ void main() {
             calls++;
             throw const AppFailure(
               kind: AppFailureKind.serverBusy,
+              statusCode: 500,
               message: 'Try again shortly.',
             );
           },
           policy: _instant,
-          retryIf: (f) => f.statusCode == null,
+          retryIf: (f) => f.statusCode == 429,
         ),
         throwsA(isA<AppFailure>()),
       );
-      expect(calls, 1);
+      expect(calls, 1, reason: 'retryIf returned false, so no retry happened');
+    });
+
+    test('retryIf returning true allows the retry through', () async {
+      // The other half of the contract, so a veto that always returns false
+      // cannot make the helper look correct.
+      var calls = 0;
+      final result = await withRetry<String>(
+        () async {
+          calls++;
+          if (calls < 2) {
+            throw const AppFailure(
+              kind: AppFailureKind.serverBusy,
+              statusCode: 503,
+              message: 'Busy.',
+            );
+          }
+          return 'ok';
+        },
+        policy: _instant,
+        retryIf: (f) => f.statusCode == 503,
+      );
+      expect(result, 'ok');
+      expect(calls, 2);
     });
   });
 
