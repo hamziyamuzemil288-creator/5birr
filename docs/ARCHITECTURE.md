@@ -99,7 +99,7 @@ rediscovers them.
 |-----|-------|----------------------|
 | Screens call Supabase directly | **Widespread** | `user_category_screen.dart`, `user_orders_screen.dart`, `user_notifications_screen.dart` and most admin screens all build their own queries. The layering is documented, not enforced. |
 | The repository layer | **Deleted** | Was unused; deleting it removed a layer nothing traversed. |
-| `ResilientFeed` (polling fallback) | **Written, not adopted** | The realtime screens still use the older `ResilientSubscription`, which reconnects with backoff but does not fall back to polling. Adopting it is a per-screen change. |
+| Polling fallback for realtime | **Not built** | A draft `ResilientFeed` (channel + poller) was written and then removed. It could not be compiled where it was written, and when CI finally compiled it, nine assumptions about the `realtime_client` API were wrong — in the one file whose purpose is to not fail at runtime. `resilient_subscription.dart` covers reconnect-with-backoff and is tested; periodic polling should be a separate, device-tested change. `safeStream` in `safe_realtime.dart` is the part that survived. |
 | `AsyncView` adoption | **Partial** | The new home screen follows the rule by hand; most existing screens still use `LoadErrorView` / `RetryWidget`. |
 | Tests for the new services | **Absent** | `live_map_service.dart`, `city_service.dart` and `geocoding_service.dart` have no unit tests. `location_stream_safety_test.dart` covers the location path only. |
 

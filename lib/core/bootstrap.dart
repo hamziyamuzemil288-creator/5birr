@@ -397,7 +397,7 @@ class StartupFailedScreen extends StatelessWidget {
               ),
               if (kDebugMode)
                 TextButton(
-                  onPressed: () => debugPrint('$message'),
+                  onPressed: () => debugPrint(message),
                   child: const Text('Log details (debug build only)'),
                 ),
             ],

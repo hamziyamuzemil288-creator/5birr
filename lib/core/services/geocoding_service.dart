@@ -348,10 +348,12 @@ class GeocodingService {
   /// Reads the shared city list rather than keeping its own copy. When this
   /// file had its own map, a city added to the picker but not here was
   /// selectable but unfindable by search, with nothing to catch the drift.
-  static Map<String, (double, double)> get _cityBias => const {
-        for (final c in cities.cities)
-          if (cities.cityCenter(c) != null) c: cities.cityCenter(c)!,
-      };
+  // Not `const`: a const map literal cannot contain a `for` element, and
+  // building it from the shared list is the entire point of this change.
+  static final Map<String, (double, double)> _cityBias = {
+    for (final c in cities.cities)
+      if (cities.cityCenter(c) case final center?) c: center,
+  };
 }
 
 /// A searchable place (city, street, landmark).

@@ -1,12 +1,13 @@
-/// Barrel export for all models.
+/// Barrel export for the models that are actually in use.
+///
+/// Five exports were removed here (notification, order, provider_profile,
+/// provider_store, ride_request). Their classes had no reference anywhere in
+/// lib/, test/ or tools/, and leaving them exported is what turned "dead
+/// code" into "dead code the compiler refuses to start over".
 export 'user_profile.dart';
-export 'provider_profile.dart';
 export 'wallet.dart';
 export 'subscription.dart';
-export 'notification.dart';
 export 'product.dart';
-export 'order.dart';
-export 'ride_request.dart';
 export 'category.dart';
-export 'provider_store.dart';
+export 'category_tabs.dart';
 export 'provider_gallery.dart';
