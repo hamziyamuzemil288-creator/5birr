@@ -162,8 +162,14 @@ class _FrameworkErrorCatcherState extends State<FrameworkErrorCatcher> {
     // Reference-checked on purpose: `ErrorWidget.builder` is global mutable
     // state, so a nested boundary installs its own builder on top of ours.
     // Unwinding blindly would clobber the outer one and silently disarm it.
-    if (ErrorWidget.builder != _previous) {
-      ErrorWidget.builder = _previous;
+    //
+    // Guarded on _previous being non-null: the install in initState always
+    // runs, so it is not null in practice, but assigning a nullable to a
+    // non-nullable global is a compile error and a silent-arming bug if the
+    // two ever get out of step.
+    final previous = _previous;
+    if (previous != null && ErrorWidget.builder != previous) {
+      ErrorWidget.builder = previous;
     }
     super.dispose();
   }
@@ -180,7 +186,7 @@ class _CrashScreen extends StatelessWidget {
   });
 
   final Object error;
-  final StackTrace? _stack;
+  final StackTrace? stack;
   final VoidCallback onRetry;
 
   @override
