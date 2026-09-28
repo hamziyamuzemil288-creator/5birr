@@ -4,6 +4,7 @@
 // caller can succeed for a given ride_id — enforced at the DB layer via
 // a conditional UPDATE ... WHERE status = 'REQUESTED', not here.
 import { corsHeaders, requireRole, getAdminClient, json, sanitizeError } from "../_shared/client.ts";
+import { handleCatch } from "../_shared/errors.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -41,7 +42,6 @@ Deno.serve(async (req) => {
 
     return json({ ride: data });
   } catch (e) {
-    if (e instanceof Response) return e;
-    return json({ error: "An internal error occurred" }, 500);
+    return handleCatch(e, "ride-claim:claim");
   }
 });

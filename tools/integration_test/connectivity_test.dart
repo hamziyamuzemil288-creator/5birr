@@ -811,6 +811,23 @@ void main() {
       print('    fee evidence -> $detail');
     });
 
+    test('the error sink, its RLS and the hot-path indexes are wired', () async {
+      // The client's ErrorLogger writes here on every crash. If the table,
+      // its RLS or a hot-path index is missing, failures become invisible
+      // rather than loud — which is the failure mode this test exists to
+      // catch, so it cannot itself be a thing that silently passes.
+      final detail = await rpcText('assert_resilience_is_wired');
+      expect(detail, isNotNull,
+          reason: 'client_error_logs is missing or has RLS disabled (every '
+              'crash report is forgeable or unwritable), the append-only '
+              'policy was replaced by an UPDATE/DELETE one (a crash report '
+              'can be hidden), the flood-guard trigger is not attached, one '
+              'of the hot-path indexes was not created, or the authenticated '
+              'role has no statement_timeout.');
+      // ignore: avoid_print
+      print('    resilience -> $detail');
+    });
+
     test('the live map is wired: publication, replica identity, marker feed', () async {
       // The reported RealtimeSubscribeException was NOT a missing publication
       // this time — ride_requests has been published since 0041. It was

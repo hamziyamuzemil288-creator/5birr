@@ -28,6 +28,7 @@ import {
   json,
   sanitizeError,
 } from "../_shared/client.ts";
+import { handleCatch } from "../_shared/errors.ts";
 
 interface OrderItemInput {
   product_id: string;
@@ -263,8 +264,10 @@ Deno.serve(async (req: Request) => {
 
     return json({ order: created }, 201);
   } catch (e) {
-    if (e instanceof Response) return e;
-    console.error("order-create: unhandled error", e);
-    return json({ error: "An internal error occurred" }, 500);
+    // Structured: the server log keeps the real cause, the client gets a
+    // plain sentence and a request_id it can quote. Previously this returned
+    // a bare string and the correlation to the log line was by timestamp
+    // alone, which does not work on a busy day.
+    return handleCatch(e, "order-create:create");
   }
 });

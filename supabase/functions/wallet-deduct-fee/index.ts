@@ -5,6 +5,7 @@
 // and transition_ride_status() — this endpoint exists for admin corrections,
 // n8n-triggered retries, and out-of-band charges. Idempotent by design.
 import { corsHeaders, requireRole, getAdminClient, json, sanitizeError } from "../_shared/client.ts";
+import { handleCatch } from "../_shared/errors.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -28,7 +29,6 @@ Deno.serve(async (req) => {
     if (error) return json({ error: sanitizeError(error.message) }, 400);
     return json({ transaction: data });
   } catch (e) {
-    if (e instanceof Response) return e;
-    return json({ error: "An internal error occurred" }, 500);
+    return handleCatch(e, "wallet-deduct-fee:deduct");
   }
 });

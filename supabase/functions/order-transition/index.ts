@@ -4,6 +4,7 @@
 // then delegates to transition_order_status() which enforces the whitelist
 // of legal transitions and the payment-proof requirement server-side.
 import { corsHeaders, requireUser, getAdminClient, json, sanitizeError } from "../_shared/client.ts";
+import { handleCatch } from "../_shared/errors.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -43,7 +44,6 @@ Deno.serve(async (req) => {
     if (error) return json({ error: sanitizeError(error.message) }, 400);
     return json({ order: data });
   } catch (e) {
-    if (e instanceof Response) return e;
-    return json({ error: "An internal error occurred" }, 500);
+    return handleCatch(e, "order-transition:transition");
   }
 });
