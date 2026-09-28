@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/resilience/failure_mapper.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/widgets/retry_widget.dart';
+import '../../core/widgets/async_view.dart';
 import '../../core/utils/order_number_format.dart';
 
 class UserOrdersScreen extends StatefulWidget {
@@ -12,23 +13,20 @@ class UserOrdersScreen extends StatefulWidget {
 }
 
 class _UserOrdersScreenState extends State<UserOrdersScreen> {
-  List<Map<String, dynamic>> _orders = [];
-  bool _loading = true;
-  String? _error;
-
   @override
   void initState() {
     super.initState();
     _load();
   }
 
-  Future<void> _load() async {
+  Future<List<Map<String, dynamic>>> _load() async {
     try {
       final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId == null) {
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
+      // A signed-out user is not an error and not an empty list: it is a
+      // signed-out screen, and saying "no orders yet" there would be a lie.
+      // Returning empty lets the empty state render; the router sends an
+      // unauthenticated visitor to /login before this is ever shown.
+      if (userId == null) return const [];
       // Buyer orders only. The orders RLS also exposes orders sold by the
       // signed-in user's business (owns_provider_profile) so providers can
       // manage sales from /provider/orders — without this filter a provider
@@ -39,17 +37,11 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
           .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(50);
-      if (mounted) {
-        setState(() {
-          _orders = List<Map<String, dynamic>>.from(data as List);
-          _loading = false;
-        });
-      }
+      return List<Map<String, dynamic>>.from(data as List);
     } catch (e) {
-      if (mounted) setState(() {
-        _loading = false;
-        _error = 'Could not load orders. Check your connection and try again.';
-      });
+      // Typed and classified here rather than stringified at the call site,
+      // so the user reads a sentence and the log keeps the real cause.
+      throw AppFailureMapper.map(e, context: 'loading your orders');
     }
   }
 
@@ -74,113 +66,105 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('My Orders')),
-      body: _loading
-          ? _buildLoadingSkeleton()
-          : _error != null
-              ? RefreshIndicator(
-                  onRefresh: _load,
-                  color: AppTheme.primaryGreen,
-                  child: RetryWidget(message: _error!, onRetry: _load),
-                )
-              : _orders.isEmpty
-                  ? _buildEmptyState()
-                  : RefreshIndicator(
-                  onRefresh: _load,
-                  color: AppTheme.primaryGreen,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _orders.length,
-                    itemBuilder: (_, i) {
-                      final o = _orders[i];
-                      final status = (o['status'] ?? '').toString();
-                      final color = _statusColor(status);
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surface,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                              color: AppTheme.cardBorder, width: 0.5),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.03),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Material(
-                          color: Colors.transparent,
-                          borderRadius: BorderRadius.circular(12),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: () =>
-                                context.push('/user/orders/${o['id']}'),
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 42,
-                                    height: 42,
-                                    decoration: BoxDecoration(
-                                      color: color.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Icon(
-                                      _orderIcon(status),
-                                      color: color,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                            o['provider_profiles']
-                                                    ?['business_name'] ??
-                                                'Order',
-                                            style: const TextStyle(
-                                                fontSize: 14,
-                                                fontWeight:
-                                                    FontWeight.w600)),
-                                        const SizedBox(height: 3),
-                                        Text(
-                                            '${orderLabel(o)} · '
-                                            '${o['total_amount']} ${o['currency'] ?? 'ETB'}',
-                                            style: const TextStyle(
-                                                fontSize: 12,
-                                                color:
-                                                    AppTheme.textSecondary)),
-                                      ],
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: color.withOpacity(0.1),
-                                      borderRadius:
-                                          BorderRadius.circular(8),
-                                    ),
-                                    child: Text(status,
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w600,
-                                            color: color)),
-                                  ),
-                                ],
-                              ),
-                            ),
+      // AsyncView owns all three states. The important behaviour change is
+      // not visual: on a failed REFRESH it keeps the last good list on screen
+      // and puts a quiet "couldn't refresh" strip above it, where the old
+      // code replaced the list with a full-screen error. Pull-to-refresh on a
+      // weak connection used to throw away a user's order history.
+      body: RefreshIndicator(
+        onRefresh: _load,
+        color: AppTheme.primaryGreen,
+        child: AsyncListView<Map<String, dynamic>>(
+          loader: _load,
+          errorContext: 'loading your orders',
+          itemBuilder: (_, o, __) {
+            final status = (o['status'] ?? '').toString();
+            final color = _statusColor(status);
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.03),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => context.push('/user/orders/${o['id']}'),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            _orderIcon(status),
+                            color: color,
+                            size: 20,
                           ),
                         ),
-                      );
-                    },
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                o['provider_profiles']?['business_name'] ??
+                                    'Order',
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                '${orderLabel(o)} · '
+                                '${o['total_amount']} ${o['currency'] ?? 'ETB'}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppTheme.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            status,
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: color),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
+              ),
+            );
+          },
+          emptyBuilder: (context) => _buildEmptyState(),
+        ),
+      ),
     );
   }
 
@@ -244,20 +228,6 @@ class _UserOrdersScreenState extends State<UserOrdersScreen> {
     );
   }
 
-  Widget _buildLoadingSkeleton() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: 4,
-      itemBuilder: (_, i) => Container(
-        height: 70,
-        margin: const EdgeInsets.only(bottom: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.creamDark.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
-    );
-  }
 
   IconData _orderIcon(String status) {
     switch (status) {

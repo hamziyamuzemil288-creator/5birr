@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/utils/friendly_error.dart';
-import '../../core/widgets/load_error_view.dart';
+import '../../core/resilience/failure_mapper.dart';
+import '../../core/widgets/async_view.dart';
 
 class UserNotificationsScreen extends StatefulWidget {
   const UserNotificationsScreen({super.key});
@@ -12,9 +12,6 @@ class UserNotificationsScreen extends StatefulWidget {
 }
 
 class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
-  List<Map<String, dynamic>> _notifications = [];
-  bool _loading = true;
-  String? _error;
 
   @override
   void initState() {
@@ -22,27 +19,21 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
     _load();
   }
 
-  Future<void> _load() async {
+  /// Returns the inbox, or throws a classified [AppFailure].
+  ///
+  /// AsyncView owns the three states, so this returns data rather than
+  /// calling setState: the widget holds the loading/error/empty branches and
+  /// keeps the last good list on screen when a refresh fails.
+  Future<List<Map<String, dynamic>>> _load() async {
     try {
       final data = await Supabase.instance.client
           .from('notifications')
           .select()
           .order('created_at', ascending: false)
           .limit(50);
-      if (mounted) {
-        setState(() {
-          _notifications = List<Map<String, dynamic>>.from(data as List);
-          _loading = false;
-          _error = null;
-        });
-      }
+      return List<Map<String, dynamic>>.from(data as List);
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = friendlyError(e, context: 'Could not load your notifications');
-        });
-      }
+      throw AppFailureMapper.map(e, context: 'loading your notifications');
     }
   }
 
@@ -64,20 +55,14 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Notifications')),
-      body: _loading
-          ? _buildLoadingSkeleton()
-          : _error != null
-              ? LoadErrorView(message: _error!, onRetry: _load)
-              : _notifications.isEmpty
-              ? _buildEmptyState()
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  color: AppTheme.primaryGreen,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _notifications.length,
-                    itemBuilder: (_, i) {
-                      final n = _notifications[i];
+      body: RefreshIndicator(
+        onRefresh: _load,
+        color: AppTheme.primaryGreen,
+        child: AsyncListView<Map<String, dynamic>>(
+          loader: _load,
+          errorContext: 'loading your notifications',
+          padding: const EdgeInsets.all(16),
+          itemBuilder: (_, n, __) {
                       final isRead = n['is_read'] == true;
                       final color = _iconColor(n['type'] ?? '');
                       return Container(
@@ -142,9 +127,10 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
                               : null,
                         ),
                       );
-                    },
-                  ),
-                ),
+          },
+          emptyBuilder: (context) => _buildEmptyState(),
+        ),
+      ),
     );
   }
 
@@ -197,20 +183,6 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
     );
   }
 
-  Widget _buildLoadingSkeleton() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: 5,
-      itemBuilder: (_, i) => Container(
-        height: 64,
-        margin: const EdgeInsets.only(bottom: 8),
-        decoration: BoxDecoration(
-          color: AppTheme.creamDark.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
-    );
-  }
 
   IconData _iconForType(String type) {
     if (type.contains('ORDER')) return Icons.receipt_outlined;
