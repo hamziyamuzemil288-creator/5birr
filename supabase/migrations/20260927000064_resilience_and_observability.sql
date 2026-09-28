@@ -188,10 +188,16 @@ create index if not exists idx_notifications_user_recent
 -- watches. `status` is not the primary key, which is exactly why this feed
 -- needed REPLICA IDENTITY FULL (migration 61) — the same fact makes the
 -- partial index here worthwhile.
---   select * from ride_requests where status = 'PENDING' ...
+--
+-- The value list must match the enum exactly, or the whole migration fails
+-- with `invalid input value for enum ride_status` and nothing applies at
+-- all. These are the five statuses ride_service.dart treats as "not
+-- finished": a ride is dropped from the index the moment it reaches
+-- COMPLETED or CANCELLED, which is what keeps the driver's polling feed
+-- short.
 create index if not exists idx_ride_requests_open_by_status
   on public.ride_requests (status, created_at desc)
-  where status in ('PENDING', 'OFFERED');
+  where status in ('REQUESTED', 'CLAIMED', 'DRIVER_ARRIVING', 'ARRIVED', 'TRIP_STARTED');
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- 4. assert_resilience_is_wired()
