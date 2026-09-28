@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:geocoding/geocoding.dart' as platform;
 
 import 'location_service.dart' show GeoPoint;
+import '../utils/ethiopia_cities.dart' as cities;
 
 /// Phase 5: geocoding / places service (isolated module).
 ///
@@ -343,20 +344,14 @@ class GeocodingService {
   }
 
   /// Approximate city centers for search bias (sufficient for relevance).
-  static const Map<String, (double, double)> _cityBias = {
-    'Addis Ababa': (9.005, 38.763),
-    'Adama': (8.542, 39.267),
-    'Bahir Dar': (11.594, 37.391),
-    'Gondar': (12.609, 37.466),
-    'Hawassa': (7.062, 38.476),
-    'Jimma': (7.675, 36.834),
-    'Mekelle': (13.497, 39.475),
-    'Dire Dawa': (9.593, 41.866),
-    'Dessie': (11.133, 39.633),
-    'Arba Minch': (6.033, 37.553),
-    'Bishoftu': (8.752, 38.985),
-    'Nekemte': (9.088, 36.552),
-  };
+  ///
+  /// Reads the shared city list rather than keeping its own copy. When this
+  /// file had its own map, a city added to the picker but not here was
+  /// selectable but unfindable by search, with nothing to catch the drift.
+  static Map<String, (double, double)> get _cityBias => const {
+        for (final c in cities.cities)
+          if (cities.cityCenter(c) != null) c: cities.cityCenter(c)!,
+      };
 }
 
 /// A searchable place (city, street, landmark).

@@ -64,27 +64,6 @@ enum HomeTab {
   final String label;
 }
 
-/// A top-level category plus the sub-categories shown beneath it in the grid.
-class TabCategory {
-  const TabCategory({
-    required this.category,
-    this.children = const [],
-    this.productCount = 0,
-  });
-
-  final AppCategory category;
-  final List<AppCategory> children;
-
-  /// How many live listings sit under this category (self + children).
-  /// Only used to decide whether a tab deserves a product rail.
-  final int productCount;
-
-  String get name => category.name;
-  String get slug => category.slug;
-  String get id => category.id;
-  HomeTab get tab => categoryTabFor(category);
-}
-
 /// The tab [category] belongs to. See the library docs for the precedence.
 HomeTab categoryTabFor(AppCategory category) {
   // 1. Vehicles win outright, whatever service_group says.
@@ -147,6 +126,10 @@ Map<HomeTab, List<AppCategory>> groupByTab(List<AppCategory> categories) {
 /// `marketplace_sector` in some rows (migration 0016 sets it on the leaves it
 /// inserted), so the parent's tab is the authority: a leaf under
 /// `hotels-lodging` is a Booking item no matter what its own column says.
+///
+/// Returns a single-entry map keyed by the parent tab rather than a plain
+/// list, so a call site reads the same way as [groupByTab] and a future
+/// per-tab split has somewhere to go.
 Map<HomeTab, List<AppCategory>> groupChildrenByTab(
     List<AppCategory> children, HomeTab parentTab) {
   final sorted = [...children]

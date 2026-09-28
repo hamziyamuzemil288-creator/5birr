@@ -1,5 +1,8 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../utils/ethiopia_cities.dart'
+    show ethiopiaCities, ethiopiaCitiesFallback;
+
 /// Phase 1: multi-city support.
 ///
 /// Holds the user's saved city (persisted on profiles.city) and the active
@@ -20,25 +23,15 @@ class CityService {
     return _instance!;
   }
 
-  static const String fallbackCity = 'Addis Ababa';
-
   /// Ethiopian cities offered in the city picker. Add cities here as
   /// coverage expands — the list is UI-level only; any non-empty string is
   /// accepted from search autocomplete (Phase 5) and stored as-is.
-  static const List<String> knownCities = [
-    'Addis Ababa',
-    'Adama',
-    'Bahir Dar',
-    'Gondar',
-    'Hawassa',
-    'Jimma',
-    'Mekelle',
-    'Dire Dawa',
-    'Dessie',
-    'Arba Minch',
-    'Bishoftu',
-    'Nekemte',
-  ];
+  ///
+  /// Delegates to [ethiopiaCities] so the picker and the geocoder's search
+  /// bias cannot drift apart. See that file for why that matters.
+  static const List<String> knownCities = ethiopiaCities;
+
+  static const String fallbackCity = ethiopiaCitiesFallback;
 
   String? _savedCity;
   String? _travelCity;
