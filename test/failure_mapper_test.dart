@@ -25,9 +25,21 @@
 // one package version's API for no added coverage: the mapper never sees the
 // object, only its name and its text.
 //
-// `_Fake*` below mimic the `toString()` output of the real classes. If
-// postgrest ever changes that rendering, this file is where the mismatch
-// shows up — which is the point of keeping the doubles visible.
+// The `*Double` classes below mimic the real classes' NAMES and `toString()`
+// output, because those are the only two things the mapper reads: it does
+// `error.runtimeType.toString()` and a substring test against the expected
+// class name, then parses the message text.
+//
+// That is a sharp edge worth knowing about. An earlier version of this file
+// named them `_FakePostgrest`, and because the mapper matches with `contains`
+// on the runtime type, EVERY status-mapping case silently fell through to the
+// unknown branch and failed — while the Python simulation of the same logic
+// passed, because it had been written with the intended name. The naming is
+// therefore part of the test's correctness, not a style choice: if these are
+// ever renamed so they no longer contain the real type name, these tests
+// stop testing anything.
+//
+// If postgrest ever changes how it renders, that shows up here.
 import 'dart:async';
 import 'dart:io';
 
@@ -80,7 +92,7 @@ void main() {
     void check(int status, AppFailureKind expected, {bool retryable = false}) {
       // PostgREST puts the HTTP status in the `code` field for most errors
       // and in `status` for the rest; both are exercised below.
-      final mapped = AppFailureMapper.map(_FakePostgrest(status: status));
+      final mapped = AppFailureMapper.map(PostgrestExceptionDouble(status: status));
       expect(mapped.statusCode, status, reason: 'status $status');
       expect(mapped.kind, expected, reason: 'status $status');
       expect(mapped.isRetryable, retryable, reason: 'status $status');
@@ -107,7 +119,7 @@ void main() {
   group('business sentinels from our own triggers', () {
     void sentinel(String code, AppFailureKind expected, String readable) {
       final mapped = AppFailureMapper.map(
-        _FakePostgrest(
+        PostgrestExceptionDouble(
           status: 400,
           message: 'insufficient_balance',
           rawCode: code,
@@ -134,7 +146,7 @@ void main() {
 
     test('an unknown sentinel degrades to a generic sentence, not a leak', () {
       final mapped = AppFailureMapper.map(
-        _FakePostgrest(
+        PostgrestExceptionDouble(
           status: 400,
           message: 'SOME_INTERNAL_DETAIL_9931',
           rawCode: 'P0001',
@@ -190,7 +202,7 @@ void main() {
 
     test('an RLS violation does not surface table or policy names', () {
       final mapped = AppFailureMapper.map(
-        _FakePostgrest(
+        PostgrestExceptionDouble(
           status: 403,
           message: 'new row violates row-level security policy for table '
               '"wallets"',
@@ -202,7 +214,7 @@ void main() {
 
     test('a database exception does not surface SQL', () {
       final mapped = AppFailureMapper.map(
-        _FakePostgrest(
+        PostgrestExceptionDouble(
           status: 400,
           message: 'syntax error at or near "SELCT" in schema public',
           rawCode: '42601',
@@ -213,7 +225,7 @@ void main() {
 
     test('an edge function failure does not surface the stack', () {
       final mapped = AppFailureMapper.map(
-        _FakeFunctionException(
+        FunctionExceptionDouble(
           functionName: 'repo-chat',
           statusCode: 500,
           message: 'TypeError: x is not a function',
@@ -224,7 +236,7 @@ void main() {
 
     test('a realtime subscribe failure does not surface internals', () {
       final mapped = AppFailureMapper.map(
-        _FakeRealtimeSubscribeException(
+        RealtimeSubscribeExceptionDouble(
           message: 'WebSocket error connecting to wss://xyz.supabase.co',
         ),
       );
@@ -237,12 +249,12 @@ void main() {
       final cases = <Object>[
         const SocketException('refused'),
         TimeoutException('slow'),
-        _FakePostgrest(status: 500),
-        _FakePostgrest(status: 401),
-        _FakePostgrest(status: 400),
-        _FakePostgrest(status: 404),
-        _FakeFunctionException(functionName: 'f', statusCode: 503),
-        _FakeRealtimeSubscribeException(message: 'ws failed'),
+        PostgrestExceptionDouble(status: 500),
+        PostgrestExceptionDouble(status: 401),
+        PostgrestExceptionDouble(status: 400),
+        PostgrestExceptionDouble(status: 404),
+        FunctionExceptionDouble(functionName: 'f', statusCode: 503),
+        RealtimeSubscribeExceptionDouble(message: 'ws failed'),
         Exception('something'),
       ];
       for (final error in cases) {
@@ -266,7 +278,7 @@ void main() {
   group('context is additive and readable', () {
     test('the call site is added without losing the original meaning', () {
       final mapped = AppFailureMapper.map(
-        _FakePostgrest(status: 500),
+        PostgrestExceptionDouble(status: 500),
         context: 'loading your orders',
       );
       expect(mapped.kind, AppFailureKind.serverBusy);
@@ -275,8 +287,8 @@ void main() {
 
     test('a blank context changes nothing', () {
       final a =
-          AppFailureMapper.map(_FakePostgrest(status: 500), context: '   ');
-      final b = AppFailureMapper.map(_FakePostgrest(status: 500));
+          AppFailureMapper.map(PostgrestExceptionDouble(status: 500), context: '   ');
+      final b = AppFailureMapper.map(PostgrestExceptionDouble(status: 500));
       expect(a.message, b.message);
     });
   });
@@ -311,8 +323,8 @@ void main() {
 
 /// Mirrors `postgrest`'s `PostgrestException` toString() shape:
 /// `PostgrestException(message: ..., code: ..., status: ...)`.
-class _FakePostgrest implements Exception {
-  _FakePostgrest({
+class PostgrestExceptionDouble implements Exception {
+  PostgrestExceptionDouble({
     required this.status,
     this.message = 'request failed',
     this.rawCode,
@@ -329,8 +341,8 @@ class _FakePostgrest implements Exception {
 
 /// Mirrors `functions`' `FunctionException` shape, which carries the status
 /// in `statusCode:`.
-class _FakeFunctionException implements Exception {
-  _FakeFunctionException({
+class FunctionExceptionDouble implements Exception {
+  FunctionExceptionDouble({
     required this.functionName,
     required this.statusCode,
     this.message = 'Edge function error',
@@ -346,8 +358,8 @@ class _FakeFunctionException implements Exception {
 }
 
 /// Mirrors `realtime`'s `RealtimeSubscribeException`.
-class _FakeRealtimeSubscribeException implements Exception {
-  _FakeRealtimeSubscribeException({required this.message});
+class RealtimeSubscribeExceptionDouble implements Exception {
+  RealtimeSubscribeExceptionDouble({required this.message});
 
   final String message;
 

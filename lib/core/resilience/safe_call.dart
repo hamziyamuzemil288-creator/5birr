@@ -85,7 +85,20 @@ class RetryPolicy {
   Duration backoffFor(int attempt, {Random? random}) {
     if (attempt <= 1) return Duration.zero;
     // 1 << (attempt - 2): attempt 2 waits one base interval, 3 waits two, etc.
-    final scaled = initialBackoff.inMilliseconds * (1 << (attempt - 2));
+    //
+    // The shift is CLAMPED, and that clamp is load-bearing rather than
+    // tidiness. Dart's int is 64-bit, so `1 << 64` is 0 and every shift past
+    // that is also 0. Without the clamp, attempt 66 and beyond computed a
+    // scaled delay of ZERO — so the longer a client kept retrying, the
+    // faster it retried, converging on a tight loop exactly when the server
+    // was least able to answer. That is the thundering herd this helper
+    // exists to prevent, produced by its own backoff function.
+    //
+    // 40 is far more than [maxBackoff] can express (400ms << 40 is already
+    // ~4.6e14 ms), so the cap below always wins from attempt ~14 onward and
+    // the clamp is pure defence.
+    final shift = (attempt - 2).clamp(0, 40);
+    final scaled = initialBackoff.inMilliseconds * (1 << shift);
     final capped = scaled.clamp(0, maxBackoff.inMilliseconds).toDouble();
     if (jitterFactor <= 0) return Duration(milliseconds: capped.round());
     final r = random ?? Random();

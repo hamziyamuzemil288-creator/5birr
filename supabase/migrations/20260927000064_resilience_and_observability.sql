@@ -313,3 +313,76 @@ comment on function public.assert_resilience_is_wired() is
   'Fails loudly if the client error sink, its RLS, or a hot-path index is missing.';
 
 grant execute on function public.assert_resilience_is_wired() to authenticated, service_role;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 5. Keep the write-surface report honest
+-- ─────────────────────────────────────────────────────────────────────────
+--
+-- `client_write_surface_report()` (migration 42) carries a hardcoded list of
+-- the tables the app is EXPECTED to write directly, and
+-- `test/client_write_surface_test.dart` reads the same list from the Dart
+-- side. The test fails if the two disagree, which is the whole point — so
+-- adding a genuine client write means updating BOTH, and this is the SQL
+-- half of that.
+--
+-- client_error_logs genuinely belongs in the list: ErrorLogger inserts
+-- straight into it with no SECURITY DEFINER wrapper, because the entire
+-- purpose is that an app which is failing can still record why. It is
+-- guarded — RLS forces user_id = auth.uid() and only INSERT is granted — so
+-- it does not appear in the report's "unguarded" list.
+create or replace function public.client_write_surface_report()
+returns table (
+  kind text,
+  tables text[]
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  WITH expected(t) AS (
+    VALUES
+      ('admin_expenses'), ('admin_notification_broadcasts'), ('appeal_cases'),
+      ('cart_items'), ('chat_logs'), ('client_error_logs'), ('favorites'),
+      ('notifications'),
+      ('order_messages'), ('payment_methods'), ('payment_proofs'),
+      ('product_images'), ('products'), ('profiles'), ('provider_profiles'),
+      ('reviews'), ('ride_ratings'), ('support_tickets'), ('user_documents'),
+      ('vehicles'), ('wallet_recharge_requests')
+  ),
+  writable AS (
+    SELECT DISTINCT tablename
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+      AND has_table_privilege('authenticated', format('public.%I', tablename), 'INSERT')
+  ),
+  unguarded AS (
+    SELECT w.tablename
+    FROM writable w
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_policies p
+      WHERE p.schemaname = 'public'
+        AND p.tablename = w.tablename
+        AND p.cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+        AND lower(regexp_replace(replace(coalesce(p.qual, ''), 'public.', ''), '\s+', '', 'g'))
+            ~ '(is_admin|is_ceo|is_super_admin)\(\)'
+    )
+  )
+  SELECT 'expected',    COALESCE(array_agg(t ORDER BY t), '{}') FROM expected
+  UNION ALL
+  SELECT 'unexpected', COALESCE(array_agg(w.tablename ORDER BY w.tablename), '{}')
+    FROM writable w WHERE NOT EXISTS (SELECT 1 FROM expected e WHERE e.t = w.tablename)
+  UNION ALL
+  SELECT 'unguarded',   COALESCE(array_agg(tablename ORDER BY tablename), '{}') FROM unguarded;
+$$;
+
+comment on function public.client_write_surface_report() is
+  'Compares the tables the app is expected to write against the ones it can. client_error_logs is expected: an app that is failing must be able to record why.';
+
+-- Re-granted explicitly even though CREATE OR REPLACE preserves the grants
+-- from migration 42. A future refactor of this file that turns the statement
+-- into DROP + CREATE would otherwise silently take EXECUTE away from the
+-- connectivity suite, and the failure would read as "the report is empty"
+-- rather than "you forgot the grant".
+grant execute on function public.client_write_surface_report() to anon, authenticated;

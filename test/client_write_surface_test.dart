@@ -47,6 +47,11 @@ const Set<String> expectedClientWrites = {
   'appeal_cases',
   'cart_items',
   'chat_logs',
+  // The crash/error sink. Genuinely a client write: ErrorLogger inserts
+  // directly with no SECURITY DEFINER wrapper, because the point is that a
+  // failing app can still record why it failed. Migration 64 grants INSERT
+  // only, and RLS forces user_id = auth.uid().
+  'client_error_logs',
   'favorites',
   'notifications',
   'order_messages',
