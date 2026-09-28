@@ -283,7 +283,8 @@ class _StaffSection extends StatelessWidget {
                 if (cityStaff.isEmpty)
                   const _Empty('No staff rows for this city.')
                 else
-                  ...cityStaff.map((s) => _StaffTile(staff: s)),
+                  ...cityStaff.map(
+                      (s) => _StaffTile(staff: s, onChanged: onChanged)),
               ],
             );
           }),
@@ -292,10 +293,127 @@ class _StaffSection extends StatelessWidget {
   }
 }
 
-class _StaffTile extends StatelessWidget {
+class _StaffTile extends StatefulWidget {
   final Map<String, dynamic> staff;
+  final VoidCallback onChanged;
 
-  const _StaffTile({required this.staff});
+  const _StaffTile({required this.staff, required this.onChanged});
+
+  @override
+  State<_StaffTile> createState() => _StaffTileState();
+}
+
+class _StaffTileState extends State<_StaffTile> {
+  bool _saving = false;
+
+  Map<String, dynamic> get staff => widget.staff;
+
+  /// City and salary live on the staff row, but the staff form does not
+  /// collect them — so without this, the City -> staff drill-down and every
+  /// city payroll subtotal would stay permanently empty. Editable here rather
+  /// than in the form because the form writes through the CEO-gated staff
+  /// creation RPC, and adding parameters there means restating a SECURITY
+  /// DEFINER function full of hierarchy guards.
+  Future<void> _editTerms() async {
+    final cityController =
+        TextEditingController(text: (staff['city'] as String?) ?? '');
+    final salaryController = TextEditingController(
+        text: ((staff['salary_birr'] as num?)?.toDouble() ?? 0)
+            .toStringAsFixed(0));
+    final roleController =
+        TextEditingController(text: (staff['job_role'] as String?) ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${staff['name'] ?? 'Staff'} · ${staff['staff_code'] ?? '—'}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: cityController,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                    labelText: 'City',
+                    helperText: 'Drives city payroll and the drill-down'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: roleController,
+                decoration: const InputDecoration(labelText: 'Job role'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: salaryController,
+                keyboardType: TextInputType.number,
+                decoration:
+                    const InputDecoration(labelText: 'Monthly salary (ETB)'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+
+    final salary = double.tryParse(salaryController.text.trim());
+    if (salary != null && salary < 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A salary cannot be negative.')));
+      return;
+    }
+
+    // safeCall throws rather than returning a result object, so the failure
+    // path is a catch. The guard is not retried: it is a single idempotent
+    // write, and re-sending a salary change because the reply was slow would
+    // log a second audit row for one edit.
+    setState(() => _saving = true);
+    try {
+      await safeCall<int>(
+        () async {
+          await Supabase.instance.client.rpc('ceo_set_staff_terms', params: {
+            'p_staff_id': staff['id'],
+            'p_city': cityController.text.trim(),
+            'p_salary_birr': salary,
+            'p_job_role': roleController.text.trim(),
+          });
+          return 0;
+        },
+        context: 'Set staff terms',
+      );
+    } on AppFailure catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save. Try again.')));
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _saving = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saved. Payroll updated.')));
+    widget.onChanged();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -311,7 +429,8 @@ class _StaffTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('${staff['job_role'] ?? 'Staff'}'
-              '${active ? '' : ' · inactive'}'),
+              '${active ? '' : ' · inactive'}'
+              '${(staff['city'] as String?)?.isNotEmpty == true ? ' · ${staff['city']}' : ' · no city set'}'),
           const SizedBox(height: 2),
           // Performance from real logged actions: staff_task_completions and
           // staff_warnings. Not a computed score, because a score nobody can
@@ -322,8 +441,27 @@ class _StaffTile extends StatelessWidget {
           ),
         ],
       ),
-      trailing: Text(_birr(salary),
-          style: const TextStyle(fontWeight: FontWeight.w700)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(_birr(salary),
+              style: const TextStyle(fontWeight: FontWeight.w700)),
+          if (_saving)
+            const Padding(
+              padding: EdgeInsets.only(left: 8),
+              child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else
+            IconButton(
+              tooltip: 'Set city, role and salary',
+              icon: const Icon(Icons.edit_outlined, size: 18),
+              onPressed: _editTerms,
+            ),
+        ],
+      ),
     );
   }
 }

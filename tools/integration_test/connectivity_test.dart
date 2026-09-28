@@ -519,6 +519,28 @@ void main() {
               'nothing.');
     });
 
+    test('the CEO can set a staff member\'s city, salary and job role',
+        () async {
+      // Without this the City -> staff drill-down and every city payroll
+      // subtotal stay permanently empty. The columns existed and the payroll
+      // report read them, but nothing in the app could write them: the staff
+      // form writes through the CEO-gated creation RPC, and adding parameters
+      // there means restating a SECURITY DEFINER function full of hierarchy
+      // guards. So the report rendered "no staff are assigned to a city yet"
+      // forever, which looks like an empty company rather than a missing wire.
+      //
+      // Checked by REPORT rather than by asserting a boolean, and the error is
+      // printed: a null here means either a real finding or that the assertion
+      // itself could not run, and those two must not look the same — that
+      // ambiguity cost three deploy cycles on assert_resilience_is_wired.
+      final (value, error) =
+          await rpcTextDiagnosed('assert_ceo_staff_terms_is_wired');
+      expect(value, isNotNull,
+          reason: 'ceo_set_staff_terms() is missing, or one of the three '
+              'columns it writes (city / salary_birr / job_role) was renamed, '
+              'or ceo_payroll_report() no longer reads them. Error: $error');
+    });
+
     test('staff jobs are assignable, and customer ordering is not', () async {
       // staff.permissions was a text[] behind a CHECK naming nine fixed
       // strings, so "assign a job" meant editing a constraint and the Flutter
