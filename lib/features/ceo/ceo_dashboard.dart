@@ -4,6 +4,10 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/providers/auth_provider.dart';
+// AppFailure is not re-exported by safe_call.dart, so it must be imported
+// directly to catch it — catching it by type is what keeps the friendly
+// message on screen instead of a raw PostgREST string.
+import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
 import '../../core/theme/app_theme.dart';
 
