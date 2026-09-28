@@ -48,8 +48,31 @@ Deno.serve(async (req) => {
   if (rolesErr) return json({ error: "role_check_failed" }, 500);
   if (!roles || roles.length === 0) return json({ error: "forbidden" }, 403);
 
+  // 2b. Is the caller the CEO?
+  //
+  //  A CEO is an ADMIN who can additionally delete another ADMIN. That single
+  //  difference is the whole of the elevated authority, so it is resolved here
+  //  and used exactly once, at the guard that would otherwise refuse.
+  //
+  //  Resolved through the database rather than by reading user_roles here, so
+  //  there is one definition of "is the CEO" (public.is_ceo()) instead of two
+  //  that can drift. is_ceo() also honours staff.is_super_admin, which that
+  //  column already claimed before this feature existed.
+  //
+  //  A failed check is treated as NOT the CEO. If the lookup breaks, the safe
+  //  answer is the narrower authority, never the wider one.
+  let callerIsCeo = false;
+  {
+    const { data: ceoFlag, error: ceoErr } = await anon.rpc("is_ceo");
+    if (ceoErr) {
+      console.error("is_ceo check failed:", ceoErr.message);
+    } else {
+      callerIsCeo = ceoFlag === true;
+    }
+  }
+
   // 3. Action dispatch.
-  let body: { action?: string; user_id?: string };
+  let body: { action?: string; user_id?: string; reason?: string; confirm?: string };
   try {
     body = await req.json();
   } catch {
@@ -60,17 +83,39 @@ Deno.serve(async (req) => {
 
   if (body.action === "delete_user") {
     // Guard rails: never delete yourself, and never delete another true
-    // ADMIN (the admin tier is fixed and external — admins are never
-    // removed through this system).
+    // ADMIN — unless the caller is the CEO, which is the one authority that
+    // can. The CEO may still not delete themselves: an account that removes
+    // itself cannot be held to account for what it did next, and a company
+    // with no CEO is worse than one with a CEO who made a mistake.
     if (targetId === user.id) return json({ error: "cannot_delete_self" }, 400);
+
+    // The confirmation is a deliberate second factor of intent, not
+    // decoration: the client must send back the exact target id it means to
+    // destroy, so a mis-wired button or a stale screen cannot delete the
+    // wrong account. A destructive irreversible action should be impossible
+    // to trigger by a single misdirected tap.
+    if ((body.confirm ?? "").trim() !== targetId) {
+      return json(
+        { error: "confirmation_required", detail: "confirm must equal user_id" },
+        400,
+      );
+    }
+
     const { data: targetRoles, error: tErr } = await admin
       .from("user_roles")
       .select("role")
-      .eq("user_id", targetId)
-      .eq("role", "ADMIN")
-      .limit(1);
+      .eq("user_id", targetId);
     if (tErr) return json({ error: "role_check_failed" }, 500);
-    if (targetRoles && targetRoles.length > 0) {
+
+    const targetIsAdmin = (targetRoles ?? []).some((r) => r.role === "ADMIN");
+    const targetIsCeo = (targetRoles ?? []).some((r) => r.role === "CEO");
+
+    // A CEO is not deletable by anyone through this path, including another
+    // CEO. Removing the top authority is a decision for the database owner,
+    // not for an in-app button, and this keeps it that way.
+    if (targetIsCeo) return json({ error: "cannot_delete_ceo" }, 403);
+
+    if (targetIsAdmin && !callerIsCeo) {
       return json({ error: "cannot_delete_admin" }, 403);
     }
 
@@ -97,7 +142,31 @@ Deno.serve(async (req) => {
       target_type: "auth_users",
       target_id: targetId,
     });
-    return json({ ok: true });
+
+    // The deletion log the CEO interface reads. admin_history is the existing
+    // append-only log and already carries actor, action, city and metadata, so
+    // the CEO record lives beside every other admin act rather than in a
+    // parallel table nobody looks at.
+    //
+    // Best-effort on purpose: the account is already gone by this point, and
+    // failing the request now would tell the operator the deletion did not
+    // happen when it did. The failure is logged loudly instead.
+    const { error: histErr } = await admin.from("admin_history").insert({
+      actor_id: user.id,
+      actor_name: user.email ?? "unknown",
+      action_type: targetIsAdmin ? "CEO_DELETE_ADMIN" : "DELETE_USER",
+      related_record_id: targetId,
+      category: "ACCOUNT_DELETION",
+      metadata: {
+        reason: (body.reason ?? "").trim() || null,
+        caller_was_ceo: callerIsCeo,
+        target_was_admin: targetIsAdmin,
+        target_roles: (targetRoles ?? []).map((r) => r.role),
+      },
+    });
+    if (histErr) console.error("deletion audit write failed:", histErr.message);
+
+    return json({ ok: true, audited: !histErr, deleted_by_ceo: callerIsCeo });
   }
 
   return json({ error: "unknown_action" }, 400);
