@@ -338,7 +338,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                 if (orderId != null) {
                   context.go('/user/orders/$orderId');
                 } else {
-                  context.go('/user?tab=2');
+                  context.go('/user?tab=1');
                 }
               },
               child: const Text('VIEW ORDER'),
@@ -362,7 +362,7 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         );
         context.go(createdOrderId != null
             ? '/user/orders/$createdOrderId'
-            : '/user?tab=2');
+            : '/user?tab=1');
         return;
       }
       setState(() {

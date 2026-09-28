@@ -12,6 +12,7 @@ import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/rank_badge.dart';
+import '../../core/widgets/dashboard_top_tabs.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -320,32 +321,69 @@ class _VehicleProviderDashboardState
                       ],
                     ),
                     const SizedBox(height: 24),
-                    // Actions
-                    const Text('Actions',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    // Buyer mode: vehicle providers can shop from service
-                    // providers using the regular user experience while
-                    // keeping this transport dashboard.
-                    _action(Icons.shopping_bag_outlined, 'Browse & Shop',
-                        () => context.push('/user')),
-                    _action(Icons.map_outlined, 'Live Map',
-                        () => context.push('/vehicle/map')),
-                    _action(Icons.local_taxi_outlined, 'Ride Requests',
-                        () => context.push('/vehicle/ride-requests')),
-                    _action(Icons.play_circle_outline, 'Active Trip',
-                        () => context.push('/vehicle/trip')),
-                    _action(Icons.history, 'Ride History',
-                        () => context.push('/vehicle/history')),
-                    _action(Icons.directions_car_outlined, 'Manage Vehicles',
-                        () => context.push('/vehicle/vehicles')),
-                    _action(Icons.add_circle_outline, 'Add Vehicle',
-                        () => context.push('/vehicle/vehicles/new')),
-                    _action(Icons.account_balance_wallet_outlined, 'Wallet',
-                        () => context.push('/wallet')),
-                    _action(Icons.person_outline, 'Profile',
-                        () => context.push('/profile')),
+                    // Grouped per the founder's top-tab sketch: the
+                    // shift-related work a driver opens several times a shift
+                    // is separated from fleet management and account setup.
+                    // Same entries, same destinations, same screens.
+                    DashboardTopTabs(
+                      tabs: [
+                        DashboardTab(
+                          label: 'Drive',
+                          icon: Icons.map_outlined,
+                          builder: (_) => Column(
+                            children: [
+                              _action(Icons.map_outlined, 'Live Map',
+                                  () => context.push('/vehicle/map')),
+                              _action(Icons.local_taxi_outlined, 'Ride Requests',
+                                  () => context.push('/vehicle/ride-requests')),
+                              _action(Icons.play_circle_outline, 'Active Trip',
+                                  () => context.push('/vehicle/trip')),
+                              _action(Icons.history, 'Ride History',
+                                  () => context.push('/vehicle/history')),
+                            ],
+                          ),
+                        ),
+                        DashboardTab(
+                          label: 'Fleet',
+                          icon: Icons.directions_car_outlined,
+                          builder: (_) => Column(
+                            children: [
+                              _action(Icons.directions_car_outlined,
+                                  'Manage Vehicles',
+                                  () => context.push('/vehicle/vehicles')),
+                              _action(Icons.add_circle_outline, 'Add Vehicle',
+                                  () => context.push('/vehicle/vehicles/new')),
+                            ],
+                          ),
+                        ),
+                        DashboardTab(
+                          label: 'Account',
+                          icon: Icons.person_outline,
+                          builder: (_) => Column(
+                            children: [
+                              _action(
+                                  Icons.account_balance_wallet_outlined,
+                                  'Wallet', () => context.push('/wallet')),
+                              _action(Icons.person_outline, 'Profile',
+                                  () => context.push('/profile')),
+                            ],
+                          ),
+                        ),
+                        DashboardTab(
+                          label: 'Shop',
+                          icon: Icons.shopping_bag_outlined,
+                          builder: (_) => Column(
+                            children: [
+                              // Buyer mode: vehicle providers can shop from
+                              // service providers using the regular user
+                              // experience while keeping this dashboard.
+                              _action(Icons.shopping_bag_outlined,
+                                  'Browse & Shop', () => context.push('/user')),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

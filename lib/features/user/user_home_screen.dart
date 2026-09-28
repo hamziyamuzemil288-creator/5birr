@@ -2,33 +2,69 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../core/theme/app_theme.dart';
-import '../../core/providers/auth_provider.dart' show cityProvider;
-import 'city_switcher_sheet.dart';
-import '../../core/widgets/product_card.dart';
-import '../../core/widgets/category_card.dart';
-import '../../core/widgets/shimmer_effect.dart';
-import '../../core/widgets/retry_widget.dart';
-import '../../core/widgets/cart_icon_button.dart';
-import '../../core/models/product.dart';
-import '../../core/models/category.dart';
-import '../../core/services/ride_service.dart';
 
+import '../../core/models/category.dart';
+import '../../core/models/category_tabs.dart';
+import '../../core/models/product.dart';
+import '../../core/providers/auth_provider.dart' show cityProvider;
+import '../../core/resilience/app_failure.dart';
+import '../../core/resilience/safe_call.dart';
+import '../../core/services/ride_service.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/widgets/async_view.dart';
+import '../../core/widgets/cart_icon_button.dart';
+import '../../core/widgets/product_card.dart';
+import '../../core/widgets/shimmer_effect.dart';
+import 'city_switcher_sheet.dart';
+
+/// The user home, rebuilt to the founder's sketch:
+///
+/// ```
+///   [city]  All-in-One Business Center        [bell] [cart] [search]
+///   All | Booking | Vehicles | Shops
+///   <filtered content>
+/// ```
+///
+/// ## Why the tabs are derived, not a Dart list
+///
+/// The founder's sketch names the tabs; it does not say what fills them. If
+/// the mapping lives here as a hardcoded list it goes stale the first time
+/// someone seeds a category from the admin panel, and the new category is
+/// invisible. So the tab set, the contents of each tab, and the per-tab empty
+/// copy are all computed from the `categories` rows at load time — see
+/// `category_tabs.dart` for the column-level mapping and its test.
+///
+/// ## What did not change
+///
+/// Queries, routes and the screens behind the tiles are all the existing ones.
+/// `/user/category/:id` still resolves a category and its listings, so the
+/// tiles here are pure navigation. The only behavioural change is the removal
+/// of the Shop/Ride two-segment toggle: the sketch's tab row replaces it, and
+/// keeping both would have been two controls for one decision.
 class UserHomeScreen extends ConsumerStatefulWidget {
   const UserHomeScreen({super.key});
+
   @override
   ConsumerState<UserHomeScreen> createState() => _UserHomeScreenState();
 }
 
 class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
-  List<AppCategory> _categories = [];
-  List<Product> _products = [];
-  Map<String, dynamic>? _activeRide; // set when the rider has an active ride
+  HomeTab _tab = HomeTab.all;
+
+  // Sub-tab: which category within the active tab is selected, or null for
+  // "show them all". The sketch's sub-tab row ("Hotels, Beauty, Events") is
+  // exactly this, so it is a horizontal rail of the active tab's categories.
+  String? _subCategoryId;
+
+  List<AppCategory> _categories = const [];
+  List<AppCategory> _children = const [];
+  List<Product> _products = const [];
+  Map<String, dynamic>? _activeRide;
   bool _loading = true;
   String? _error;
 
-  // Simple in-memory cache: categories change rarely, so avoid re-fetching
-  // on every pull-to-refresh within a short window.
+  /// Categories change rarely, so a short cache keeps tab switching instant
+  /// without letting a genuine admin change sit invisible for the session.
   static List<AppCategory>? _cachedCategories;
   static DateTime? _categoriesFetchedAt;
   static const _categoryCacheTtl = Duration(minutes: 5);
@@ -40,511 +76,519 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   }
 
   Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final client = Supabase.instance.client;
-      // Phase 1: ensure the saved city is loaded before scoping queries.
-      final cityService = ref.read(cityProvider);
-      if (!cityService.isLoaded) await cityService.loadSavedCity();
-      // Phase 1: scope the feed to the user's active city (travel city in
-      // travel mode, saved city otherwise). Listings with no city stay
-      // visible everywhere (isFilter city null OR match).
-      final city = cityService.activeCity;
-
-      // Use cached categories if fresh enough.
-      List<AppCategory> categories;
-      final cacheFresh = _cachedCategories != null &&
-          _categoriesFetchedAt != null &&
-          DateTime.now().difference(_categoriesFetchedAt!) < _categoryCacheTtl;
-      if (cacheFresh) {
-        categories = _cachedCategories!;
-      } else {
-        final catData = await client
-            .from('categories')
-            .select()
-            .eq('is_active', true)
-            .isFilter('parent_id', null)
-            .order('sort_order')
-            .limit(30);
-        categories =
-            (catData as List).map((j) => AppCategory.fromJson(j)).toList();
-        _cachedCategories = categories;
-        _categoriesFetchedAt = DateTime.now();
-      }
-      // Phase 4: ranked image feed — popularity first, within the city.
-      final prodData = await client
-          .from('products')
-          .select('*, product_images(*)')
-          .eq('is_active', true)
-          .or('city.eq.$city,city.is.null')
-          .order('sales_count', ascending: false, nullsFirst: false)
-          .order('created_at', ascending: false)
-          .limit(20);
-      // Active ride? Surface a live-tracking entry on Home (GPS dashboard).
-      Map<String, dynamic>? activeRide;
-      try {
-        final ride = await RideService.instance.getMyActiveRide();
-        if (ride != null && mounted) {
-          activeRide = Map<String, dynamic>.from(ride);
-        }
-      } catch (_) {}
-      if (mounted) {
-        setState(() {
-          _categories = categories;
-          _activeRide = activeRide;
-          _products = (prodData as List).map((j) {
-            final imgs = (j['product_images'] as List?)
-                    ?.map((i) => ListingImage.fromJson(i))
-                    .toList() ??
-                [];
-            return Product(
-              id: j['id'],
-              providerId: j['provider_id'],
-              categoryId: j['category_id'],
-              name: j['name'],
-              description: j['description'],
-              price: (j['price'] as num).toDouble(),
-              currency: j['currency'] ?? 'ETB',
-              quantity: j['quantity'],
-              isAvailable: j['is_available'] ?? true,
-              isActive: j['is_active'] ?? true,
-              rating: (j['rating'] as num?)?.toDouble() ?? 0,
-              reviewCount: j['review_count'] ?? 0,
-              salesCount: j['sales_count'] ?? 0,
-              createdAt: DateTime.parse(j['created_at']),
-              updatedAt: DateTime.parse(j['updated_at']),
-              images: imgs,
-            );
-          }).toList();
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted)
-        setState(() {
-          _loading = false;
-          _error =
-              'Could not load content. Check your connection and try again.';
-        });
+      // withRetry, not a bare await: this is the app's first screen and the
+      // one most likely to be opened on a weak connection. A transient blip
+      // should cost a moment, not an error page.
+      final data = await withRetry<Map<String, dynamic>>(
+        _fetchAll,
+        context: 'loading the home feed',
+      );
+      if (!mounted) return;
+      setState(() {
+        _categories = data['categories'] as List<AppCategory>;
+        _children = data['children'] as List<AppCategory>;
+        _products = data['products'] as List<Product>;
+        _activeRide = data['activeRide'] as Map<String, dynamic>?;
+        _loading = false;
+        _error = null;
+        // If the selected tab or sub-tab vanished (category deactivated, or
+        // the deployment's data no longer fills it), fall back rather than
+        // showing a tab with nothing in it.
+        _reconcileSelection();
+      });
+    } on AppFailure catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.message;
+      });
     }
+  }
+
+  /// One round trip for the whole feed, so the tabs never render against
+  /// half-loaded data.
+  Future<Map<String, dynamic>> _fetchAll() async {
+    final client = Supabase.instance.client;
+    final cityService = ref.read(cityProvider);
+    if (!cityService.isLoaded) await cityService.loadSavedCity();
+    final city = cityService.activeCity;
+
+    // 1. Top-level categories, cached.
+    List<AppCategory> categories;
+    final cacheFresh = _cachedCategories != null &&
+        _categoriesFetchedAt != null &&
+        DateTime.now().difference(_categoriesFetchedAt!) < _categoryCacheTtl;
+    if (cacheFresh) {
+      categories = _cachedCategories!;
+    } else {
+      final catData = await client
+          .from('categories')
+          .select()
+          .eq('is_active', true)
+          .isFilter('parent_id', null)
+          .order('sort_order')
+          .limit(40);
+      categories = (catData as List).map((j) => AppCategory.fromJson(j)).toList();
+      _cachedCategories = categories;
+      _categoriesFetchedAt = DateTime.now();
+    }
+
+    // 2. Their children, in one query rather than N. The old screen never
+    //    needed these; the sub-tab rail does.
+    final children = <AppCategory>[];
+    if (categories.isNotEmpty) {
+      final childData = await client
+          .from('categories')
+          .select()
+          .inFilter('parent_id', categories.map((c) => c.id).toList())
+          .eq('is_active', true)
+          .order('sort_order')
+          .limit(200);
+      children
+          .addAll((childData as List).map((j) => AppCategory.fromJson(j)));
+    }
+
+    // 3. The ranked city-scoped product rail.
+    final prodData = await client
+        .from('products')
+        .select('*, product_images(*)')
+        .eq('is_active', true)
+        .or('city.eq.$city,city.is.null')
+        .order('sales_count', ascending: false, nullsFirst: false)
+        .order('created_at', ascending: false)
+        .limit(20);
+
+    // 4. Active ride, best-effort. A failed lookup here must not take the
+    //    whole feed down — the feed is still useful without the banner.
+    Map<String, dynamic>? activeRide;
+    try {
+      activeRide = await RideService.instance.getMyActiveRide();
+    } catch (_) {
+      activeRide = null;
+    }
+
+    return {
+      'categories': categories,
+      'children': children,
+      'products': _toProducts(prodData as List),
+      'activeRide': activeRide,
+    };
+  }
+
+  static List<Product> _toProducts(List rows) {
+    return rows.map((j) {
+      final imgs = (j['product_images'] as List?)
+              ?.map((i) => ListingImage.fromJson(i))
+              .toList() ??
+          [];
+      return Product(
+        id: j['id'],
+        providerId: j['provider_id'],
+        categoryId: j['category_id'],
+        name: j['name'],
+        description: j['description'],
+        price: (j['price'] as num).toDouble(),
+        currency: j['currency'] ?? 'ETB',
+        quantity: j['quantity'],
+        isAvailable: j['is_available'] ?? true,
+        isActive: j['is_active'] ?? true,
+        rating: (j['rating'] as num?)?.toDouble() ?? 0,
+        reviewCount: j['review_count'] ?? 0,
+        salesCount: j['sales_count'] ?? 0,
+        createdAt: DateTime.parse(j['created_at']),
+        updatedAt: DateTime.parse(j['updated_at']),
+        images: imgs,
+      );
+    }).toList();
+  }
+
+  /// Drop a selection that no longer resolves, so a tab can never be stuck on
+  /// content that is not there.
+  void _reconcileSelection() {
+    final tabs = availableTabs(_categories);
+    if (!tabs.contains(_tab)) _tab = HomeTab.all;
+    if (_subCategoryId != null) {
+      final stillThere =
+          _children.any((c) => c.id == _subCategoryId) ||
+              _categories.any((c) => c.id == _subCategoryId);
+      if (!stillThere) _subCategoryId = null;
+    }
+  }
+
+  List<AppCategory> get _tabCategories {
+    final grouped = groupByTab(_categories);
+    return grouped[_tab] ?? const [];
+  }
+
+  List<AppCategory> _childrenOf(String parentId) =>
+      _children.where((c) => c.parentId == parentId).toList();
+
+  void _selectTab(HomeTab tab) {
+    // A new tab invalidates the sub-tab: the id belonged to the old tab's
+    // rail and would show nothing here.
+    setState(() {
+      _tab = tab;
+      _subCategoryId = null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return _buildLoadingSkeleton();
-    if (_error != null) {
+    if (_loading && _categories.isEmpty) return _buildSkeleton();
+
+    // A first load that failed has nothing to show. A refresh that failed
+    // keeps the feed and the banner says so — the same rule as AsyncView,
+    // applied to a screen that was not built with it.
+    if (_error != null && _categories.isEmpty) {
       return RefreshIndicator(
         onRefresh: _load,
         color: AppTheme.primaryGreen,
-        child: RetryWidget(message: _error!, onRetry: _load),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(height: MediaQuery.sizeOf(context).height * 0.2),
+            _ErrorBlock(message: _error!, onRetry: _load),
+          ],
+        ),
       );
     }
+
+    final tabs = availableTabs(_categories);
+    final tabCategories = _tabCategories;
+
     return RefreshIndicator(
       onRefresh: _load,
       color: AppTheme.primaryGreen,
       child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          // Header
-          SliverToBoxAdapter(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Greeting + logo row. The logo opens the quick menu
-                  // (Phase 4): settings, categories management entry and
-                  // profile.
-                  Row(
-                    children: [
-                      GestureDetector(
-                        onTap: _showLogoMenu,
-                        child: Image.asset(
-                          'assets/images/aliob_logo_mark.png',
-                          width: 36,
-                          height: 36,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      const Text('Aliob',
-                          style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w800,
-                              color: Colors.white,
-                              letterSpacing: 1.5)),
-                      const Spacer(),
-                      const CartIconButton(iconColor: Colors.white),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  // City chip + Shop / Service toggle (Phases 1 & 4).
-                  Row(
-                    children: [
-                      Flexible(
-                        child: _CityChip(
-                          onOpen: () async {
-                            final changed = await showModalBottomSheet<bool>(
-                              context: context,
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.vertical(
-                                    top: Radius.circular(20)),
-                              ),
-                              builder: (_) => const CitySwitcherSheet(),
-                            );
-                            if (changed == true && mounted) _load();
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Flexible(
-                        child: _ShopServiceToggle(onChanged: (_) => _load()),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _greeting(),
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.white.withOpacity(0.7),
-                        fontWeight: FontWeight.w400),
-                  ),
-                  const SizedBox(height: 16),
-                  // Search bar
-                  GestureDetector(
-                    onTap: () => context.push('/user/search'),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 13),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border:
-                            Border.all(color: Colors.white.withOpacity(0.1)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.search,
-                              color: Colors.white.withOpacity(0.7), size: 20),
-                          const SizedBox(width: 10),
-                          Text('Search products, services...',
-                              style: TextStyle(
-                                  color: Colors.white.withOpacity(0.6),
-                                  fontSize: 14)),
-                        ],
-                      ),
-                    ),
-                  ),
-                  // Live ride banner: tap to open the GPS tracking map.
-                  if (_activeRide != null) ...[
-                    const SizedBox(height: 12),
-                    GestureDetector(
-                      onTap: () => context.push('/user/ride-active'),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(12),
-                          border:
-                              Border.all(color: Colors.white.withOpacity(0.25)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.near_me,
-                                color: Colors.white, size: 18),
-                            const SizedBox(width: 10),
-                            const Expanded(
-                              child: Text(
-                                  'Ride in progress — track your driver',
-                                  style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600)),
-                            ),
-                            Icon(Icons.chevron_right,
-                                color: Colors.white.withOpacity(0.7), size: 20),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  // Quick actions row
-                  Row(
-                    children: [
-                      Expanded(
-                        child: GestureDetector(
-                          // The live map is the front door for rides now: it shows
-                          // what is actually moving around you, and its sheet
-                          // carries the "Where to?" search straight into the
-                          // booking form with the destination already set.
-                          // Booking directly is still one tap away from there.
-                          onTap: () => context.push('/map'),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.teal.withOpacity(0.3),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                  color: AppTheme.teal.withOpacity(0.3)),
-                            ),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.local_taxi,
-                                    color: Colors.white, size: 18),
-                                SizedBox(width: 8),
-                                Text('Ride',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: GestureDetector(
-                          onTap: () => context.push('/user/search'),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.gold.withOpacity(0.25),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                  color: AppTheme.gold.withOpacity(0.3)),
-                            ),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.storefront_outlined,
-                                    color: Colors.white, size: 18),
-                                SizedBox(width: 8),
-                                Text('Shops',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          // Categories — two top-level groups (Task 7 item 5):
-          // PRODUCT_BASED = the user orders/receives a physical product;
-          // BOOKING_BASED = the user books a service/ride/time slot.
-          if (_categories.isNotEmpty) ...[
-            _categoryGroup('Product-based',
-                _categories.where((c) => c.serviceGroup != 'BOOKING_BASED').toList()),
-            _categoryGroup('Booking-based',
-                _categories.where((c) => c.serviceGroup == 'BOOKING_BASED').toList()),
-          ],
-          // Products header
-          SliverToBoxAdapter(
-            child: FadeInWidget(
-              delay: const Duration(milliseconds: 400),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 24, 20, 4),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text('Fresh Finds',
-                          style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textPrimary)),
-                    ),
-                    if (_products.isNotEmpty)
-                      GestureDetector(
-                        onTap: () => context.push('/user/search'),
-                        child: const Text('See all',
-                            style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.teal)),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: 12)),
-          // Products
-          if (_products.isEmpty)
+          SliverToBoxAdapter(child: _header()),
+          if (_error != null)
             SliverToBoxAdapter(
-              child: FadeInWidget(
-                delay: const Duration(milliseconds: 500),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(32),
-                    decoration: BoxDecoration(
-                      color: AppTheme.surface,
-                      borderRadius: BorderRadius.circular(16),
-                      border:
-                          Border.all(color: AppTheme.cardBorder, width: 0.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.03),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 72,
-                          height: 72,
-                          decoration: BoxDecoration(
-                            color: AppTheme.gold.withOpacity(0.1),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: AppTheme.gold.withOpacity(0.15),
-                              width: 1.5,
-                            ),
-                          ),
-                          child: const Icon(Icons.storefront_outlined,
-                              color: AppTheme.gold, size: 32),
-                        ),
-                        const SizedBox(height: 18),
-                        const Text('No products yet',
-                            style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.textPrimary)),
-                        const SizedBox(height: 8),
-                        Text(
-                            'Products will appear here once\nproviders start adding them',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                                fontSize: 13,
-                                height: 1.5,
-                                color: AppTheme.textMuted.withOpacity(0.8))),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            )
-          else
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              sliver: SliverGrid(
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 0.72,
-                ),
-                delegate: SliverChildBuilderDelegate(
-                  (_, i) => ProductCard(
-                    product: _products[i],
-                    onTap: () =>
-                        context.push('/user/product/${_products[i].id}'),
-                  ),
-                  childCount: _products.length,
-                ),
-              ),
+              child: _StaleBanner(
+                  message: _error!, onRetry: _load),
             ),
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+          // The tab row. Sticky so a user who has scrolled into a category
+          // list can switch without scrolling back up — that is the whole
+          // point of putting navigation at the top of a screen this long.
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _TabBarHeader(
+              tabs: tabs,
+              selected: _tab,
+              onSelect: _selectTab,
+            ),
+          ),
+          if (tabCategories.isEmpty)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: _tabEmptyState(tabs),
+            )
+          else ...[
+            SliverToBoxAdapter(child: _subTabRail(tabCategories)),
+            SliverToBoxAdapter(child: _categoryGrid(tabCategories)),
+            if (_activeRide != null && _tab == HomeTab.vehicles)
+              SliverToBoxAdapter(child: _rideBanner(_activeRide!)),
+            ..._productRail(),
+            const SliverToBoxAdapter(child: SizedBox(height: 28)),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildLoadingSkeleton() {
-    return SingleChildScrollView(
-      physics: const NeverScrollableScrollPhysics(),
+  // ---------------------------------------------------------------- header
+
+  Widget _header() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header skeleton with shimmer
-          ShimmerEffect(
-            child: Container(
-              width: double.infinity,
-              height: 180,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
-                ),
+          Row(
+            children: [
+              // City selector, top-left, per the sketch.
+              Flexible(child: _CityChip(onOpen: _openCitySwitcher)),
+              const Spacer(),
+              // Notifications move to a bell here (they were a bottom-nav
+              // tab, and the nav is now Home|Order|Favourite|Account). The
+              // existing /admin-notifications route hosts the inbox for every
+              // role, so the bell reuses it rather than adding a fifth tab
+              // back.
+              _HeaderIcon(
+                icon: Icons.notifications_none_rounded,
+                tooltip: 'Notifications',
+                onTap: () => context.push('/admin-notifications'),
               ),
+              _HeaderIcon(
+                icon: Icons.search_rounded,
+                tooltip: 'Search',
+                onTap: () => context.push('/user/search'),
+              ),
+              const CartIconButton(iconColor: Colors.white),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'All-in-One Business Center',
+            style: TextStyle(
+              fontSize: 21,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 0.2,
             ),
           ),
-          const SizedBox(height: 20),
-          // Categories skeleton with staggered animation
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: List.generate(
-                  4,
-                  (i) => Padding(
-                        padding: const EdgeInsets.only(right: 16),
-                        child: FadeInWidget(
-                          delay: Duration(milliseconds: 100 * i),
-                          child: const SkeletonBox(
-                            width: 56,
-                            height: 56,
-                            borderRadius: 14,
-                          ),
-                        ),
-                      )),
-            ),
-          ),
-          const SizedBox(height: 24),
-          // Section title skeleton
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20),
-            child: SkeletonBox(
-              width: 120,
-              height: 18,
-              borderRadius: 4,
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Products skeleton with staggered animation
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: List.generate(
-                  2,
-                  (i) => Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.only(right: i == 0 ? 12 : 0),
-                          child: FadeInWidget(
-                            delay: Duration(milliseconds: 200 + (150 * i)),
-                            child: SkeletonBox(
-                              width: double.infinity,
-                              height: 220,
-                              borderRadius: 14,
-                            ),
-                          ),
-                        ),
-                      )),
+          const SizedBox(height: 3),
+          Text(
+            _greeting(),
+            style: TextStyle(
+              fontSize: 12.5,
+              color: Colors.white.withOpacity(0.72),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _openCitySwitcher() async {
+    final changed = await showModalBottomSheet<bool>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const CitySwitcherSheet(),
+    );
+    if (changed == true && mounted) _load();
+  }
+
+  // ------------------------------------------------------------- tab rail
+
+  /// The sub-tab row from the sketch: Hotels, Beauty, Events, ... for the
+  /// active tab, driven by the categories in it.
+  Widget _subTabRail(List<AppCategory> tabCategories) {
+    // Under All there is no meaningful "All / Hotels / Beauty" split — that
+    // IS the whole list — so the rail is skipped rather than shown with a
+    // redundant "All" chip.
+    if (_tab == HomeTab.all) return const SizedBox(height: 4);
+    return Container(
+      height: 46,
+      alignment: Alignment.centerLeft,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          for (final c in tabCategories)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _SubTabChip(
+                label: c.name,
+                selected: _subCategoryId == c.id,
+                onTap: () => setState(() {
+                  _subCategoryId = _subCategoryId == c.id ? null : c.id;
+                }),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // --------------------------------------------------------- category grid
+
+  Widget _categoryGrid(List<AppCategory> tabCategories) {
+    // When a sub-tab is picked, show that category's children; otherwise show
+    // the tab's categories. Both are the shared 3-up tile grid.
+    final subId = _subCategoryId;
+    if (subId != null) {
+      final parent =
+          tabCategories.where((c) => c.id == subId).firstOrNull ??
+              _categories.where((c) => c.id == subId).firstOrNull;
+      final kids = _childrenOf(subId);
+      if (kids.isEmpty) {
+        return _inlineEmpty(
+          parent?.name ?? 'This category',
+          'No sub-categories yet',
+          Icons.category_outlined,
+        );
+      }
+      return _grid(kids, emptyLabel: parent?.name ?? 'this category');
+    }
+    return _grid(tabCategories, emptyLabel: _tab.label);
+  }
+
+  Widget _grid(List<AppCategory> items, {required String emptyLabel}) {
+    if (items.isEmpty) {
+      return _inlineEmpty(emptyLabel, 'Nothing here yet',
+          _tab == HomeTab.vehicles
+              ? Icons.directions_car_outlined
+              : Icons.storefront_outlined);
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: items.length,
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          // Three per row, per the sketch.
+          crossAxisCount: 3,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 0.82,
+        ),
+        itemBuilder: (context, i) => _CategoryTile(
+          category: items[i],
+          childCount: _childrenOf(items[i].id).length,
+          onTap: () => context.push('/user/category/${items[i].id}'),
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- products
+
+  List<Widget> _productRail() {
+    if (_tab == HomeTab.vehicles) return const [];
+    // A sub-category is selected: scope the rail to it so the listings
+    // under the chip the user just tapped are the ones that appear.
+    final scoped = _subCategoryId == null
+        ? _products
+        : _products.where((p) => p.categoryId == _subCategoryId).toList();
+    if (scoped.isEmpty) return const [];
+
+    final title = _tab == HomeTab.booking ? 'Recommended for you' : 'Fresh Finds';
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: () => context.push('/user/search'),
+                child: const Text(
+                  'See all',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.teal,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SliverToBoxAdapter(child: SizedBox(height: 12)),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 0.72,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (_, i) => ProductCard(
+              product: scoped[i],
+              onTap: () => context.push('/user/product/${scoped[i].id}'),
+            ),
+            childCount: scoped.length,
+          ),
+        ),
+      ),
+    ];
+  }
+
+  // ------------------------------------------------------------ ride card
+
+  Widget _rideBanner(Map<String, dynamic> ride) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+      child: GestureDetector(
+        onTap: () => context.push('/user/ride-active'),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [AppTheme.primaryGreen, Color(0xFF2E7D32)],
+            ),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.near_me, color: Colors.white, size: 19),
+              const SizedBox(width: 11),
+              const Expanded(
+                child: Text(
+                  'Ride in progress — track your driver',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.8)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------ empty/err
+
+  /// Per-tab empty copy. "No hotels yet" tells the user which tab is empty;
+  /// one generic message across four tabs does not.
+  Widget _tabEmptyState(List<HomeTab> tabs) {
+    // The active tab has nothing because it no longer exists in the data.
+    if (tabs.length <= 1) {
+      return _inlineEmpty(
+        'Aliob',
+        'No services are available in your city yet.\nWe are adding providers every day.',
+        Icons.storefront_outlined,
+      );
+    }
+    return const TabEmptyState(
+      icon: Icons.inbox_outlined,
+      title: 'Nothing in this tab yet',
+      subtitle: 'We are adding categories and providers every day.',
+    );
+  }
+
+  Widget _inlineEmpty(String label, String message, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      child: TabEmptyState(
+        icon: icon,
+        title: 'No ${label.toLowerCase()} yet',
+        subtitle: message,
       ),
     );
   }
@@ -556,132 +600,400 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     return 'Good evening \uD83C\uDF19';
   }
 
-  /// Phase 4: tappable logo menu (Settings, Categories, Profile, Help).
-  void _showLogoMenu() {
-    showModalBottomSheet<void>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+  Widget _buildSkeleton() {
+    return SingleChildScrollView(
+      physics: const NeverScrollableScrollPhysics(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 132,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [AppTheme.primaryGreenDark, AppTheme.primaryGreen],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: List.generate(
+                4,
+                (i) => Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: ShimmerEffect(
+                    child: SkeletonBox(
+                      width: 72,
+                      height: 34,
+                      borderRadius: 17,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: ShimmerEffect(
+              child: GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: 3,
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 0.82,
+                children: List.generate(
+                  6,
+                  (_) => const SkeletonBox(
+                    width: double.infinity,
+                    height: double.infinity,
+                    borderRadius: 14,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
-      builder: (sheetContext) => SafeArea(
+    );
+  }
+}
+
+// ============================================================ header pieces
+
+/// Circular icon button for the header row.
+class _HeaderIcon extends StatelessWidget {
+  const _HeaderIcon({
+    required this.icon,
+    required this.onTap,
+    required this.tooltip,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: Colors.white.withOpacity(0.16),
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: SizedBox(
+              width: 38,
+              height: 38,
+              child: Icon(icon, color: Colors.white, size: 20),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pinned tab row. Kept as a [SliverPersistentHeader] so it stays reachable
+/// while scrolling a long category list.
+class _TabBarHeader extends SliverPersistentHeaderDelegate {
+  const _TabBarHeader({
+    required this.tabs,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  final List<HomeTab> tabs;
+  final HomeTab selected;
+  final ValueChanged<HomeTab> onSelect;
+
+  @override
+  double get minExtent => 52;
+  @override
+  double get maxExtent => 52;
+
+  @override
+  Widget build(
+      BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return Container(
+      height: 52,
+      color: AppTheme.background,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        itemCount: tabs.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final tab = tabs[i];
+          final isSelected = tab == selected;
+          return GestureDetector(
+            onTap: () => onSelect(tab),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: isSelected ? AppTheme.primaryGreen : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: isSelected
+                      ? AppTheme.primaryGreen
+                      : AppTheme.cardBorder,
+                ),
+                boxShadow: isSelected
+                    ? [
+                        BoxShadow(
+                          color: AppTheme.primaryGreen.withOpacity(0.22),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Text(
+                tab.label,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: isSelected ? Colors.white : AppTheme.textSecondary,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _TabBarHeader oldDelegate) =>
+      oldDelegate.selected != selected || oldDelegate.tabs != tabs;
+}
+
+class _SubTabChip extends StatelessWidget {
+  const _SubTabChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? AppTheme.gold.withOpacity(0.16) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? AppTheme.gold : Colors.transparent,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? AppTheme.textPrimary : AppTheme.textMuted,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A 3-up category tile: icon, name, and how many sub-categories sit under it.
+///
+/// The sub-category count is the only new information here, and it earns its
+/// place: it is the difference between a user tapping "Beauty" knowing there
+/// are 4 things inside and tapping it hoping.
+class _CategoryTile extends StatelessWidget {
+  const _CategoryTile({
+    required this.category,
+    required this.onTap,
+    this.childCount = 0,
+  });
+
+  final AppCategory category;
+  final VoidCallback onTap;
+  final int childCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+        ),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: _tint.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(_icon, color: _tint, size: 23),
+            ),
             const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                // Profile/Settings is dashboard tab 4 (no standalone route).
-                context.go('/user?tab=4');
-              },
+            Text(
+              category.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 11.5,
+                height: 1.25,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary,
+              ),
             ),
-            ListTile(
-              leading: const Icon(Icons.search_outlined),
-              title: const Text('Search & explore'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                context.go('/user?tab=1');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.receipt_long_outlined),
-              title: const Text('My orders'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                context.go('/user?tab=2');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.support_agent_outlined),
-              title: const Text('Help & chat'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                context.push('/help');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.chat_bubble_outline),
-              title: const Text('Chatbot'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                context.push('/help');
-              },
-            ),
+            if (childCount > 0) ...[
+              const SizedBox(height: 2),
+              Text(
+                '$childCount',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: _tint.withOpacity(0.75),
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  IconData _catIcon(String slug) {
-    if (slug.contains('hotel')) return Icons.hotel_outlined;
-    if (slug.contains('food') || slug.contains('restaurant'))
-      return Icons.restaurant_outlined;
-    if (slug.contains('retail') || slug.contains('grocery'))
-      return Icons.shopping_cart_outlined;
-    if (slug.contains('health') || slug.contains('pharma'))
-      return Icons.local_hospital_outlined;
-    if (slug.contains('beauty') || slug.contains('barber'))
-      return Icons.content_cut;
-    if (slug.contains('home') || slug.contains('repair'))
-      return Icons.home_repair_service_outlined;
-    if (slug.contains('education')) return Icons.school_outlined;
-    if (slug.contains('fitness')) return Icons.fitness_center;
-    if (slug.contains('real-estate')) return Icons.apartment;
-    if (slug.contains('ride') || slug.contains('taxi') || slug.contains('bus') || slug.contains('airport'))
-      return Icons.directions_car_outlined;
-    if (slug.contains('delivery') || slug.contains('freight') || slug.contains('truck') || slug.contains('moving'))
-      return Icons.local_shipping_outlined;
-    if (slug.contains('tour') || slug.contains('travel')) return Icons.tour_outlined;
-    if (slug.contains('ambulance') || slug.contains('emergency')) return Icons.emergency_outlined;
-    if (slug.contains('rental')) return Icons.car_rental_outlined;
-    if (slug.contains('motorcycle') || slug.contains('bajaj')) return Icons.two_wheeler_outlined;
-    if (slug.contains('special')) return Icons.agriculture_outlined;
-    return Icons.category_outlined;
-  }
+  /// Tint by tab, so the four tabs are visually distinguishable at a glance
+  /// without relying on the tab row being visible.
+  Color get _tint => switch (categoryTabFor(category)) {
+        HomeTab.booking => AppTheme.teal,
+        HomeTab.vehicles => AppTheme.primaryGreen,
+        HomeTab.shops => AppTheme.gold,
+        HomeTab.all => AppTheme.textMuted,
+      };
 
-  /// Task 7 item 5: one titled horizontal rail of category cards.
-  Widget _categoryGroup(String title, List<AppCategory> cats) {
-    if (cats.isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
-    return SliverMainAxisGroup(
-      slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
-            child: Text(title,
-                style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary)),
-          ),
-        ),
-        SliverToBoxAdapter(
-          child: SizedBox(
-            height: 96,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              itemCount: cats.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 16),
-              itemBuilder: (_, i) {
-                final c = cats[i];
-                return CategoryCard(
-                  name: c.name,
-                  icon: _catIcon(c.slug),
-                  onTap: () => context.push('/user/category/${c.id}'),
-                );
-              },
-            ),
-          ),
-        ),
-      ],
-    );
+  /// Icon from the slug, keyword-matched.
+  ///
+  /// Kept as a switch on slug rather than a lookup table so a newly seeded
+  /// category still renders — it falls through to a generic icon instead of
+  /// disappearing from the grid.
+  IconData get _icon {
+    final s = category.slug;
+    if (s.contains('hotel') || s.contains('lodge') || s.contains('guest') ||
+        s.contains('resort') || s.contains('room') || s.contains('pension') ||
+        s.contains('hostel') || s.contains('apartment') || s.contains('vacation')) {
+      return Icons.hotel_outlined;
+    }
+    if (s.contains('food') || s.contains('restaurant') || s.contains('cafe') ||
+        s.contains('bakery') || s.contains('juice') || s.contains('coffee') ||
+        s.contains('truck') && s.contains('food')) {
+      return Icons.restaurant_outlined;
+    }
+    if (s.contains('retail') || s.contains('grocery') || s.contains('shop') ||
+        s.contains('supermarket') || s.contains('clothing') ||
+        s.contains('electronic') || s.contains('phone') ||
+        s.contains('furniture') || s.contains('cosmetic') ||
+        s.contains('wholesaler') || s.contains('stationery') ||
+        s.contains('garden') || s.contains('automotive')) {
+      return Icons.storefront_outlined;
+    }
+    if (s.contains('health') || s.contains('pharma') || s.contains('clinic') ||
+        s.contains('laborator') || s.contains('dental') || s.contains('medical')) {
+      return Icons.local_hospital_outlined;
+    }
+    if (s.contains('beauty') || s.contains('barber') || s.contains('salon') ||
+        s.contains('spa') || s.contains('tattoo') || s.contains('hair')) {
+      return Icons.content_cut;
+    }
+    if (s.contains('home') || s.contains('plumbing') || s.contains('electric') ||
+        s.contains('cleaning') || s.contains('construction') ||
+        s.contains('repair') || s.contains('maintenance') ||
+        s.contains('moving') || s.contains('interior') ||
+        s.contains('material')) {
+      return Icons.home_repair_service_outlined;
+    }
+    if (s.contains('education') || s.contains('school') || s.contains('tutor') ||
+        s.contains('course') || s.contains('training')) {
+      return Icons.school_outlined;
+    }
+    if (s.contains('fitness') || s.contains('gym') || s.contains('sport') ||
+        s.contains('yoga')) {
+      return Icons.fitness_center;
+    }
+    if (s.contains('real-estate') || s.contains('house') || s.contains('land') ||
+        s.contains('rental') || s.contains('property')) {
+      return Icons.apartment;
+    }
+    if (s.contains('agricultur') || s.contains('farm') || s.contains('equipment')) {
+      return Icons.agriculture_outlined;
+    }
+    if (s.contains('event') || s.contains('entertainment') ||
+        s.contains('recreation') || s.contains('photography')) {
+      return Icons.celebration_outlined;
+    }
+    if (s.contains('professional') || s.contains('accounting') ||
+        s.contains('legal') || s.contains('consulting') || s.contains('printing') ||
+        s.contains('translation')) {
+      return Icons.work_outline;
+    }
+    // Vehicles.
+    if (s.contains('motorcycle') || s.contains('bajaj') || s.contains('bike') ||
+        s.contains('two-wheeler')) {
+      return Icons.two_wheeler;
+    }
+    if (s.contains('bus') || s.contains('minibus') || s.contains('coach')) {
+      return Icons.directions_bus_outlined;
+    }
+    if (s.contains('truck') || s.contains('freight') || s.contains('cargo') ||
+        s.contains('moving-truck')) {
+      return Icons.local_shipping_outlined;
+    }
+    if (s.contains('ambulance') || s.contains('emergency')) {
+      return Icons.emergency_outlined;
+    }
+    if (s.contains('airport')) return Icons.flight_takeoff;
+    if (s.contains('tour') || s.contains('travel') || s.contains('safari')) {
+      return Icons.tour_outlined;
+    }
+    if (s.contains('delivery') || s.contains('freight') || s.contains('courier')) {
+      return Icons.local_shipping_outlined;
+    }
+    if (s.contains('rental')) return Icons.car_rental_outlined;
+    if (s.contains('ride') || s.contains('taxi') || s.contains('car') ||
+        s.contains('transport') || s.contains('special')) {
+      return Icons.directions_car_outlined;
+    }
+    return Icons.category_outlined;
   }
 }
 
-/// Phase 1: city chip showing the active city (travel mode highlighted).
+// ============================================================== small views
+
+/// City chip, top-left of the header.
 class _CityChip extends ConsumerWidget {
   const _CityChip({required this.onOpen});
 
@@ -690,9 +1002,9 @@ class _CityChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final city = ref.watch(cityProvider);
-    final label = city.isTravelMode ? '✈ ${city.activeCity}' : city.activeCity;
+    final label = city.isTravelMode ? '\u2708 ${city.activeCity}' : city.activeCity;
     return Material(
-      color: Colors.white.withOpacity(0.15),
+      color: Colors.white.withOpacity(0.16),
       borderRadius: BorderRadius.circular(18),
       child: InkWell(
         borderRadius: BorderRadius.circular(18),
@@ -702,8 +1014,7 @@ class _CityChip extends ConsumerWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.location_on_outlined,
-                  size: 16, color: Colors.white),
+              const Icon(Icons.location_on_outlined, size: 16, color: Colors.white),
               const SizedBox(width: 4),
               Flexible(
                 child: Text(
@@ -711,9 +1022,10 @@ class _CityChip extends ConsumerWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600),
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
               const Icon(Icons.keyboard_arrow_down, size: 16, color: Colors.white),
@@ -725,79 +1037,104 @@ class _CityChip extends ConsumerWidget {
   }
 }
 
-/// Phase 4: Shop / Ride-Service feed toggle on the dashboard header.
-class _ShopServiceToggle extends StatefulWidget {
-  const _ShopServiceToggle({required this.onChanged});
+/// "Couldn't refresh" strip. Same rule as AsyncView: content stays, the
+/// failure is stated quietly and the whole strip is a retry target.
+class _StaleBanner extends StatelessWidget {
+  const _StaleBanner({required this.message, required this.onRetry});
 
-  final ValueChanged<int> onChanged;
-
-  @override
-  State<_ShopServiceToggle> createState() => _ShopServiceToggleState();
-}
-
-class _ShopServiceToggleState extends State<_ShopServiceToggle> {
-  int _index = 0; // 0 = Shop, 1 = Service
-
-  static const _labels = ['Shop', 'Ride / Service'];
+  final String message;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
-    // Custom two-segment toggle (ToggleButtons removed for good): its
-    // internal layout wraps every child in an InkWell + minWidth-64
-    // ConstrainedBox inside a min-size Row, so Expanded segments never flex
-    // and the row kept overflowing its box on narrow screens. This plain Row
-    // mathematically cannot overflow: Expanded divides the bounded container
-    // width exactly, and FittedBox only scales labels down when space is
-    // genuinely tight. Fixed 34px height (never SizedBox.expand inside the
-    // unbounded header).
-    return Container(
-      width: double.infinity,
-      height: 34,
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(17),
-      ),
-      child: Row(
-        children: List.generate(_labels.length, (i) {
-          final selected = i == _index;
-          return Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                if (i == _index) return;
-                setState(() => _index = i);
-                widget.onChanged(i);
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                curve: Curves.easeOut,
-                alignment: Alignment.center,
-                margin: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: selected ? Colors.white : Colors.transparent,
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Text(
-                      _labels[i],
-                      maxLines: 1,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: selected
-                            ? AppTheme.primaryGreenDark
-                            : Colors.white,
-                      ),
-                    ),
+    return Material(
+      color: AppTheme.gold.withOpacity(0.14),
+      child: InkWell(
+        onTap: onRetry,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          child: Row(
+            children: [
+              const Icon(Icons.cloud_off_outlined,
+                  size: 15, color: AppTheme.textSecondary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Couldn\'t refresh — $message',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
+              const SizedBox(width: 8),
+              const Text(
+                'Retry',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.primaryGreen,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorBlock extends StatelessWidget {
+  const _ErrorBlock({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 76,
+              height: 76,
+              decoration: BoxDecoration(
+                color: AppTheme.error.withOpacity(0.08),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.wifi_off_rounded,
+                  size: 34, color: AppTheme.error),
             ),
-          );
-        }),
+            const SizedBox(height: 18),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Try again'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryGreen,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

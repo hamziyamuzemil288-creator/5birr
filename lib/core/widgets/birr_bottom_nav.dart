@@ -1,9 +1,36 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../theme/app_theme.dart';
-import '../services/cart_service.dart';
 
+import '../services/cart_service.dart';
+import '../theme/app_theme.dart';
+
+/// The user bottom bar: Home | Order | Favourite | Account.
+///
+/// ## Why it changed
+///
+/// The previous bar was Home | Search | Orders | Alerts | Profile. The
+/// founder's sketch replaces it with four tabs, and two of the five were
+/// reachable elsewhere in the new header, so dropping them was not a loss:
+///
+/// * **Search** moved to the header icon (per the sketch). It was a
+///   destination, not a mode — the search screen is still reachable at
+///   `/user/search` and from the header on every home tab.
+/// * **Alerts** moved to a bell in the header. A full-width nav slot is a
+///   poor place for something most people open rarely and urgently.
+///
+/// ## Index stability
+///
+/// The `?tab=N` deep link is used by checkout success, the help chatbot and
+/// the home menu. The indices below are the contract; changing the order
+/// silently re-points all of them. The mapping is:
+///
+/// | index | tab        | notes                                        |
+/// |-------|------------|----------------------------------------------|
+/// | 0     | Home       |                                              |
+/// | 1     | Order      | was index 2                                 |
+/// | 2     | Favourite  | new; the screen already existed, unwired     |
+/// | 3     | Account    | was index 4 (Profile)                       |
 class BirrBottomNav extends ConsumerWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
@@ -35,12 +62,13 @@ class BirrBottomNav extends ConsumerWidget {
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               _item(context, 0, Icons.home_outlined, Icons.home_rounded, 'Home'),
-              _item(context, 1, Icons.search_outlined, Icons.search_rounded, 'Search'),
-              _item(context, 2, Icons.receipt_long_outlined, Icons.receipt_long_rounded,
-                  'Orders', cartBadge: cartCount),
-              _item(context, 3, Icons.notifications_outlined, Icons.notifications_rounded,
-                  'Alerts'),
-              _item(context, 4, Icons.person_outlined, Icons.person_rounded, 'Profile'),
+              _item(context, 1, Icons.receipt_long_outlined,
+                  Icons.receipt_long_rounded, 'Order',
+                  cartBadge: cartCount),
+              _item(context, 2, Icons.favorite_outline, Icons.favorite_rounded,
+                  'Favourite'),
+              _item(context, 3, Icons.person_outline, Icons.person_rounded,
+                  'Account'),
             ],
           ),
         ),
@@ -61,7 +89,7 @@ class BirrBottomNav extends ConsumerWidget {
       onTap: () => onTap(index),
       behavior: HitTestBehavior.opaque,
       child: SizedBox(
-        width: 62,
+        width: 72,
         child: Stack(
           clipBehavior: Clip.none,
           children: [
@@ -127,11 +155,13 @@ class BirrBottomNav extends ConsumerWidget {
                 const SizedBox(height: 2),
               ],
             ),
-            // Cart entry point badge on the Orders tab.
-            if (index == 2)
+            // Cart entry point badge on the Order tab. It is a shortcut, not
+            // the tab itself: tapping the badge goes to the cart, tapping the
+            // tab goes to the order list.
+            if (index == 1)
               Positioned(
                 top: -4,
-                right: 4,
+                right: 6,
                 child: GestureDetector(
                   onTap: () => context.push('/user/cart'),
                   child: AnimatedContainer(

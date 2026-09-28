@@ -10,6 +10,7 @@ import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/rank_badge.dart';
+import '../../core/widgets/dashboard_top_tabs.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -199,42 +200,77 @@ class _ServiceProviderDashboardState
                       ],
                     ),
                     const SizedBox(height: 24),
-                    const Text('Management',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 12),
-                    // Buyer mode: providers can shop from other providers
-                    // using the regular user experience (browse, cart,
-                    // checkout, escrow) while keeping this business view.
-                    _action(Icons.shopping_bag_outlined, 'Browse & Shop',
-                        () => context.push('/user')),
-                    _action(Icons.storefront_outlined, 'Business Profile',
-                        () => context.push('/provider/business')),
-                    _action(Icons.inventory_2_outlined, 'My Products',
-                        () => context.push('/provider/products')),
-                    // Only rendered once a profile row exists. The route is
-                    // /provider/gallery/:id, so a null id here would push a
-                    // path that matches no route at all.
-                    if (_providerProfile?['id'] != null)
-                      _action(Icons.photo_library_outlined, 'My Gallery',
-                          () => context
-                              .push('/provider/gallery/${_providerProfile!['id']}')),
-                    _action(Icons.add_circle_outline, 'Add Product',
-                        () => context.push('/provider/products/new')),
-                    _action(Icons.receipt_long_outlined, 'Orders',
-                        () => context.push('/provider/orders')),
-                    _action(Icons.account_balance_wallet_outlined, 'Wallet',
-                        () => context.push('/wallet')),
-                    _action(Icons.card_membership, 'Subscription',
-                        () => context.push('/provider/subscription')),
-                    _action(Icons.person_outline, 'Profile',
-                        () => context.push('/profile')),
+                    // Grouped per the founder's top-tab sketch. The same
+                    // entries, in the same order, in the same screens —
+                    // only the navigation shape changed.
+                    DashboardTopTabs(
+                      tabs: [
+                        DashboardTab(
+                          label: 'Business',
+                          icon: Icons.storefront_outlined,
+                          builder: (_) => _actionList([
+                            // Buyer mode: providers can shop from other
+                            // providers using the regular user experience
+                            // (browse, cart, checkout, escrow) while keeping
+                            // this business view.
+                            _action(Icons.shopping_bag_outlined,
+                                'Browse & Shop', () => context.push('/user')),
+                            _action(Icons.storefront_outlined,
+                                'Business Profile',
+                                () => context.push('/provider/business')),
+                            // Only rendered once a profile row exists. The
+                            // route is /provider/gallery/:id, so a null id
+                            // here would push a path matching no route at all.
+                            if (_providerProfile?['id'] != null)
+                              _action(Icons.photo_library_outlined, 'My Gallery',
+                                  () => context.push(
+                                      '/provider/gallery/${_providerProfile!['id']}')),
+                            _action(Icons.card_membership, 'Subscription',
+                                () => context.push('/provider/subscription')),
+                          ]),
+                        ),
+                        DashboardTab(
+                          label: 'Catalogue',
+                          icon: Icons.inventory_2_outlined,
+                          builder: (_) => _actionList([
+                            _action(Icons.inventory_2_outlined,
+                                'My Products',
+                                () => context.push('/provider/products')),
+                            _action(Icons.add_circle_outline, 'Add Product',
+                                () => context.push('/provider/products/new')),
+                          ]),
+                        ),
+                        DashboardTab(
+                          label: 'Orders',
+                          icon: Icons.receipt_long_outlined,
+                          builder: (_) => _actionList([
+                            _action(Icons.receipt_long_outlined, 'Orders',
+                                () => context.push('/provider/orders')),
+                          ]),
+                        ),
+                        DashboardTab(
+                          label: 'Account',
+                          icon: Icons.person_outline,
+                          builder: (_) => _actionList([
+                            _action(
+                                Icons.account_balance_wallet_outlined, 'Wallet',
+                                () => context.push('/wallet')),
+                            _action(Icons.person_outline, 'Profile',
+                                () => context.push('/profile')),
+                          ]),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
             ),
     );
   }
+
+  /// The entries of one dashboard tab. Thin on purpose — it exists so the
+  /// tab definitions read as data rather than as a nested widget list.
+  List<Widget> _actionList(List<Widget> actions) => actions;
 
   /// Compact wallet balance strip: balance at a glance + one-tap recharge.
   Widget _walletCard() {
