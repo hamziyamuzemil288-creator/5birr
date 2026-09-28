@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/resilience/safe_call.dart' show InFlightGuard;
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
@@ -24,6 +25,8 @@ class _RechargeScreenState extends State<RechargeScreen> {
   File? _screenshot;
   bool _loading = true;
   bool _submitting = false;
+  /// Held for the whole submit, not just while the button shows a spinner.
+  final InFlightGuard _guard = InFlightGuard();
   String? _error;
   // Distinct from _error, which is form-validation copy ("Enter a valid
   // amount"). This one is a failed fetch: the payment-method list could not
@@ -94,6 +97,19 @@ class _RechargeScreenState extends State<RechargeScreen> {
   }
 
   Future<void> _submit() async {
+    // In-flight guard, not just `_submitting`.
+    //
+    // `PrimaryButton` disables itself with `onPressed: isLoading ? null : ...`,
+    // but that is evaluated at BUILD time. Two taps landing in the same frame
+    // — which is exactly what a fast double-tap on a Recharge button does —
+    // both call _submit before the rebuild, and both create a recharge
+    // request. A guard taken at the top of the method closes that window; a
+    // flag read from build state does not.
+    if (_guard.isBusy) return;
+    await _guard.run(_doSubmit);
+  }
+
+  Future<void> _doSubmit() async {
     if (_selectedMethod == null) {
       setState(() => _error = 'Select a payment method');
       return;
