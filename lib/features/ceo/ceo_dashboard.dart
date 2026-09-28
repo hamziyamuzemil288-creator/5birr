@@ -202,6 +202,48 @@ class _StaffSection extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // The team controls, first, because this is the section a CEO opens
+        // to act rather than to read. Every row lands on a screen that already
+        // existed and already worked; nothing is re-implemented here, so there
+        // is no second copy of "create a staff member" to drift out of step.
+        const _SectionTitle('Manage the team'),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.person_add_alt_1),
+                title: const Text('Create or edit a staff member'),
+                subtitle: const Text(
+                    'Name, staff ID, city, salary, job role and permissions.'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/admin/staff'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.assignment_ind_outlined),
+                title: const Text('Assign a role or task to a user'),
+                subtitle: const Text(
+                    'Give a user a staff role, scope it to categories, warn '
+                    'them, or remove the role.'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/admin/staff-assignment'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.fact_check_outlined),
+                title: const Text('Audit log'),
+                subtitle: const Text(
+                    'Every staff and admin action, append-only — how you check '
+                    'who actually did the work.'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/admin/history'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        const _SectionTitle('Payroll'),
         _MoneyCard(
           label: 'Total monthly payroll (whole company)',
           value: payroll!['company_monthly_payroll_birr'],
