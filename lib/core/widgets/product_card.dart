@@ -146,6 +146,12 @@ class ProductCard extends StatelessWidget {
                       const Spacer(),
                       RankBadge(providerId: product.providerId),
                       const SizedBox(width: 4),
+                      // Reaction, not rating: the thumb-down says "not for
+                      // me" and shows no count, because dislike counts are
+                      // deliberately not public (migration 20260927000076).
+                      DislikeButton(
+                          productId: product.id,
+                          fallbackCount: product.likeCount),
                       LikeButton(productId: product.id, fallbackCount: product.likeCount),
                     ],
                   ),

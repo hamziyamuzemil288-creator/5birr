@@ -957,6 +957,38 @@ void main() {
       print('    availability gate -> $detail');
     });
 
+    test('a like actually persists, and a dislike replaces it', () async {
+      // The reported symptom was a heart that filled and then emptied again.
+      // Two independent causes, either of which alone produces it:
+      //
+      //  * Liking inserted into product_likes, whose AFTER INSERT trigger
+      //    updates products.like_count -- and products sits behind
+      //    enforce_provider_write_gate, which asked whether the caller owns
+      //    the listing. A buyer never does, so every like in the app was
+      //    refused with PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED and the
+      //    client's bare catch rolled the heart back silently.
+      //  * The client never read the user's reaction back, so a product the
+      //    user had already liked rendered empty and the first tap toggled
+      //    their existing row off.
+      //
+      // Every like-related check that existed before was a pg_proc.prosrc
+      // grep, which is how a database refusing every like looked entirely
+      // correct. This one acts as a real buyer and writes for real.
+      expect(await ok('assert_likes_persist_and_are_exclusive'), isTrue,
+          reason: 'A like did not persist, or its counter was refused, or a '
+              'dislike did not replace a like, or NONE left a row behind, or '
+              'a user could write a reaction for somebody else. Either a like '
+              'cannot be saved at all, or like and dislike are not mutually '
+              'exclusive, or the RLS is not doing its job.');
+      expect(await ok('assert_provider_write_gate_allows_counter_updates'),
+          isTrue,
+          reason: 'enforce_provider_write_gate() no longer exempts writes made '
+              'from inside another trigger (pg_trigger_depth() > 1), so the '
+              'denormalised like/dislike counters are refused again -- which '
+              'means no like can be saved -- or the provider check it sits '
+              'above has gone and the gate was opened rather than scoped.');
+    });
+
     test('the error sink, its RLS and the hot-path indexes are wired', () async {
       // The client's ErrorLogger writes here on every crash. If the table,
       // its RLS or a hot-path index is missing, failures become invisible

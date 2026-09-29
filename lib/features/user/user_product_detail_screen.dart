@@ -6,6 +6,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/cart_service.dart';
+import '../../core/services/product_like_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/utils/friendly_error.dart';
@@ -67,6 +68,14 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           _error = null;
           _notFound = false;
         });
+        // The caller's own reaction is a separate question from the product
+        // row, and it is the one that decides whether the heart is filled.
+        // Without it the first tap on an already-liked product toggled the
+        // server's row OFF. Fire-and-forget: the product is already on screen
+        // and the buttons render their unknown state until this lands.
+        final likeCount = (data['like_count'] as num?)?.toInt() ?? 0;
+        ProductLikeService.instance
+            .ensureLoaded([widget.productId], likeCountOf: (_) => likeCount);
       }
     } catch (e) {
       if (mounted) {
@@ -212,6 +221,12 @@ class _State extends ConsumerState<UserProductDetailScreen> {
                               providerId: p['provider_id'] as String),
                         ),
                       const Spacer(),
+                      DislikeButton(
+                        productId: widget.productId,
+                        fallbackCount:
+                            (p['like_count'] as num?)?.toInt() ?? 0,
+                        large: true,
+                      ),
                       LikeButton(
                         productId: widget.productId,
                         fallbackCount:

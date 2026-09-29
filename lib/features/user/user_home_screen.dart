@@ -10,6 +10,7 @@ import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/async_view.dart';
 import '../../core/widgets/cart_icon_button.dart';
@@ -96,6 +97,11 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         _activeRide = data['activeRide'] as Map<String, dynamic>?;
         _loading = false;
         _error = null;
+        // Who liked what. A grid of cards must cost one query, not one per
+        // card, and the like state is a separate question from the product
+        // row -- reading it is what stops a tap on an already-liked product
+        // from toggling the server's row off.
+        _hydrateReactions(_products);
         // If the selected tab or sub-tab vanished (category deactivated, or
         // the deployment's data no longer fills it), fall back rather than
         // showing a tab with nothing in it.
@@ -180,6 +186,21 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     };
   }
 
+  /// Tell the like service what this feed holds, in one batched read.
+  ///
+  /// Fire-and-forget and deliberately not awaited: the feed is already on
+  /// screen, and the buttons render their unknown state until this lands.
+  /// A failure here leaves them unknown, which is honest, rather than
+  /// asserting a reaction the server has not confirmed.
+  void _hydrateReactions(List<Product> products) {
+    if (products.isEmpty) return;
+    final counts = {for (final p in products) p.id: p.likeCount};
+    ProductLikeService.instance.ensureLoaded(
+      products.map((p) => p.id),
+      likeCountOf: (id) => counts[id] ?? 0,
+    );
+  }
+
   static List<Product> _toProducts(List rows) {
     return rows.map((j) {
       final imgs = (j['product_images'] as List?)
@@ -200,6 +221,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         rating: (j['rating'] as num?)?.toDouble() ?? 0,
         reviewCount: j['review_count'] ?? 0,
         salesCount: j['sales_count'] ?? 0,
+        // The count next to the heart comes from the feed, not from a second
+        // query per card. It was missing here, so every card on this screen
+        // showed "0" no matter how many likes the product had.
+        likeCount: (j['like_count'] as num?)?.toInt() ?? 0,
+        requiresAvailabilityConfirmation:
+            j['requires_availability_confirmation'] ?? false,
         createdAt: DateTime.parse(j['created_at']),
         updatedAt: DateTime.parse(j['updated_at']),
         images: imgs,

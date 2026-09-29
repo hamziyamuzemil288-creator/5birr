@@ -111,6 +111,30 @@ The order-level copy is the one the screens read, deliberately: re-joining
 through `order_items` would let a provider close the payment screen on an
 order a buyer has already paid for.
 
+**A denormalised counter is not a client write.** `products.like_count` and
+`products.dislike_count` are maintained by `trg_product_likes_count`, and
+`products` sits behind `enforce_provider_write_gate()`, which asks whether the
+caller owns the listing. A liking user never does, so the gate refused every
+like in the app with `PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED` and the
+client's `catch (_)` rolled the heart back silently — a like that filled and
+emptied for no stated reason. The gate now exempts writes made from inside
+another trigger (`pg_trigger_depth() > 1`), which is the one discriminator a
+client cannot forge. **Any future denormalised counter on a guarded table
+needs this, and the write test in migration 76 is what proves it.**
+
+**A reaction is a set, not a toggle.** `set_product_reaction(product, LIKE |
+DISLIKE | NONE)` states the intent; it does not flip what is there. A toggle
+lets a client whose local state was wrong flip the row the wrong way with no
+way to say what it meant, and makes a resend of a request whose answer was
+never seen actively harmful. A setter is idempotent, so resends are harmless
+and out-of-order arrivals cannot invert the user's most recent decision.
+
+**The client's copy of the server's state is read, not assumed.** A like state
+that is only ever written and never read is a guess with a database behind it.
+`ProductLikeService.ensureLoaded` batches one query per feed; the optimistic
+value is a guess until the response lands, and a rejected write returns the
+`AppFailure` so the UI can say why rather than reverting in silence.
+
 ## Where the code actually is today
 
 The target above is the direction. These are the gaps, written down so nobody
@@ -139,6 +163,9 @@ Dart is asserted against source.
 | Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
 | Every fee switch actually switches | `assert_fee_switches_are_wired()` (migration 73) |
 | Payment is gated on an availability confirmation, contact on verified payment | `assert_availability_gate_is_wired()` (migration 74, restated by 75) |
+| A like actually persists; a dislike replaces it; the RLS bites | `assert_likes_persist_and_are_exclusive()` (migration 76, a **write** test) |
+| The provider write gate is scoped, not opened | `assert_provider_write_gate_allows_counter_updates()` (migration 76) |
+| The optimistic like count is right, including like↔dislike | `test/product_reaction_count_test.dart` |
 | The CEO reports are callable, not merely present | `assert_ceo_reports_are_callable()` (migration 72) |
 | The CEO authority itself is intact | `assert_ceo_authority_is_wired()` (migration 69) |
 | Live map is actually live | `assert_live_map_is_wired()` (migration 61) |

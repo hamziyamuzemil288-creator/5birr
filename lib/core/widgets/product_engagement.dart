@@ -5,6 +5,7 @@ import '../services/product_like_service.dart';
 import '../services/provider_name_service.dart';
 import '../services/trending_settings.dart';
 import '../theme/app_theme.dart';
+import '../utils/friendly_error.dart';
 
 /// The heart on a product card or detail screen.
 ///
@@ -49,8 +50,11 @@ class _LikeButtonState extends State<LikeButton> {
           // Taps on the heart must not open the product. Without this the
           // card's GestureDetector swallows the tap and the user's like
           // navigates instead of registering.
-          onTap: () =>
-              service.toggle(widget.productId, currentCount: count),
+          //
+          // The future is awaited so a rejected write says why. It used to be
+          // ignored, and the service's own `catch (_)` rolled the heart back
+          // silently -- a like that filled and emptied with no explanation.
+          onTap: () => _react(context, liked),
           borderRadius: BorderRadius.circular(20),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
@@ -78,6 +82,99 @@ class _LikeButtonState extends State<LikeButton> {
         );
       },
     );
+  }
+
+  Future<void> _react(BuildContext context, bool liked) async {
+    final service = ProductLikeService.instance;
+    final failure = await service.toggleLike(
+      widget.productId,
+      currentCount: service.likeCount(widget.productId, widget.fallbackCount),
+    );
+    if (failure == null || !context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(friendlyError(failure,
+          context: liked ? 'Removing your like failed' : 'Your like was not saved')),
+    ));
+  }
+}
+
+/// The thumb-down beside the heart.
+///
+/// A reaction, not a rating: it says "not for me", and it is deliberately
+/// undisplayed in aggregate. `products.dislike_count` is maintained by the
+/// database and feeds the trending score through a CEO-tunable weight, but no
+/// number is shown anywhere, on any card or detail screen. The reasoning is
+/// recorded in migration 20260927000076; in short, a public dislike count on a
+/// marketplace with few buyers per listing reads as a death mark and tells a
+/// buyer nothing true.
+///
+/// Like and dislike are mutually exclusive, and the server is what enforces
+/// it: liking something already disliked replaces the dislike. This only
+/// states the intent, and the count it would show is the like count, which
+/// falls by one when a like becomes a dislike.
+class DislikeButton extends StatefulWidget {
+  final String productId;
+  final int fallbackCount;
+  final bool large;
+
+  const DislikeButton({
+    super.key,
+    required this.productId,
+    this.fallbackCount = 0,
+    this.large = false,
+  });
+
+  @override
+  State<DislikeButton> createState() => _DislikeButtonState();
+}
+
+class _DislikeButtonState extends State<DislikeButton> {
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: ProductLikeService.instance,
+      builder: (context, _) {
+        final service = ProductLikeService.instance;
+        final disliked = service.isDisliked(widget.productId);
+        final size = widget.large ? 20.0 : 15.0;
+
+        return InkWell(
+          onTap: () => _react(context),
+          borderRadius: BorderRadius.circular(20),
+          child: Tooltip(
+            message: disliked ? 'Remove your dislike' : 'Not for me',
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+              // No count, deliberately. The icon carries the state on its own,
+              // which is why it is an outline until chosen and filled after.
+              child: Icon(
+                disliked
+                    ? Icons.thumb_down
+                    : Icons.thumb_down_outlined,
+                size: size,
+                // Text-secondary rather than the like button's error red: a
+                // dislike is a neutral "not for me", not a complaint, and
+                // colouring it as one invites the reading the feature is
+                // deliberately not making.
+                color: disliked ? AppTheme.textPrimary : AppTheme.textMuted,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _react(BuildContext context) async {
+    final service = ProductLikeService.instance;
+    final failure = await service.toggleDislike(
+      widget.productId,
+      currentCount: service.likeCount(widget.productId, widget.fallbackCount),
+    );
+    if (failure == null || !context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(friendlyError(failure, context: 'That did not save')),
+    ));
   }
 }
 
