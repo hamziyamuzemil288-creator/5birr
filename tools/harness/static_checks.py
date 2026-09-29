@@ -504,6 +504,316 @@ def check_email_provider_gateways() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 6. every table/view the client queries is created by a migration
+# ---------------------------------------------------------------------------
+def check_data_targets_exist() -> list[str]:
+    """A `.from('typo')` is a screen that renders "no data" forever.
+
+    Storage buckets are excluded on purpose: they are reached through
+    `storage.from('bucket-name')` and are hyphenated, which no table name in
+    this schema is, so `.from('payment-proofs')` is the bucket and
+    `.from('payment_proofs')` is the table.
+    """
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    defined = {
+        m.group(1).lower()
+        for m in re.finditer(
+            r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW)\s+"
+            r"(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?\"?([A-Za-z0-9_]+)\"?",
+            all_sql,
+            re.IGNORECASE,
+        )
+    }
+    problems: list[str] = []
+    targets = literal_calls(r"(?<!storage)\.from\(\s*'([^']+)'")
+    checked = 0
+    for name, files in sorted(targets.items()):
+        if "-" in name:
+            continue  # a storage bucket
+        checked += 1
+        if name.lower() not in defined:
+            problems.append(
+                "lib/ queries public.%s, which no migration creates (from %s)"
+                % (name, ", ".join(sorted(files)))
+            )
+    if checked == 0:
+        problems.append("no .from('...') targets found -- did the client change shape?")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 7. CEO -> staff -> admin -> provider -> user is wired on both sides
+# ---------------------------------------------------------------------------
+def check_role_permission_wiring() -> list[str]:
+    """The five-way chain, checked end to end at source level.
+
+    The router decides a landing page from the session; the database decides
+    everything that matters afterwards. A route without a server-side check
+    is decoration, and a role with no landing page is an account that cannot
+    sign in. Both directions are asserted.
+    """
+    problems: list[str] = []
+
+    auth = _read(LIB / "core" / "providers" / "auth_provider.dart")
+    m = re.search(r"enum\s+AppUserRole\s*\{([^}]*)\}", auth)
+    if not m:
+        problems.append("auth_provider.dart: AppUserRole is gone")
+    else:
+        roles = [r.strip() for r in m.group(1).split(",") if r.strip()]
+        expected = ["user", "vehicleProvider", "serviceProvider", "admin"]
+        if roles != expected:
+            problems.append(
+                "AppUserRole is [%s]; ARCHITECTURE.md 5.4 pins the four as [%s]"
+                % (", ".join(roles), ", ".join(expected))
+            )
+
+    router = _read(LIB / "routing" / "app_router.dart")
+    declared = set(re.findall(r"path:\s*['\"]([^'\"]*)['\"]", router))
+    for route in ("/staff/dashboard", "/staff/login", "/admin", "/ceo",
+                  "/vehicle", "/provider", "/user", "/pending-approval",
+                  "/rejected", "/suspended"):
+        if route not in declared:
+            problems.append(f"the {route} route is gone")
+
+    dm = re.search(
+        r"String\s+_getDashboardPath\(AuthState\s+\w+\)\s*\{(.*?)\n\}",
+        router,
+        re.DOTALL,
+    )
+    if not dm:
+        problems.append(
+            "app_router.dart: _getDashboardPath is gone, so no role reaches a "
+            "landing page"
+        )
+    else:
+        body = dm.group(1)
+        for path in re.findall(r"return\s*'([^']+)'", body):
+            if path not in declared:
+                problems.append(
+                    f"_getDashboardPath lands on {path!r}, which is not a declared GoRoute"
+                )
+        for token, who in (
+            ("isStaffMember", "the staff gateway"),
+            ("isAdmin", "admin"),
+            ("vehicleProvider", "vehicle providers"),
+            ("serviceProvider", "service providers"),
+        ):
+            if token not in body:
+                problems.append(f"_getDashboardPath no longer branches on {token} ({who})")
+
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    for fn in ("is_admin", "is_ceo", "is_super_admin", "staff_has_permission", "admin_can"):
+        if not re.search(r"FUNCTION\s+public\.%s\s*\(" % re.escape(fn), all_sql, re.I):
+            problems.append(
+                f"public.{fn}() is gone; the route is now the only thing holding it"
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 8. controllers, focus nodes, timers and subscriptions are released
+# ---------------------------------------------------------------------------
+def _is_released(text: str, name: str, releaser: str) -> bool:
+    if re.search(r"\b%s\s*\??\s*\.\s*%s\s*\(" % (re.escape(name), releaser), text):
+        return True
+    # a collection released in a loop: for (final c in _controllers) c.dispose();
+    for loop in re.finditer(r"for\s*\([^)]*\bin\s+%s\b[^)]*\)" % re.escape(name), text):
+        if re.search(r"\.\s*%s\s*\(" % releaser, text[loop.end():loop.end() + 400]):
+            return True
+    return False
+
+
+def check_lifecycle_hygiene() -> list[str]:
+    """A controller or subscription nobody releases leaks the screen.
+
+    Only fields are checked (names starting with `_`): a local timer inside a
+    debounce closure is released through the closure's own disposable, and
+    flagging those produces noise that hides real leaks.
+    """
+    problems: list[str] = []
+    resource_rx = (
+        (r"(?:final|late\s+final|late|var)\s+(_\w+)\s*=\s*TextEditingController\(",
+         "dispose", "TextEditingController"),
+        (r"(?:final|late\s+final|late|var)\s+(_\w+)\s*=\s*FocusNode\(",
+         "dispose", "FocusNode"),
+        (r"(?:final|late\s+final|late|var)\s+(_\w+)\s*=\s*List<TextEditingController>",
+         "dispose", "TextEditingController list"),
+        (r"(?:final|late\s+final|late)\s+StreamSubscription\s*<[^>]*>\??\s+(_\w+)\s*;",
+         "cancel", "StreamSubscription"),
+        (r"(?:final|late\s+final|late)\s+StreamSubscription\??\s+(_\w+)\s*;",
+         "cancel", "StreamSubscription"),
+        (r"(?:final|late\s+final|late)\s+Timer\??\s+(_\w+)\s*;",
+         "cancel", "Timer"),
+    )
+    for path in dart_sources():
+        text = _read(path)
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        for rx, releaser, kind in resource_rx:
+            for m in re.finditer(rx, text):
+                name = m.group(1)
+                if not _is_released(text, name, releaser):
+                    problems.append(
+                        f"{rel}: {kind} {name} is created but never .{releaser}()d"
+                    )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 9. error handling: one classifier, a sink, and nothing raw on screen
+# ---------------------------------------------------------------------------
+def _strip_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    # `//` after a `:` is a URL, not a comment.
+    return re.sub(r"(?m)(?<![:\w])//[^\n]*", "", text)
+
+
+def _strip_mappers(text: str) -> str:
+    """Remove `*Error(...)`-style wrappers, balanced, so the raw argument
+    inside them is not mistaken for text rendered to a user.
+
+    This project's mappers are named for what they do -- `friendlyError`,
+    `_passwordError`, `_friendlyError` -- and all of them take the raw error
+    and return a sentence. Anything passed through one is safe by design;
+    only text that reaches `Text()` unmapped is not.
+    """
+    out: list[str] = []
+    i = 0
+    rx = re.compile(r"[A-Za-z_]*[Ee]rror\(")
+    while True:
+        m = rx.search(text, i)
+        if not m:
+            out.append(text[i:])
+            break
+        out.append(text[i:m.start()])
+        depth = 1
+        j = m.end()
+        while j < len(text) and depth:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        i = j
+    return "".join(out)
+
+
+def check_error_handling_wiring() -> list[str]:
+    """ARCHITECTURE.md 1.2: one classifier, a durable sink, an error
+    boundary, and zero direct renderings of an exception in lib/.
+
+    That last one is asserted, because it is the property that decays
+    silently -- a raw PostgrestException in a snackbar is unreadable and
+    leaks schema detail, and it arrives one `catch` at a time.
+    """
+    problems: list[str] = []
+
+    for rel, why in (
+        ("lib/core/resilience/failure_mapper.dart", "the single classifier"),
+        ("lib/core/resilience/safe_call.dart", "safeCall/withRetry"),
+        ("lib/core/services/error_logger.dart", "the error sink writer"),
+        ("lib/core/widgets/app_error_boundary.dart", "the error boundary"),
+        ("lib/core/widgets/load_error_view.dart", "the load-failure view"),
+        ("lib/core/utils/friendly_error.dart", "friendlyError"),
+    ):
+        if not (ROOT / rel).is_file():
+            problems.append(f"{rel} is missing ({why})")
+
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    if "client_error_logs" not in all_sql:
+        problems.append("the client_error_logs sink table is gone")
+    if "assert_resilience_is_wired" not in all_sql:
+        problems.append("assert_resilience_is_wired() is gone; nothing asserts the wiring")
+
+    bootstrap = _read(LIB / "core" / "bootstrap.dart")
+    for token, why in (
+        ("AppErrorBoundary", "the root error boundary"),
+        ("ErrorLogger", "the root error sink"),
+    ):
+        if token not in bootstrap:
+            problems.append(f"core/bootstrap.dart no longer wires {why} ({token})")
+    if "SupabaseService.init()" not in bootstrap and "Supabase.initialize" not in bootstrap:
+        problems.append("core/bootstrap.dart never initialises Supabase")
+
+    raw_rx = re.compile(
+        r"\be\.toString\(\)|\berror\.toString\(\)|\bex\.toString\(\)"
+        r"|\$\{e\}|\$e\b|\$\{error\}|\$error\b"
+    )
+    for path in dart_sources():
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        text = _strip_mappers(_strip_comments(_read(path)))
+        for m in re.finditer(r"Text\(", text):
+            depth = 1
+            j = m.end()
+            while j < len(text) and depth:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            window = text[m.end():j]
+            hit = raw_rx.search(window)
+            if not hit:
+                continue
+            # A diagnostic behind `if (kDebugMode)` never ships: it is a
+            # developer affordance on the crash screen, not user-facing text.
+            if "kDebugMode" in text[max(0, m.start() - 400):m.start()]:
+                continue
+            problems.append(
+                f"{rel}: a raw exception is rendered to the user ({hit.group(0)!r}); "
+                "use friendlyError()"
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 10. the names ARCHITECTURE.md builds its argument on still exist
+# ---------------------------------------------------------------------------
+def check_documented_components_exist() -> list[str]:
+    """ARCHITECTURE.md is the source of truth, so a component it names must
+    be a component that exists.
+
+    Checked in both directions on purpose. The doc had drifted to calling
+    `ResilientFeed` (lib/core/services/safe_realtime.dart) by the name
+    `SafeRealtimeFeed`, which appears nowhere in lib/ -- and a reader who then
+    searched for it would find nothing and conclude the file was missing
+    rather than renamed. A rename in either the code or the doc now fails
+    here.
+    """
+    documented = [
+        "AppFailureMapper", "AppFailure", "safeCall", "RetryPolicy",
+        "ErrorLogger", "AppErrorBoundary", "ResilientFeed",
+        "ResilientSubscription", "AsyncView", "LoadErrorView", "RetryWidget",
+        "friendlyError", "staff_has_permission", "is_ceo", "is_admin",
+        "signup_otp_required", "client_error_logs", "vehicle_images",
+    ]
+    doc = _read(ROOT / "docs" / "ARCHITECTURE.md")
+    if not doc:
+        return ["docs/ARCHITECTURE.md is missing"]
+
+    everything = "\n".join(
+        _read(p) for p in list(dart_sources()) + migration_files()
+    ) + "\n".join(
+        _read(p) for p in sorted(FUNCTIONS.glob("*/index.ts"))
+    )
+
+    problems: list[str] = []
+    for name in documented:
+        in_doc = name in doc
+        in_code = name in everything
+        if in_doc and not in_code:
+            problems.append(
+                f"ARCHITECTURE.md names {name}, which appears nowhere in lib/, "
+                "supabase/ or the Edge Functions -- renamed or deleted?"
+            )
+        elif in_code and not in_doc:
+            problems.append(
+                f"{name} exists in the code but ARCHITECTURE.md never mentions "
+                "it -- the doc has fallen behind the tree"
+            )
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -517,6 +827,16 @@ CHECKS = [
      check_routes_resolve),
     ("both email gateways (Resend and the free Brevo tier) still match their APIs",
      check_email_provider_gateways),
+    ("every table/view the client queries is created by a migration",
+     check_data_targets_exist),
+    ("CEO -> staff -> admin -> provider -> user routing and permissions agree",
+     check_role_permission_wiring),
+    ("controllers, focus nodes, timers and subscriptions are released",
+     check_lifecycle_hygiene),
+    ("error handling: one classifier, a sink, and no raw exception on screen",
+     check_error_handling_wiring),
+    ("the components ARCHITECTURE.md names exist in the code, and vice versa",
+     check_documented_components_exist),
 ]
 
 

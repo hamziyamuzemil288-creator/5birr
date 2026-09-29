@@ -58,7 +58,7 @@ enforce is something the client is trusted not to do.
 | `AppFailureMapper` | `safeCall`, `safe_realtime`, most newer services |
 | `ErrorLogger` → `client_error_logs` | `bootstrap.dart` (root), asserted by `assert_resilience_is_wired()` |
 | `AppErrorBoundary` | `bootstrap.dart` (root) and `user_dashboard.dart` |
-| `SafeRealtimeFeed` (channel **and** poller together) | **nothing — see §5.1** |
+| `ResilientFeed` (channel **and** poller together) | **nothing — see §5.1** |
 | `AsyncView` (loading / error / empty, content-preserving) | **nothing — see §5.2** |
 
 The outcome is mostly right even where the layering is wrong: a service that
@@ -278,20 +278,27 @@ consequence is a security property quietly disappearing, not a crash.
 Ranked by how much they hurt a real user. Effort: small = an afternoon,
 medium = a day or two, large = more.
 
-### 5.1 `SafeRealtimeFeed` is adopted by no screen — **medium**
+### 5.1 `ResilientFeed` is adopted by no screen — **medium**
+The class is `ResilientFeed` in `lib/core/services/safe_realtime.dart`; the
+name `SafeRealtimeFeed` this section used to use appears nowhere in `lib/`.
 It runs a channel and a poller together and emits from whichever works, which
-is the correct answer for a dropped socket. Nothing uses it. Two exceptions:
-`live_map_service` uses `ResilientSubscription` (which has no poller), and
-`staff_dashboard_screen._listen()` calls `client.channel(...).subscribe()` with
+is the correct answer for a dropped socket. Nothing uses it. What five screens
+adopt instead is `ResilientSubscription`, which has no poller —
+`live_map_service`, `live_map_screen`, `user_active_ride_screen`,
+`driver_ride_requests_screen` and `driver_trip_screen`. And
+`staff_dashboard_screen._listen()` subscribes through
+`_service.subscribeToTaskFeed()` then awaits `channel.subscribe()` with
 **no status callback, no reconnect and no fallback** — if that channel errors,
 the one screen whose whole job is telling staff what to work on goes quiet
 until someone pulls to refresh.
-*Fix:* move `staff_dashboard` onto `SafeRealtimeFeed`; needs a device to verify.
+*Fix:* move `staff_dashboard` onto `ResilientFeed`; needs a device to verify.
 
-### 5.2 `AsyncView` is adopted by no screen — **medium**
-The widget exists and is correct; 32 screens still hand-roll
-`LoadErrorView` + `RetryWidget`. The behaviour is mostly right, so this is
-consistency, not breakage.
+### 5.2 `AsyncView` is still barely adopted — **medium**
+The widget exists and is correct, and three screens now use it
+(`user_home_screen`, `user_orders_screen`, `user_notifications_screen`). The
+rest hand-roll `LoadErrorView` + `RetryWidget` — `LoadErrorView` is referenced
+by 33 files, including `async_view.dart` itself. The behaviour is mostly
+right, so this is consistency, not breakage.
 *Fix:* per-screen swap, mechanical.
 
 ### 5.3 Vehicles cannot have images — **medium**
@@ -346,8 +353,17 @@ category with more than 100 products truncates silently.
 
 Correctness a reviewer cannot check by reading is asserted somewhere
 executable. SQL is asserted against the **live** database by Connectivity CI
-(`tools/integration_test/connectivity_test.dart`); Dart is asserted against
-source by `test/` and the `build/*_check.py` harnesses.
+(`tools/integration_test/connectivity_test.dart`); Dart and the Edge Functions
+are asserted against source by `test/` and the checks under `tools/harness/`,
+run as `sh build/run_all.sh`.
+
+That last path is a shim. `build/` is in `.gitignore` because it is the
+Flutter output directory, so a harness placed there is never committed and
+does not survive a clone — which is exactly how the previous set was lost in
+the repository import. The real files live in `tools/harness/`, which git
+tracks, and the shim exists only so the documented command keeps working.
+The harnesses need no Dart SDK, no Deno and no credentials, so they run
+anywhere the repository is checked out.
 
 | Property | Where it is pinned |
 |----------|-------------------|
