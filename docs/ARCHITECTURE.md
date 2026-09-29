@@ -467,7 +467,7 @@ RPC):
   separates *lost* from *rewritten*: a branch only counts as rewritten if the
   new body still notifies on that same status, and every rewrite must be
   declared in `REVIEWED_REWRITES`. An undeclared rewrite fails.
-* `python3 tools/harness/fault_inject_notifications.py` reintroduces 24 real
+* `python3 tools/harness/fault_inject_notifications.py` reintroduces 25 real
   bugs — a dropped dedupe check, a dedupe that reads only one delivery table,
   a missing lock, a removed error handler, an unrevoked privilege, a lost
   authorization clause, a false "money added" claim, an assertion the CI
@@ -476,15 +476,15 @@ RPC):
   broken input is worse than no check, because it is reported as a safety net
   while providing none.
 
-  It found **twelve** vacuous or wrong checks across four rounds. The
+  It found **thirteen** vacuous or wrong checks across five rounds. The
   recurring cause was matching on text that was not the thing being checked: a
   substring of the whole migration that also appears in that migration's own
   assertion; a comment inside a function body keeping a deleted `EXISTS`
   alive; a needle sensitive to the author's line wrapping; a needle with a
   typo; and a privilege model that ignored statement order.
 
-**The pattern across four live rounds is worth stating plainly:** of the nine
-failures, **one** was a defect in the notifications and **eight** were defects
+**The pattern across five live rounds is worth stating plainly:** of the ten
+failures, **one** was a defect in the notifications and **nine** were defects
 in the assertions written to check them. Two of those would have "passed" only
 by deleting a working feature. `assert_source_needles_match()` exists because
 of that: an assertion whose needle does not match its target cannot be caught
@@ -496,9 +496,17 @@ an assertion means it silently stops asserting while still reporting as a
 safety net. Migration 93 shipped exactly that (`FOREACH` over a 2-D array is
 refused at run time, 42804) and only Connectivity CI calling it found out:
 `db push` succeeded, and the privilege check passed because the function
-existed and was executable. The harness now rejects array-typed `FOREACH` loop
-variables statically, and the connectivity suite remains the backstop for
-everything static analysis cannot see.
+existed and was executable. Migration 94 replaced the loop and it then
+iterated **zero** times, which the `v_checked` counter caught as a red build
+rather than a green one.
+
+That third outcome is the general rule: **a check that examines nothing and
+returns success is indistinguishable, in CI, from a check that examined
+everything and found nothing wrong.** Only an explicit "did I actually look at
+anything" counter separates them, and every assertion in this series has one
+now. The 2-D array was removed entirely rather than re-looped — it cost two
+deploy cycles — and the harness rejects array-typed `FOREACH` variables
+statically, scoped to the current definition of each function.
 
 All SQL is parsed with `pglast` (libpg_query, the real PostgreSQL parser)
 before commit rather than read by eye. Two pre-existing files fail to parse and
@@ -593,6 +601,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0092` | the dedupe covers the client-path queue, and two wrong assertions corrected | a retried payment queues the same message twice |
 | `0093` | two more assertion needles corrected, and needles are declared + verified | an assertion searches for text that is not there and reports phantom defects |
 | `0094` | `assert_source_needles_match()` can actually run (subscripted FOR) | it raises 42804 on every call, so it silently asserts nothing |
+| `0095` | the needle table is two flat arrays walked by `unnest(a, b)` | the second dimension cost two deploy cycles: a refused `FOREACH`, then an empty loop |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.

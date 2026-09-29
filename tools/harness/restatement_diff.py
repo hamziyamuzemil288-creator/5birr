@@ -65,6 +65,32 @@ INTENTIONAL_SUPERSESSIONS = {
             "the notifications half is retained verbatim",
         ),
     ],
+    # Migration 95 replaced the iteration mechanism for the declared needle
+    # table, so four statements are reworded rather than deleted. Each has a
+    # one-for-one counterpart in the new body: the same guard, the same
+    # query, the same comparison, with the loop and the variable names
+    # changed. Declared so the diff records the intent instead of reporting a
+    # rewrite as a loss.
+    "assert_source_needles_match": [
+        (
+            "for v_i in 1 .. coalesce(array_length(v_cases, 1), 0) loop",
+            "the subscript loop that iterated zero times, replaced by "
+            "FOR ... IN SELECT * FROM unnest(v_needles, v_targets)",
+        ),
+        (
+            "into v_target from pg_proc",
+            "unchanged query; v_target renamed to v_src",
+        ),
+        (
+            "if v_target is null then v_bad := v_bad || v_row[2]",
+            "unchanged missing-target guard; v_row[2] is now v_target_fn",
+        ),
+        (
+            "if position(replace(v_row[1], ' ', '') in replace(v_target",
+            "unchanged comparison; v_row[1]/v_target renamed to "
+            "v_needle/v_src",
+        ),
+    ],
 }
 
 
@@ -89,9 +115,22 @@ def normalise(sql: str) -> str:
 def split_statements(body: str) -> list[str]:
     """Split a plpgsql body on `;` at statement level, ignoring those inside
     string literals or parentheses. Comments are stripped first so an inline
-    comment cannot split or pad a statement."""
+    comment cannot split or pad a statement.
+
+    The DECLARE block is dropped. A declaration carries no condition, and the
+    failure this tool exists to catch is a lost condition — so comparing
+    declarations only produces noise whenever a restatement reshapes its
+    variables, which it is free to do. A restatement that drops a variable the
+    body still references is a different bug: it deploys, then fails at run
+    time, and the connectivity suite is what catches it (it is how the
+    array_length and FOREACH bugs in 0093-0095 were found).
+    """
     out, buf, depth, quote = [], [], 0, False
     body = strip_comments(body)
+    dm = re.search(r"\bDECLARE\b", body, re.IGNORECASE)
+    bm = re.search(r"\bBEGIN\b", body, re.IGNORECASE)
+    if dm and bm and bm.start() > dm.start():
+        body = body[bm.start():]
     i = 0
     while i < len(body):
         ch = body[i]

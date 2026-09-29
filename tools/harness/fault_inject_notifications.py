@@ -173,22 +173,31 @@ MUTATIONS = [
     ),
     (
         "a declared source needle has a typo (v_ledgerid, the bug that shipped)",
-        "20260927000093_two_assertion_needles_were_wrong.sql",
-        "ARRAY['points-convert:''||v_ledger_id', 'convert_points_to_wallet'],",
-        "ARRAY['points-convert:''||v_ledgerid', 'convert_points_to_wallet'],",
+        "__LAST__:assert_source_needles_match",
+        "'points-convert:''||v_ledger_id',",
+        "'points-convert:''||v_ledgerid',",
     ),
     (
         "a declared needle names a function that does not exist",
-        "20260927000093_two_assertion_needles_were_wrong.sql",
-        "ARRAY['ride-completed-driver:',          'fn_notify_ride_status_change'],",
-        "ARRAY['ride-completed-driver:',          'fn_notify_ride_status_typo'],",
+        "__LAST__:assert_source_needles_match",
+        "    'fn_notify_ride_status_change',\n"
+        "    'fn_notify_ride_status_change',\n",
+        "    'fn_notify_ride_status_change',\n"
+        "    'fn_notify_ride_status_typo',\n",
+    ),
+    (
+        "the needle and target lists drift out of step",
+        "__LAST__:assert_source_needles_match",
+        "    'pg_advisory_xact_lock'\n  ];",
+        "    'pg_advisory_xact_lock',\n    'extra_needle'\n  ];",
     ),
     (
         "a plpgsql FOREACH iterates with an array-typed loop variable",
-        "20260927000094_needles_match_loop_is_iterable.sql",
-        "  FOR v_i IN 1 .. COALESCE(array_length(v_cases, 1), 0) LOOP\n"
-        "    v_row := v_cases[v_i];",
-        "  FOREACH v_row IN ARRAY v_cases LOOP",
+        "20260927000095_needles_match_iterates_with_unnest.sql",
+        "  FOR v_needle, v_target_fn IN\n"
+        "    SELECT * FROM unnest(v_needles, v_targets)\n"
+        "  LOOP",
+        "  FOREACH v_targets IN ARRAY v_needles LOOP",
     ),
     (
         "no screen links to the notifications route (all entry points removed)",
