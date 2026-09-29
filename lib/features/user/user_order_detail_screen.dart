@@ -238,8 +238,12 @@ class _UserOrderDetailScreenState
   /// Read only once the provider has confirmed the order is available
   /// (ACCEPTED or later). Below that the buyer has nothing to pay for yet,
   /// and this list is the payment information the gate is withholding.
-  /// For an un-gated order nothing changes: the same card appears at the
-  /// same point in the flow, one step before they tap PAY & UPLOAD PROOF.
+  ///
+  /// Returns null for "not unlocked yet" and null for "the read failed" —
+  /// deliberately not distinguished, because the caller's response is the
+  /// same either way: the payment card is still rendered (gated on
+  /// [ _awaitingMyPayment] as well) so a failed read can never take away the
+  /// buyer's only way to pay.
   Future<List<Map<String, dynamic>>?> _loadPaymentMethods(
       Map<String, dynamic> order) async {
     if (_isProvider) return null;
@@ -721,10 +725,17 @@ class _UserOrderDetailScreenState
           ),
         ];
       case 'ACCEPTED':
+        // On a gated order the buyer can now open the payment step themselves
+        // the moment availability is confirmed (migration 85), so this button
+        // is a shortcut rather than the only route. It is kept because a
+        // provider who wants to push a buyer to pay now still can, and because
+        // removing it would change the un-gated flow this branch also serves.
         return [
           (
             status: 'PAYMENT_PENDING',
-            label: 'Request Payment',
+            label: _needsAvailabilityConfirmation
+                ? 'Request Payment (optional)'
+                : 'Request Payment',
             icon: Icons.payment,
           ),
         ];
@@ -796,33 +807,96 @@ class _UserOrderDetailScreenState
 
   String _label(String status) => status.replaceAll('_', ' ');
 
-  /// True when the buyer still owes money for this order.
+  /// True when the buyer is the one who owes money for this order.
   ///
-  /// The provider moves the order to PAYMENT_PENDING when they request
-  /// payment, and the only legal exit from there is PAYMENT_VERIFICATION —
-  /// which the transition whitelist allows for the buyer alone. Until the
-  /// buyer could actually submit, the order was stuck: the provider waited
-  /// for money that the app gave the buyer no way to send, and the buyer
-  /// saw a CANCEL ORDER button the database rejects (CANCELLED from
-  /// PAYMENT_PENDING is admin-only).
-  bool get _awaitingMyPayment =>
-      !_isProvider && (_order?['status'] as String?) == 'PAYMENT_PENDING';
+  /// PAYMENT_PENDING is the state a payment screenshot is submitted from,
+  /// and the only legal exit from it is PAYMENT_VERIFICATION — which the
+  /// transition whitelist allows for the buyer alone.
+  ///
+  /// On a GATED order the buyer may also open that step themselves the
+  /// moment the provider confirms availability. Migration 74 built the gate
+  /// and this screen already read it correctly — the buyer saw "waiting for
+  /// the provider", the provider got a "Confirm Availability" button, and
+  /// the payment details appeared at ACCEPTED — but the LAST link was
+  /// missing: ACCEPTED -> PAYMENT_PENDING was provider-or-admin only, so the
+  /// order sat at ACCEPTED with payment details on screen and no button
+  /// anywhere until the provider happened to open their own orders list and
+  /// press "Request Payment". That is the reported "the screenshot page does
+  /// not appear after the availability confirmation".
+  ///
+  /// Migration 85 widened that one transition for the buyer on a gated
+  /// order and nothing else, so the chain now closes without a second
+  /// provider round trip. An un-gated order is unaffected: the provider
+  /// still requests payment exactly as before.
+  bool get _awaitingMyPayment {
+    if (_isProvider) return false;
+    final status = _order?['status'] as String?;
+    if (status == 'PAYMENT_PENDING') return true;
+    return status == 'ACCEPTED' && _needsAvailabilityConfirmation;
+  }
+
+  /// The order is ACCEPTED but the payment step has not been opened yet, so
+  /// [ _submitPayment] has to open it before a proof can be attached.
+  ///
+  /// False once the order is PAYMENT_PENDING, which is what makes a retry
+  /// after a failed upload safe: the second attempt skips the hop instead of
+  /// asking the server for a transition it has already made.
+  bool get _needsPaymentStepOpened =>
+      (_order?['status'] as String?) == 'ACCEPTED' &&
+      _needsAvailabilityConfirmation;
 
   /// Buyer attaches a payment screenshot and hands the order to an admin
   /// for verification.
   ///
-  /// Order of operations matters. The proof row is written FIRST and the
-  /// order is transitioned SECOND, because the reverse leaves a proof
-  /// attached to an order that is still PAYMENT_PENDING if the transition
-  /// is refused — and the buyer's next tap would then insert a second proof
-  /// for the same order. Writing the proof first means a failed transition
-  /// leaves a pending proof the buyer can retry over, not a duplicate.
+  /// Two things happen, in this order, and both are load-bearing.
+  ///
+  /// 1. On a gated order the provider has confirmed availability but the
+  ///    payment step is not open yet, so it is opened here. The server
+  ///    permits this for the buyer who placed a gated order and for nobody
+  ///    else (migration 85), and it is skipped entirely when the order is
+  ///    already PAYMENT_PENDING — so a retry after a failed upload does not
+  ///    ask for a transition that has already happened.
+  ///
+  /// 2. The proof row is written and the order is transitioned to
+  ///    PAYMENT_VERIFICATION. Proof FIRST, transition SECOND, because the
+  ///    reverse leaves a proof attached to an order that is still
+  ///    PAYMENT_PENDING if the transition is refused.
+  ///
+  /// The insert is additionally guarded by a read for an existing
+  /// unverified proof. That was not needed when submit was a single
+  /// transition, but it is two now, so a failure between them leaves a
+  /// pending proof — and without the guard the buyer's next tap would
+  /// insert a SECOND proof for the same order, which the admin verification
+  /// screen would then show as two competing claims to review.
   Future<void> _submitPayment() async {
     final client = Supabase.instance.client;
     final user = client.auth.currentUser;
     if (user == null) {
       _toast('You need to be signed in to pay for this order.');
       return;
+    }
+
+    if (_needsPaymentStepOpened) {
+      setState(() => _paying = true);
+      try {
+        await client.functions.invoke('order-transition', body: {
+          'order_id': widget.orderId,
+          'new_status': 'PAYMENT_PENDING',
+          'note': 'Buyer opened payment after availability was confirmed',
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _paying = false);
+        _toast(friendlyError(
+            e, context: 'Could not open payment for this order'));
+        return;
+      }
+      if (!mounted) return;
+      // The order just moved and _order is now stale. Reload before anything
+      // else so a cancelled picker cannot leave the screen describing a state
+      // the database has already left behind.
+      await _load();
+      if (!mounted) return;
     }
 
     final picked = await ImagePicker()
@@ -850,14 +924,33 @@ class _UserOrderDetailScreenState
 
     setState(() => _paying = true);
     try {
-      final path =
-          '${user.id}/${widget.orderId}/${DateTime.now().millisecondsSinceEpoch}.jpg';
-      await client.storage.from('payment-proofs').upload(path, File(picked.path),
-          fileOptions: const FileOptions(upsert: true));
-      await client.from('payment_proofs').insert({
-        'order_id': widget.orderId,
-        'storage_path': path,
-      });
+      // Reuse the pending proof from a previous attempt rather than adding a
+      // second one. `maybeSingle` on an order that has none returns null and
+      // on an order that has exactly one returns that row; anything else (two
+      // rows, which would mean a pre-existing duplicate) throws and lands in
+      // the catch, which is the safe direction — we would rather refuse than
+      // add a third.
+      Map<String, dynamic>? existing;
+      try {
+        existing = await client
+            .from('payment_proofs')
+            .select('id, storage_path')
+            .eq('order_id', widget.orderId)
+            .maybeSingle();
+      } catch (_) {
+        existing = null;
+      }
+
+      if (existing == null) {
+        final path =
+            '${user.id}/${widget.orderId}/${DateTime.now().millisecondsSinceEpoch}.jpg';
+        await client.storage.from('payment-proofs').upload(path, File(picked.path),
+            fileOptions: const FileOptions(upsert: true));
+        await client.from('payment_proofs').insert({
+          'order_id': widget.orderId,
+          'storage_path': path,
+        });
+      }
 
       if (!mounted) return;
       await _transition('PAYMENT_VERIFICATION', note: 'Payment proof submitted');
@@ -916,8 +1009,21 @@ class _UserOrderDetailScreenState
                           _waitingCard(),
                           const SizedBox(height: 16),
                         ],
-                        if (_paymentMethods != null) ...[
-                          _paymentMethodsCard(),
+                        // The payment step is ONE card: the accounts to pay
+                        // into, and the button that attaches the receipt. They
+                        // used to be separated — details near the top of a
+                        // long scroll, the upload button below the items, the
+                        // chat and the timeline — so the buyer was told where
+                        // to pay and then had to hunt for the thing that pays
+                        // it. It is also what makes the gate legible: if this
+                        // card is on screen, the provider has confirmed.
+                        //
+                        // `_awaitingMyPayment` is in the condition as well as
+                        // `_paymentMethods`, because `_loadPaymentMethods`
+                        // returns null when the read fails, and a failed read
+                        // must not remove the buyer's only way to pay.
+                        if (_awaitingMyPayment || _paymentMethods != null) ...[
+                          _paymentStepCard(),
                           const SizedBox(height: 16),
                         ],
                         if (_providerContact != null) ...[
@@ -959,21 +1065,22 @@ class _UserOrderDetailScreenState
                                           label: a.label,
                                           icon: a.icon,
                                           isLoading: _acting,
-                                          onPressed: () =>
-                                              _transition(a.status),
+                                          onPressed: () => _transition(
+                                            a.status,
+                                            // The buyer sees this timeline,
+                                            // and "Confirm Availability" is
+                                            // the answer they are waiting
+                                            // for — so it is written down
+                                            // rather than left as a bare
+                                            // status change.
+                                            note: a.status == 'ACCEPTED' &&
+                                                    _needsAvailabilityConfirmation
+                                                ? 'Availability confirmed'
+                                                : null,
+                                          ),
                                         ),
                                 ),
                               )),
-                        if (_awaitingMyPayment)
-                          SizedBox(
-                            width: double.infinity,
-                            child: PrimaryButton(
-                              label: 'PAY & UPLOAD PROOF',
-                              icon: Icons.upload_file_outlined,
-                              isLoading: _paying,
-                              onPressed: _paying ? null : _submitPayment,
-                            ),
-                          ),
                         if (!_isProvider &&
                             _canCancel &&
                             !_awaitingMyPayment)
@@ -1067,13 +1174,24 @@ class _UserOrderDetailScreenState
     );
   }
 
-  /// Where to pay, revealed once availability is confirmed.
+  /// The payment step: where to pay, and the button that attaches the receipt.
   ///
   /// Reads the same `payment_methods` rows the admin screen edits, through
   /// the same RLS (`is_active = true OR is_admin()`), so there is no second
-  /// list to keep in sync. Rendered only after the provider has accepted.
-  Widget _paymentMethodsCard() {
+  /// list to keep in sync. Rendered only once the provider has confirmed
+  /// availability — on a gated order that is exactly the moment
+  /// [ _awaitingMyPayment] becomes true, so "confirmation happened" and
+  /// "this card appeared" cannot drift apart.
+  ///
+  /// The provider's business name is on the card. The accounts are the
+  /// platform's, not the provider's own, and the buyer is being asked to
+  /// send real money to a number they cannot otherwise attribute to the
+  /// person who just confirmed their booking — naming the business is the
+  /// difference between "pay this account" and "pay this person".
+  Widget _paymentStepCard() {
     final methods = _paymentMethods ?? const <Map<String, dynamic>>[];
+    final providerName = ((_order?['provider_profiles']
+        as Map<String, dynamic>?)?['business_name'] as String?)?.trim();
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -1085,18 +1203,30 @@ class _UserOrderDetailScreenState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.account_balance_wallet_outlined,
+              const Icon(Icons.account_balance_wallet_outlined,
                   size: 18, color: AppTheme.primaryGreen),
-              SizedBox(width: 8),
-              Expanded(
+              const SizedBox(width: 8),
+              const Expanded(
                 child: Text('Where to pay',
                     style: TextStyle(
                         fontSize: 14, fontWeight: FontWeight.w700)),
               ),
+              if (_proofUrl == null)
+                const Text('AWAITING RECEIPT',
+                    style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textMuted)),
             ],
           ),
+          if (providerName != null && providerName.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text('Paying $providerName',
+                style: const TextStyle(
+                    fontSize: 12, color: AppTheme.textSecondary)),
+          ],
           const SizedBox(height: 4),
           const Text(
             'Pay into any of these accounts, then attach the transfer receipt '
@@ -1105,6 +1235,11 @@ class _UserOrderDetailScreenState
           ),
           const SizedBox(height: 12),
           if (methods.isEmpty)
+            // Reached when the payment_methods read came back empty, or when
+            // it failed outright — `_loadPaymentMethods` returns null on a
+            // failure and the caller still shows this card so the buyer is
+            // not left with no way to pay. Saying which of the two it is would
+            // be a guess, so it says what is true either way.
             const Text(
               'No payment account is available right now. Our team will '
               'contact you with the details.',
@@ -1145,6 +1280,26 @@ class _UserOrderDetailScreenState
                   ],
                 ),
               ),
+          if (_awaitingMyPayment) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: PrimaryButton(
+                label: 'PAY & UPLOAD PROOF',
+                icon: Icons.upload_file_outlined,
+                isLoading: _paying,
+                onPressed: _paying ? null : _submitPayment,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Tap the button, choose the screenshot of your transfer from '
+              'your gallery, and submit it. Nothing is charged by the app — '
+              'you pay into the account above yourself.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11.5, height: 1.4, color: AppTheme.textMuted),
+            ),
+          ],
         ],
       ),
     );

@@ -58,15 +58,33 @@ String friendlyError(Object error, {String? context}) {
     message = 'Could not establish a secure connection. Please try again.';
   }
   // ── Auth / session ──
+  //
+  // 'invalid login credentials' and 'email not confirmed' used to sit in this
+  // list, which made every one of them render as "Your session has expired."
+  // That is actively wrong for a sign-in attempt: a person who has never had
+  // a session cannot have an expired one, and a wrong password is not an
+  // expiry. Both now say what they are, and the account-shaped failures are
+  // checked FIRST because they are the ones with a distinct next action.
   else if (_any(lower, [
+    'email not confirmed',
+    'user is disabled',
+    'user_banned',
+    'email_exists',
+    'signup is not allowed',
+  ])) {
+    message = 'That account cannot sign in with a password. Please contact '
+        'support.';
+  } else if (_any(lower, [
+    'invalid login credentials',
+  ])) {
+    message = 'Invalid email or password.';
+  } else if (_any(lower, [
     'jwt',
     'invalid token',
     'token is expired',
     'expired_token',
     'refresh token not found',
     'user not found',
-    'invalid login credentials',
-    'email not confirmed',
     'new_password',
     'same as the old password',
   ])) {

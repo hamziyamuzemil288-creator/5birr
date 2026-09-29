@@ -296,6 +296,43 @@ def check_edge_functions_deployed() -> list[str]:
                 "supabase/functions/%s/ exists but deploy-supabase.yml never "
                 "deploys it" % directory.name
             )
+    problems.extend(_pre_auth_functions_must_skip_jwt(workflow))
+    return problems
+
+
+# Functions the client calls BEFORE it has a session. The gateway refuses an
+# anonymous request to a function deployed with the default verify_jwt=true,
+# so deploying one of these without --no-verify-jwt makes it permanently
+# unreachable and every caller fails. login-gate shipped exactly that way: the
+# workflow deployed it with verification ON while its own header says it "must
+# run BEFORE the credential check is even attempted", so the gate never ran
+# and no login in the app could complete.
+#
+# The list is here, in the harness, rather than inferred: inferring it from
+# the function source would need to decide whether a given function is
+# pre-auth, and that judgement belongs next to the thing that gets deployed.
+PRE_AUTH_FUNCTIONS = {
+    "login-gate": "CAPTCHA + lockout gate; runs before the credential check",
+    "staff-login": "staff credential check; the caller has no session yet",
+    "index-chunks": "unauthenticated repository indexing",
+}
+
+
+def _pre_auth_functions_must_skip_jwt(workflow: str) -> list[str]:
+    problems: list[str] = []
+    for name, why in sorted(PRE_AUTH_FUNCTIONS.items()):
+        m = re.search(r"functions\s+deploy\s+%s\b([^\n]*)" % re.escape(name), workflow)
+        if not m:
+            # Already reported by the catalogue check above; not this check's
+            # business to say it twice.
+            continue
+        if "--no-verify-jwt" not in m.group(1):
+            problems.append(
+                "%s is a pre-authentication endpoint (%s) but its deploy step "
+                "does not pass --no-verify-jwt, so the gateway rejects every "
+                "anonymous call with a 401 before the function body runs"
+                % (name, why)
+            )
     return problems
 
 
@@ -659,8 +696,214 @@ def check_lifecycle_hygiene() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 9. error handling: one classifier, a sink, and nothing raw on screen
+# 8b. the two reported product flows, pinned at the source level
 # ---------------------------------------------------------------------------
+def _method_body(text: str, signature_rx: str) -> str:
+    """The text of one Dart method, from its body brace to the brace that
+    closes it. Brace counting, not a regex: the bodies under test are long
+    and full of nested blocks, and a `\\n  }` match would truncate them.
+
+    The parameter list is skipped first, and this is not a detail. A Dart
+    signature with named parameters opens its own brace --
+    `Future<void> signIn({required String email, ...}) {` -- so taking the
+    first `{` after the signature name returns the PARAMETER LIST and every
+    check written against the body silently inspects the wrong text. That is
+    exactly the failure mode this file's own header warns about: a test that
+    flatters the code it tests.
+    """
+    m = re.search(signature_rx, text)
+    if not m:
+        return ""
+    i = m.end()
+    # Skip the parameter list, brace- and paren-balanced.
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+    if i < len(text) and text[i] == "(":
+        depth = 0
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+    brace = text.find("{", i)
+    if brace < 0:
+        return ""
+    depth = 0
+    for j in range(brace, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace:j + 1]
+    return text[brace:]
+
+
+def check_availability_payment_flow() -> list[str]:
+    """The availability gate has to END somewhere.
+
+    Migration 74 built the gate and the screens rendered it correctly: the
+    buyer was told to wait, the provider got a "Confirm Availability"
+    button, and payment details appeared once the order was ACCEPTED. The
+    chain still did not close, because ACCEPTED -> PAYMENT_PENDING was
+    provider-or-admin only. The order sat at ACCEPTED with the accounts on
+    screen and no button anywhere, so the buyer could never attach a receipt
+    unless the provider happened to open their own order list and press
+    "Request Payment".
+
+    Three things have to hold, and each decays on its own:
+
+      1. the order-level gate migration exists and both columns still exist;
+      2. the buyer can act once the provider has confirmed (migration 85);
+      3. the accounts to pay into and the button that attaches the receipt
+         are rendered together, not at opposite ends of a long scroll.
+    """
+    problems: list[str] = []
+    screen = _read(LIB / "features" / "user" / "user_order_detail_screen.dart")
+    if not screen:
+        return ["lib/features/user/user_order_detail_screen.dart is missing"]
+
+    # ── 1. the server side ──
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    for token, why in (
+        ("orders.requires_availability_confirmation",
+         "has no per-order snapshot for the client to read"),
+        ("v_buyer_may_open_payment",
+         "has no clause letting a gated buyer open the payment step"),
+        ("assert_gated_buyer_payment_request_is_wired",
+         "has nothing asserting that clause is still present"),
+    ):
+        if token not in all_sql:
+            problems.append(
+                "%s is gone from supabase/migrations, so the availability "
+                "gate %s" % (token, why)
+            )
+
+    # ── 2. the client offers the buyer the step ──
+    body = _method_body(screen, r"bool\s+get\s+_awaitingMyPayment\b")
+    if not body:
+        problems.append(
+            "user_order_detail_screen.dart has no _awaitingMyPayment getter, "
+            "so nothing decides when the buyer may pay"
+        )
+    else:
+        flat = re.sub(r"\s+", " ", body)
+        if "'ACCEPTED'" not in flat:
+            problems.append(
+                "_awaitingMyPayment does not consider ACCEPTED, so a gated "
+                "order is not payable until the provider makes a SECOND move "
+                "(ACCEPTED -> PAYMENT_PENDING). The buyer is left looking at "
+                "payment details with no button"
+            )
+        if "_needsAvailabilityConfirmation" not in flat:
+            problems.append(
+                "_awaitingMyPayment ignores requires_availability_confirmation, "
+                "so the widened step would apply to un-gated orders too and "
+                "change behaviour for orders that work today"
+            )
+
+    # The submit must actually perform the hop, or the button is a no-op that
+    # the server refuses.
+    submit = _method_body(screen, r"Future<void>\s+_submitPayment\b")
+    if not submit:
+        problems.append("user_order_detail_screen.dart has no _submitPayment")
+    else:
+        flat = re.sub(r"\s+", " ", _strip_comments(submit))
+        if "'PAYMENT_PENDING'" not in flat:
+            problems.append(
+                "_submitPayment never moves the order to PAYMENT_PENDING, so a "
+                "gated order confirmed at ACCEPTED cannot reach the state a "
+                "payment proof is submitted from"
+            )
+        if "'PAYMENT_VERIFICATION'" not in flat:
+            problems.append(
+                "_submitPayment never moves the order to PAYMENT_VERIFICATION, "
+                "so the proof is attached and no admin ever sees the order"
+            )
+
+    # ── 3. the details and the action are one card ──
+    if "_paymentStepCard" not in screen:
+        problems.append(
+            "the order screen no longer builds a combined payment step; the "
+            "accounts to pay into and the upload button must render together"
+        )
+    card = _method_body(screen, r"Widget\s+_paymentStepCard\b")
+    if card and "PAY & UPLOAD PROOF" not in card:
+        problems.append(
+            "_paymentStepCard does not contain the upload button, so the "
+            "buyer is told where to pay with no way to attach the receipt"
+        )
+    card_flat = re.sub(r"\s+", " ", _strip_comments(card)) if card else ""
+    if card and "_awaitingMyPayment" not in card_flat:
+        problems.append(
+            "_paymentStepCard is not gated on _awaitingMyPayment, so the "
+            "upload button would show before the provider has confirmed"
+        )
+    return problems
+
+
+def check_login_reports_its_own_outcome() -> list[str]:
+    """A login screen that accepts the credentials and then says nothing is
+    indistinguishable from one that rejects them.
+
+    The email path awaited signInWithPassword and returned. It never cleared
+    _isLoading on the success path, so between "session established" and
+    "profile loaded" -- a window the router deliberately sits in, retrying --
+    the button was disabled and said nothing. If the profile load then failed,
+    the single retry was not enough and the user was stuck on a dead LOGIN
+    button: the reported "the login screen does not accept the account the
+    admin approved".
+    """
+    problems: list[str] = []
+    path = LIB / "features" / "auth" / "login_screen.dart"
+    screen = _read(path)
+    if not screen:
+        return ["lib/features/auth/login_screen.dart is missing"]
+
+    body = _method_body(screen, r"Future<void>\s+_handleLogin\b")
+    if not body:
+        return ["login_screen.dart has no _handleLogin"]
+    flat = re.sub(r"\s+", " ", _strip_comments(body))
+
+    if "_awaitAccountLoaded" not in flat:
+        problems.append(
+            "_handleLogin does not wait for the account to load after a "
+            "successful sign-in, so the button can stay disabled with no "
+            "message when the profile load fails"
+        )
+    if "_isLoading = false" not in body:
+        problems.append(
+            "_handleLogin never sets _isLoading = false, so a failed attempt "
+            "leaves the LOGIN button permanently spinning"
+        )
+
+    # A wrong password and a downed gate are different problems with different
+    # fixes. Reporting one as the other sends the user (and support) the wrong
+    # way: the canonical example is telling somebody to change a perfectly
+    # good password because the security service was unreachable.
+    if "Sign-in is temporarily unavailable" not in screen:
+        problems.append(
+            "login_screen.dart has no message for an unavailable login gate, "
+            "so a gate outage is reported as a credential failure"
+        )
+
+    # The copy-paste that shipped: a rejected PASSWORD labelled itself a
+    # Google sign-in, and splash_screen renders state.error verbatim.
+    provider = _read(LIB / "core" / "providers" / "auth_provider.dart")
+    # `signIn\b` and not `signInWithGoogle`: the word boundary is what keeps
+    # this from matching the OAuth method one declaration below.
+    sign_in = _method_body(provider, r"Future<void>\s+signIn\b")
+    if sign_in and "Google" in _strip_comments(sign_in):
+        problems.append(
+            "auth_provider.signIn (the email+password path) mentions Google "
+            "in its error context; splash_screen renders state.error "
+            "verbatim, so a wrong password is reported as a Google failure"
+        )
+    return problems
 def _strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     # `//` after a `:` is a URL, not a comment.
@@ -833,6 +1076,10 @@ CHECKS = [
      check_role_permission_wiring),
     ("controllers, focus nodes, timers and subscriptions are released",
      check_lifecycle_hygiene),
+    ("a confirmed availability can actually be paid: gate, step, and one card",
+     check_availability_payment_flow),
+    ("the login screen reports its own outcome instead of spinning forever",
+     check_login_reports_its_own_outcome),
     ("error handling: one classifier, a sink, and no raw exception on screen",
      check_error_handling_wiring),
     ("the components ARCHITECTURE.md names exist in the code, and vice versa",

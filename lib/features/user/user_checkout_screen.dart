@@ -599,8 +599,17 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                       // exists for this order. The order is still placed
                       // now; it opens in PENDING_PROVIDER, the provider
                       // confirms from their order screen, and the buyer's
-                      // order detail then shows the existing
-                      // PAY & UPLOAD PROOF step at PAYMENT_PENDING.
+                      // order detail then shows the payment card with the
+                      // accounts AND the upload button together.
+                      //
+                      // That last part used to be false. The card appeared at
+                      // ACCEPTED but the upload button did not, because the
+                      // button lived on PAYMENT_PENDING and only the
+                      // provider could move an order there — so this notice
+                      // promised an upload option that the order screen did
+                      // not actually have. Migration 85 lets the buyer open
+                      // that step themselves on a gated order, which is what
+                      // makes the sentence below true.
                       //
                       // Nothing here is a second checkout: the same
                       // order-create call, the same order, the same

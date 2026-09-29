@@ -148,6 +148,38 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           email: email,
           success: true,
         );
+        // 2b. The session exists, but "signed in" is not the same as "in".
+        //
+        // authProvider.signIn() awaits signInWithPassword and returns; the
+        // PROFILE and ROLES are loaded afterwards by the auth listener, and
+        // the router only forwards once they are there. So there is a window
+        // — a real one, and on a slow connection a long one — in which the
+        // session is valid, the profile is still null, and the router's
+        // redirect deliberately returns null ("stay put, retry shortly").
+        //
+        // The button used to stay spinning through that window forever,
+        // because nothing in this method ever cleared _isLoading on the
+        // success path. If the profile load then failed — an R denial, a
+        // trigger that has not committed yet, the network — the one retry
+        // the router schedules was not enough and the user was left staring
+        // at a disabled LOGIN button with no message at all. That is the
+        // reported "the login screen does not accept the account the admin
+        // approved": the credentials were accepted, the app just never said
+        // so and never recovered.
+        //
+        // So: wait for the account to actually load, and if it does not,
+        // say so in words and give the button back.
+        final settled = await _awaitAccountLoaded();
+        if (!mounted) return;
+        if (!settled) {
+          setState(() {
+            _isLoading = false;
+            _captchaId = null;
+            _captchaResetVersion++;
+            _error = 'We could not load your account just now. Your sign-in '
+                'worked — tap LOGIN again to finish loading it.';
+          });
+        }
       } catch (signInError) {
         // A staff username MAY itself be an email address, and those accounts
         // have no ordinary Supabase identity either — so give the gateway one
@@ -170,9 +202,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         );
         rethrow;
       }
-      if (mounted) {
-        // Router redirect will handle navigation
-      }
+      // No trailing navigation: on success the router's redirect takes over
+      // once the account has loaded, which is what _awaitAccountLoaded above
+      // just waited for.
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -186,6 +218,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         });
       }
     }
+  }
+
+  /// Wait for the signed-in account's profile and roles to arrive.
+  ///
+  /// Returns true as soon as the router has everything it needs to forward
+  /// (profile present and at least one role), false on timeout or on a load
+  /// that reported an error. Bounded so a hung query cannot leave the button
+  /// disabled indefinitely — the same reason _loadUserProfile() puts a
+  /// timeout on its own queries.
+  ///
+  /// Deliberately not a StreamBuilder: this is a one-shot wait at the end of
+  /// an explicit user action, and the screen already reads authProvider for
+  /// nothing else. Polling the notifier keeps it a pure function of existing
+  /// state with no new subscription to leak.
+  Future<bool> _awaitAccountLoaded() async {
+    const deadline = Duration(seconds: 12);
+    const step = Duration(milliseconds: 150);
+    var waited = Duration.zero;
+    while (waited < deadline) {
+      if (!mounted) return true;
+      final state = ref.read(authProvider);
+      // A load that failed sets `error`; the router will never forward from
+      // there, so waiting longer only wastes the user's time.
+      if (state.error != null) return false;
+      if (state.profile != null && state.roles.isNotEmpty) return true;
+      await Future<void>.delayed(step);
+      waited += step;
+    }
+    return false;
   }
 
   /// Task 15: open the Google consent screen. The session comes back via
@@ -220,6 +281,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
     if (raw.contains('Invalid login credentials')) {
       return 'Invalid email or password.';
+    }
+    // GoTrue refuses a password sign-in on an unconfirmed address with its
+    // own message. It used to fall through to friendlyError(), which files
+    // it under "auth / session" and told the user their SESSION had expired —
+    // true of no relevance to somebody who has never had a session, and
+    // unactionable. It is the single most confusing thing this screen can
+    // say to a brand-new account, which is exactly the population the
+    // approval flow produces.
+    if (raw.contains('Email not confirmed')) {
+      return 'This account has not been confirmed yet. Check your email for '
+          'the confirmation link, or ask an administrator to approve it.';
+    }
+    // A disabled/banned identity. Distinct from a wrong password on purpose:
+    // retrying with the same password will never work, and saying so is the
+    // difference between a user who waits and a user who gives up.
+    if (raw.contains('User is disabled') || raw.contains('user_banned')) {
+      return 'This account has been disabled. Please contact support.';
+    }
+    // The gate is down or unreachable. Named separately so "we cannot check
+    // right now" is never reported as "your password is wrong" — the user
+    // would change a perfectly good password.
+    if (raw.contains('Sign-in is temporarily unavailable')) {
+      return raw;
     }
     if (raw.contains('network') || raw.contains('SocketException')) {
       return 'Network error. Please check your connection.';

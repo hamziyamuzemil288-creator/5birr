@@ -116,9 +116,19 @@ extension LoginGate on CaptchaService {
       case 'captcha_failed':
         throw const CaptchaException(
             'That security check is not valid. Solve a new one.');
+      // The gate is an UNAUTHENTICATED endpoint: it runs before the
+      // credential check, so the caller is signed out and sends no user JWT.
+      // If the function is deployed with the default verify_jwt=true the
+      // gateway answers 401 with no JSON body, which used to fall into the
+      // catch-all below and was reported to the user as a generic outage —
+      // indistinguishable from the server being genuinely down, and the
+      // reason nobody found the real cause. It is named here so the message
+      // says what it is.
+      case 'security_check_unavailable':
+      case 'login_unavailable':
+        throw const LoginGateUnavailableException();
       default:
-        throw const CaptchaException(
-            'Sign-in is temporarily unavailable. Try again shortly.');
+        throw const LoginGateUnavailableException();
     }
   }
 
@@ -158,6 +168,23 @@ class CaptchaException implements Exception {
   final String message;
 
   const CaptchaException(this.message);
+
+  @override
+  String toString() => message;
+}
+
+/// The login gate could not be reached or refused to answer.
+///
+/// Deliberately its own type, distinct from [CaptchaException]: a user who
+/// solved the security check correctly and was then told the check was
+/// invalid has been told something false, and a support log full of
+/// "that security check is not valid" sends the investigation in exactly the
+/// wrong direction. This says what actually happened.
+class LoginGateUnavailableException implements Exception {
+  const LoginGateUnavailableException();
+
+  String get message =>
+      'Sign-in is temporarily unavailable. Please try again in a moment.';
 
   @override
   String toString() => message;

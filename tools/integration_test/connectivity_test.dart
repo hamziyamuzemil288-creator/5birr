@@ -1016,6 +1016,31 @@ void main() {
       print('    availability gate -> $detail');
     });
 
+    test('a confirmed availability can be paid without a second provider '
+        'round trip', () async {
+      // Migration 74 built the gate and the last link was missing: the buyer
+      // could only reach the screenshot upload from PAYMENT_PENDING, and
+      // only the provider could move an order there from ACCEPTED. So a
+      // gated order sat at ACCEPTED with the accounts on screen and no
+      // button anywhere until the provider happened to open their own order
+      // list and press "Request Payment" -- the reported "the screenshot
+      // page does not appear after the availability confirmation".
+      //
+      // Migration 85 widened that one transition for the buyer who placed a
+      // gated order. This is what stops it being widened back, or widened
+      // too far.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_gated_buyer_payment_request_is_wired');
+      expect(detail, isNotNull,
+          reason: 'assert_gated_buyer_payment_request_is_wired() could not run '
+              'at all, so nothing verified that a confirmed order is '
+              'payable. Error: $error');
+      expect(detail, isNot(contains('GATED_PAYMENT_REQUEST_REGRESSION')),
+          reason: 'A confirmed availability cannot be paid: $detail');
+      // ignore: avoid_print
+      print('    gated payment request -> $detail');
+    });
+
     test('a like actually persists, and a dislike replaces it', () async {
       // The reported symptom was a heart that filled and then emptied again.
       // Two independent causes, either of which alone produces it:

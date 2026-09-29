@@ -273,10 +273,25 @@ jobs:
 
       # Task 13 item 2: server-side login gate — CAPTCHA enforcement +
       # per-account failure lockout before the password credential check.
-      # Called by the Flutter login screen like send-otp (anon/user JWT).
-      - name: Deploy function login-gate
+      #
+      # --no-verify-jwt is REQUIRED, not a convenience. The gate runs BEFORE
+      # the credential check (its own header says so: "the gate must run
+      # BEFORE the credential check is even attempted"), which means the
+      # caller is signed out and has no user JWT. With the default
+      # verify_jwt=true the gateway rejects the request with a bare 401
+      # before the function body executes, so the gate never runs at all and
+      # every login in the app fails. This is the same class of bug 5.6
+      # records for account-change-password / account-deletion-gateway: a
+      # function that is present, called from Flutter, and not actually
+      # usable.
+      #
+      # It is safe to expose unauthenticated: the function holds the service
+      # role, returns only a lockout verdict and a CAPTCHA demand, and every
+      # refusal is indistinguishable on the wire, so it is not a username
+      # oracle. That reasoning is the function header's, not a new claim.
+      - name: Deploy function login-gate (no JWT verification)
         if: ${{ !inputs.dry_run }}
-        run: supabase functions deploy login-gate
+        run: supabase functions deploy login-gate --no-verify-jwt
 
       # Self-service password change for a signed-in USER or provider
       # (change_password_screen). It is a separate function from

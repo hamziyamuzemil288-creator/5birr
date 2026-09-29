@@ -476,10 +476,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // user-facing text changes. splash_screen renders state.error
       // verbatim, so an unfiltered PostgrestException would put schema
       // detail on screen.
-      debugPrint('auth could failed: $e');
+      //
+      // The context used to say "Could not sign in with Google" here — a
+      // copy-paste from signInWithGoogle() below. splash_screen renders
+      // state.error verbatim, so a rejected password on the email path
+      // surfaced the words "Could not sign in with Google. ..." to a user
+      // who never touched the Google button, which is actively misleading
+      // about the one thing they just did.
+      debugPrint('auth signIn failed: $e');
       state = state.copyWith(
         isLoading: false,
-        error: friendlyError(e, context: 'Could not sign in with Google'),
+        error: friendlyError(e, context: 'Could not sign in'),
       );
       rethrow;
     }

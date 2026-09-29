@@ -168,15 +168,20 @@ user                    client                    database
  │                                                  requires_availability_confirmation
  │                                                  snapshotted onto the order
  │
- │  sees "waiting for the provider" — no phone, no payment details
+ │  sees "waiting for the provider" — no phone, no payment details,
+ │  no upload option
  │
- │                        provider
+ │                        provider (or an admin)
  │                        accept ────────────────►  order-transition (Edge Fn)
  │                                                    -> ACCEPTED
- │                        ◄── payment details now visible (same rule both ways)
+ │                        ◄── payment details AND the upload button appear
+ │                            together, in one card
  │
- │  attach payment screenshot ────────────────────►  payment_proofs
- │                        sees the proof ──────────  order-transition -> PAYMENT_VERIFICATION
+ │  pay into the account shown, then attach the screenshot
+ │  ───────────────────────────► order-transition -> PAYMENT_PENDING   (85)
+ │  ───────────────────────────► payment_proofs
+ │                              order-transition -> PAYMENT_VERIFICATION
+ │                        sees the proof ──────────  (admin queue)
  │                        admin verifies ──────────►  order APPROVED
  │  ◄── release_order_contact(order_id) ──────────  phone number, once, audited
  │  ◄── review allowed only after COMPLETED
@@ -188,6 +193,26 @@ and `orders.requires_availability_confirmation` (migration 74). The order-level
 copy is what the screens read, deliberately — re-joining through `order_items`
 would let a provider close the payment screen on an order a buyer has already
 paid for.
+
+**The chain has to end somewhere (migration 85).** Migration 74 built the gate
+but not its last link. The buyer could only submit from `PAYMENT_PENDING`, and
+only the provider could move an order there from `ACCEPTED` — so a gated order
+sat at `ACCEPTED` with the accounts on screen and no button anywhere, until the
+provider happened to open their own list and press "Request Payment". Checkout
+was already promising the buyer an upload option that did not exist yet.
+Migration 85 adds one clause: on an order whose snapshot is true, **the buyer
+may move `ACCEPTED -> PAYMENT_PENDING` themselves**. It is scoped to the
+order's own owner and to gated orders, so an un-gated order is byte-for-byte
+unchanged, and it opens only the step where a proof can be *attached* — contact
+and fulfilment stay behind a VERIFIED proof. Asserted by
+`assert_gated_buyer_payment_request_is_wired()`.
+
+The payment details and the upload button are rendered in **one card**
+(`_paymentStepCard`). They used to be at opposite ends of a long scroll, so
+"confirmation happened" and "there is something to act on" were two separate
+facts. The card is gated on the buyer's eligibility, not on the read of
+`payment_methods` succeeding, so a failed read cannot remove the only way to
+pay.
 
 `release_order_contact()` is server-side and idempotent: before APPROVED it
 refuses, and it writes the release to `admin_history`.
@@ -370,6 +395,7 @@ anywhere the repository is checked out.
 | Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
 | Every fee switch actually switches | `assert_fee_switches_are_wired()` (migration 73) |
 | Payment gated on availability; contact on verified payment | `assert_availability_gate_is_wired()` (migration 74/75) |
+| A confirmed availability can actually be paid, by the buyer who placed it | `assert_gated_buyer_payment_request_is_wired()` (migration 85) |
 | A like persists; a dislike replaces it; the RLS bites | `assert_likes_persist_and_are_exclusive()` (migration 76, a **write** test) |
 | The provider write gate is scoped, not opened | `assert_provider_write_gate_allows_counter_updates()` (migration 76) |
 | Live map is actually live (publication + FULL replica identity + marker feed) | `assert_live_map_is_wired()` (migration 61) |
@@ -388,6 +414,9 @@ anywhere the repository is checked out.
 | Retry / backoff / jitter maths | `test/retry_backoff_test.dart` |
 | Exception classification and non-leakage | `test/failure_mapper_test.dart` |
 | A failed realtime subscribe cannot crash | `test/realtime_resilient_subscription_test.dart` |
+| Pre-auth endpoints are deployed reachable (`--no-verify-jwt`) | `check_edge_functions_deployed()` + `PRE_AUTH_FUNCTIONS` |
+| A gated order is payable after confirmation, details and upload in one card | `check_availability_payment_flow()` |
+| The login screen reports its own outcome instead of spinning forever | `check_login_reports_its_own_outcome()` |
 
 Two lessons worth keeping, both paid for:
 
@@ -398,7 +427,13 @@ Two lessons worth keeping, both paid for:
 - **A test must not flatter the code it tests.** Migration 44's probe set
   fixtures that were more generous than production (a confirmed email the
   trigger cannot see at insert time) and reported success for two live paths
-  that were in fact broken.
+  that were in fact broken. The same failure has a source-level shape: the
+  harness helper that reads a Dart method body took the first `{` after the
+  signature, which for `Future<void> signIn({required String email, ...})` is
+  the **parameter list**, so a check written against the body silently
+  inspected the wrong text and passed. Every new check was verified by
+  reintroducing its bug and confirming it goes red — a check that has never
+  failed is not evidence of anything.
 
 ---
 
@@ -417,6 +452,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0001`–`0043` | core schema, RLS, storage, escrows | nothing works |
 | `0044` / `20260925150000` | `handle_new_user()` with insert-time trust rules | signup rejected or trust rules inert |
 | `0074` | availability-confirmation gate | payment visible before confirmation |
+| `0085` | a gated buyer may open the payment step after confirmation | a confirmed order sits at ACCEPTED with payment details and no way to pay |
 | `0076` | likes persist, dislikes replace | a like fills and empties silently |
 | `0080` | GPS liveness columns on `user_documents` | **document upload fails** — the client inserts them |
 | `0081` | fixed liveness assertion | Connectivity CI red (test only) |
@@ -433,19 +469,30 @@ Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabas
 Every one of these is called from Flutter:
 
 ```
-repo-chat  index-chunks  provider-approval  admin-wallet-recharge
+repo-chat  index-chunks (--no-verify-jwt)  provider-approval  admin-wallet-recharge
 wallet-deduct-fee  subscription-process  order-create  order-transition
 ride-claim  ride-transition  document-verify  user-admin  send-otp
 staff-create-gateway  staff-delete-gateway  staff-change-password
-staff-login (--no-verify-jwt)  login-gate
+staff-login (--no-verify-jwt)  login-gate (--no-verify-jwt)
 account-change-password  account-deletion-gateway
 ```
 
-Two notes that are easy to get wrong:
+Three notes that are easy to get wrong:
 
 - A function present in `supabase/functions/` is **not** deployed unless the
   workflow has a step for it. That is how "Change password" and "approve
   account deletion" shipped broken (§5.6).
+- **A pre-authentication endpoint must be deployed with `--no-verify-jwt`.**
+  The gateway refuses an anonymous request to a function deployed with the
+  default `verify_jwt=true`, with a bare 401 before the function body runs.
+  Three functions are pre-auth by construction — `login-gate`, `staff-login`,
+  `index-chunks` — because the caller has no session yet. `login-gate` shipped
+  without the flag while its own header said it "must run BEFORE the credential
+  check is even attempted", so the gate never executed and no login in the app
+  could complete. Being reachable is not the same as being usable, and the
+  symptom (a generic "sign-in unavailable") pointed nowhere near the cause.
+  `PRE_AUTH_FUNCTIONS` in `tools/harness/static_checks.py` now fails the build
+  if one of them loses the flag.
 - `send-otp` additionally needs an email provider configured in
   Supabase → Edge Functions → `send-otp → Secrets`. **Resend**:
   `RESEND_API_KEY` + `OTP_FROM_EMAIL`. **Brevo** (free tier, no card):
@@ -475,10 +522,19 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (53 tests). If it is red, the failure message names
+1. Connectivity CI green (54 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
    not an exception.
 4. `select public.assert_document_liveness_is_recorded();` returns a string.
 5. `select public.assert_live_map_is_wired();` returns a string.
+6. `select public.assert_gated_buyer_payment_request_is_wired();` returns a
+   string.
+
+**Nothing can log in until `login-gate` is redeployed with `--no-verify-jwt`**
+(§7.2). The flag is in `deploy-supabase.yml`, so any run of the Deploy Supabase
+workflow picks it up — but no migration can fix it, because the failure is at
+the gateway, before the function body. A build shipped against the old
+configuration cannot sign in *anyone* in, and the app says "sign-in is
+temporarily unavailable", which names neither the function nor the flag.
