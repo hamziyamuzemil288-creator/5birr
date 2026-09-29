@@ -1148,4 +1148,111 @@ void main() {
               'the stored ladder at its own boundary.');
     });
   });
+
+  group('money and approval notifications', () {
+    // Everything in this group is a WRITE test, run inside a subtransaction
+    // that is always rolled back. They are not read-only because the property
+    // being tested is behavioural: a second call must not write a second row,
+    // and a failing insert must not propagate. Neither can be observed by
+    // reading the function source.
+
+    test('a money notification is delivered once, and never fatal to the payment',
+        () async {
+      // Two properties, both of which have silent failure modes:
+      //
+      //  * A retry (double tap, redelivery) must not notify twice. Deduping
+      //    on a key read without a lock races: two calls both see "no existing
+      //    row" and both write.
+      //  * A notification that cannot be delivered must NOT raise. Inside
+      //    approve_wallet_recharge or convert_points_to_wallet that would
+      //    roll back a real payment and report it as a failure — the money
+      //    would be correct and the user would be told it failed.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_notify_user_once_is_idempotent');
+      expect(detail, isNotNull,
+          reason: 'notify_user_once() could not be exercised, so nothing '
+              'verified that a money notification is delivered exactly once. '
+              'Diagnostic: $error');
+      expect(detail, isNot(contains('NOTIFY_ONCE_')),
+          reason: 'A money notification is wrong: $detail');
+      // ignore: avoid_print
+      print('    notify_user_once -> $detail');
+    });
+
+    test('every approval path sends a welcome, and none lost its guards', () async {
+      // This is the assertion that has to catch a careless restatement.
+      // assert_meaningful_events_are_notified() passed on a body of
+      // approve_provider that had lost two of its four authorization
+      // conditions: it was written to catch the bug the author expected and
+      // was blind to the one they caused. This one names each condition, and
+      // additionally fails if some other function approves an account without
+      // a welcome.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_approval_welcome_covers_all_paths');
+      expect(detail, isNotNull,
+          reason: 'assert_approval_welcome_covers_all_paths() could not run, '
+              'so nothing verified that every approval path notifies. '
+              'Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'An approval path is un-welcomed or was restated without '
+              'its guards: $detail');
+      // ignore: avoid_print
+      print('    approval welcome -> $detail');
+    });
+
+    test('both sides of an order and a ride are told what happened', () async {
+      // The both-parties requirement. Before this, the provider was told
+      // nothing when an order payment was verified, and the rider's messages
+      // carried no amount. It also re-checks that all ten status branches
+      // still notify, because a restatement that drops an ELSIF is
+      // indistinguishable from "nothing happened" to the person waiting.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_order_and_ride_receipts_are_sent');
+      expect(detail, isNotNull,
+          reason: 'assert_order_and_ride_receipts_are_sent() could not run, '
+              'so nothing verified that buyers AND providers are both '
+              'notified. Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'An order or ride notification is missing, generic, or '
+              'claims a wallet credit that does not happen: $detail');
+      // ignore: avoid_print
+      print('    order/ride receipts -> $detail');
+    });
+
+    test('converting points to birr says so', () async {
+      // convert_points_to_wallet() debited the ledger and credited the
+      // wallet in silence. The balance changed with no way for the user to
+      // find out, and the conversion screen had to render the result itself.
+      // This also re-checks the money invariants, because restating a money
+      // function is where the advisory lock or the FOR UPDATE balance
+      // re-read tends to go missing.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_points_conversion_notifies');
+      expect(detail, isNotNull,
+          reason: 'assert_points_conversion_notifies() could not run. '
+              'Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'The points conversion is silent, unkeyed, or lost a money '
+              'invariant in the restatement: $detail');
+      // ignore: avoid_print
+      print('    points conversion notice -> $detail');
+    });
+
+    test('a user can only read their own notifications', () async {
+      // The new call sites are SECURITY DEFINER and server-only, but they
+      // write rows a client then reads. This is the check that a new function
+      // did not quietly widen that: the guard trigger still refuses a client
+      // insert, and RLS still scopes the inbox to its owner.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_notification_inbox_is_owner_only');
+      expect(detail, isNotNull,
+          reason: 'assert_notification_inbox_is_owner_only() could not run, so '
+              'nothing verified that notifications stay owner-scoped. '
+              'Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'The notifications inbox is no longer owner-scoped: $detail');
+      // ignore: avoid_print
+      print('    notification inbox scope -> $detail');
+    });
+  });
 }

@@ -296,6 +296,51 @@ switched back on. `assert_otp_bypass_is_scoped()` fails if that ever changes —
 because a bypass that records a verification is invisible in review and its
 consequence is a security property quietly disappearing, not a crash.
 
+### 4.x A money notification never blocks the money
+
+Every notification attached to a payment, a credit or an approval goes through
+`notify_user_once()` (migration 86), never a bare `INSERT INTO notifications`.
+That is two guarantees in one call, and both have a failure mode that is
+invisible until money is involved:
+
+* **Once.** The key is checked under `pg_advisory_xact_lock`, so a retried
+  call — a double tap, a redelivery, a scheduler running twice — cannot write a
+  second row. Reading the key without the lock is a race: two calls both see
+  "nothing there yet" and both write.
+* **Never fatal.** The body is wrapped so any error becomes a `RAISE WARNING`
+  and a NULL return. Without this, an undeliverable notice inside
+  `approve_wallet_recharge` or `convert_points_to_wallet` rolls the real
+  payment back and reports it as a failure — the money would be correct and the
+  user told it failed.
+
+The same discipline the wallet ledger already used for `idempotency_key`. The
+key is stored in the existing `data` jsonb under `idem_key`, so no column and
+no table were added.
+
+**Where the notice is written, and why not always a trigger.** Order and ride
+notices hang off the existing status triggers: an `AFTER UPDATE` trigger runs in
+the same transaction as the write, so it cannot drift out of sync with it, and
+restating `transition_ride_status` would mean reproducing all nine status
+branches — the blast radius that once froze every ride stuck in
+`DRIVER_EN_ROUTE`. Points conversion is the exception and lives in the function
+body, because it moves money without updating any row a trigger covers, and the
+message has to quote figures that exist only as local variables.
+
+**Messages state what actually happened.** Ride completion does *not* add money
+to the driver's wallet: it calls `deduct_transaction_fee()`, which debits the
+platform commission, and the fare is settled outside the app. Order payment is
+likewise made outside the app and verified from a screenshot. So the messages
+quote the amount and say the commission was deducted; none of them claims a
+wallet credit. `assert_order_and_ride_receipts_are_sent()` fails if that
+wording comes back.
+
+**Batching.** One ride completion produces two driver notifications by design —
+one about the trip, one about the fee, the latter from `deduct_transaction_fee`
+with the exact figure. They are deliberately non-overlapping rather than merged,
+because the fee amount is computed inside the fee function and is not available
+to the trigger. Approvals are single: the status notice and the welcome are
+different messages, and both are keyed, so a retried approval adds neither.
+
 ---
 
 ## 5. Known gaps
@@ -360,9 +405,22 @@ purchase path. `grep -ri 'sponsor\|advert\|promo' lib/` returns three
 unrelated files. A provider cannot buy placement, so the corresponding step in
 a provider walkthrough is a no-op.
 
+Confirmed again while building the money notifications (migrations 86–89): the
+"ad purchase charged" and "ad refund" notifications that were requested have no
+function to attach to. There is no ad table in any migration and no ad purchase
+path in `supabase/functions/`. Building them would mean inventing the feature,
+not wiring a notification to it, so they are listed here as not-applicable
+rather than silently skipped. The nearest real equivalent — money leaving a
+wallet and coming back — is covered: a points conversion notifies with both
+figures (89), and `ORDER_REFUNDED` already notifies the buyer (58).
+
 ### 5.8 Push notifications are not implemented — **medium**
 `firebase_messaging` is not a dependency. Notifications are in-app only
 (`notifications` table, polled/realtime). Background order and ride alerts do
+not reach a locked phone, so a user who has not opened the app since a payment
+cleared learns about it only on next launch. Worth knowing when reading the
+money notifications in §4.x: they are written correctly and delivered, but
+delivery is pull-based.
 not exist. Migration groundwork (0007) is there.
 
 ### 5.9 Layering is not enforced — **large**
@@ -390,6 +448,33 @@ tracks, and the shim exists only so the documented command keeps working.
 The harnesses need no Dart SDK, no Deno and no credentials, so they run
 anywhere the repository is checked out.
 
+**Restatements are diffed, not eyeballed.** Two tools back the restatements in
+§4.x, because this repo has twice lost a condition from a function that was
+re-emitted from memory (the `provider_profiles` trigger, the `staff_task_feed`
+RPC):
+
+* `python3 tools/harness/restatement_diff.py <migration> <fn>…` compares a
+  restated body against the previous definition statement by statement. It
+  separates *lost* from *rewritten*: a branch only counts as rewritten if the
+  new body still notifies on that same status, and every rewrite must be
+  declared in `REVIEWED_REWRITES`. An undeclared rewrite fails.
+* `python3 tools/harness/fault_inject_notifications.py` reintroduces 17 real
+  bugs — a dropped dedupe check, a missing lock, a removed error handler, an
+  unrevoked privilege, a lost authorization clause, a false "money added"
+  claim — and requires the harness to go red for each. A check that passes on
+  broken input is worse than no check, because it is reported as a safety net
+  while providing none; this found five vacuous checks in the first version,
+  each of which had to search a function body rather than the whole migration
+  (the migration also contains the assertion that names the same strings).
+
+All SQL is parsed with `pglast` (libpg_query, the real PostgreSQL parser)
+before commit rather than read by eye. Two pre-existing files fail to parse and
+are known: `0021_live_schema_snapshot.sql` (a `CREATE POLICY` name containing
+spaces, unquoted) and `0022c_functions.sql` (`SECURITY_DEFINER` written with
+an underscore). Both are historical and already applied; they are recorded here
+rather than fixed, because editing a migration that has already run changes
+nothing and rewriting a 2000-line snapshot is its own risk.
+
 | Property | Where it is pinned |
 |----------|-------------------|
 | Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
@@ -402,6 +487,11 @@ anywhere the repository is checked out.
 | Document submission records a location, and the trigger does not overwrite it | `assert_document_liveness_is_recorded()` (migrations 80/81) |
 | The signup OTP is a working toggle in either position | `assert_signup_otp_toggle_is_consistent()` (migration 82) |
 | The staff-job catalogue is session-only | `assert_staff_jobs_are_session_only()` (migration 83) |
+| A money notification is delivered once, and a failed one never rolls back the payment | `assert_notify_user_once_is_idempotent()` (migration 86, a **write** test) |
+| Every approval path welcomes, and no restatement lost its guards | `assert_approval_welcome_covers_all_paths()` (migration 87) |
+| Both parties are told an order payment and a ride completion, with the amount | `assert_order_and_ride_receipts_are_sent()` (migration 88) |
+| Points→birr says so, and the money invariants survived the restatement | `assert_points_conversion_notifies()` (migration 89) |
+| The notifications inbox is owner-scoped and still guarded | `assert_notification_inbox_is_owner_only()` (migration 90) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
@@ -459,6 +549,11 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0082` | `signup_otp_required` toggle | registration fails with "Database error saving new user" |
 | `0083` | `staff_jobs` RLS | the job catalogue is readable with the anon key |
 | `0084` | OTP bypass that records no verification | a build in circulation cannot pass the code screen |
+| `0086` | `notify_user_once()`: keyed + failure-isolated notification call site | a retried payment notifies twice; an undeliverable notice rolls the payment back |
+| `0087` | a welcome on every path that approves an account | accounts are approved and told only that a status changed |
+| `0088` | both parties notified on an order payment and a completed ride, with the amount | the provider is never told a payment cleared; the rider is told nothing about the fare |
+| `0089` | points→wallet conversion notifies with both figures | points convert to birr silently |
+| `0090` | the notifications inbox is still owner-scoped (assertion) | a new definer function could widen who reads the inbox |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
@@ -522,7 +617,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (54 tests). If it is red, the failure message names
+1. Connectivity CI green (62 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
@@ -531,6 +626,15 @@ the dashboard survives a deploy.
 5. `select public.assert_live_map_is_wired();` returns a string.
 6. `select public.assert_gated_buyer_payment_request_is_wired();` returns a
    string.
+7. `select public.assert_notify_user_once_is_idempotent();` returns a string.
+   This one is a **write** test that rolls itself back; run it once after the
+   first deploy of `0086`, because it is the only place the dedupe and the
+   failure isolation are actually exercised rather than inspected.
+8. `select public.assert_approval_welcome_covers_all_paths();`,
+   `assert_order_and_ride_receipts_are_sent();`,
+   `assert_points_conversion_notifies();` and
+   `assert_notification_inbox_is_owner_only();` each return a string beginning
+   `ok:`. A `FAIL:` prefix names the specific thing that regressed.
 
 **Nothing can log in until `login-gate` is redeployed with `--no-verify-jwt`**
 (§7.2). The flag is in `deploy-supabase.yml`, so any run of the Deploy Supabase

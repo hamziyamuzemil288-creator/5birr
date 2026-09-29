@@ -103,7 +103,16 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
                           subtitle: Padding(
                             padding: const EdgeInsets.only(top: 3),
                             child: Text(n['body'] ?? '',
-                                maxLines: 2,
+                                // Three lines, not two. The money notifications
+                                // are receipts — "Payment of ETB 12,400.00 for
+                                // Order #1841 has been verified. The buyer's
+                                // contact details are now available in the
+                                // order." — and at two lines on a narrow phone
+                                // that ellipsizes before the amount is even
+                                // visible, which defeats the point of quoting
+                                // it. Status pings are shorter and simply leave
+                                // the third line empty.
+                                maxLines: 3,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                     fontSize: 12,
@@ -191,6 +200,12 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
     if (type.contains('REJECT')) return Icons.cancel_outlined;
     if (type.contains('WALLET')) return Icons.account_balance_wallet_outlined;
     if (type.contains('RIDE')) return Icons.directions_car_outlined;
+    // Points (POINTS_EARNED and POINTS_REDEEMED) were already given a gold
+    // tint in _iconColor but had no branch here, so a points-conversion
+    // receipt rendered as the generic bell. The two helpers are read together
+    // for that reason; a type that is coloured but unlabelled reads as noise.
+    if (type.contains('POINTS')) return Icons.stars_rounded;
+    if (type.contains('APPEAL')) return Icons.gavel_outlined;
     return Icons.notifications_outlined;
   }
 }

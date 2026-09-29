@@ -23,6 +23,8 @@ Run:  sh build/run_all.sh      (shim)
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 import sys
 from pathlib import Path
 
@@ -1056,6 +1058,292 @@ def check_documented_components_exist() -> list[str]:
     return problems
 
 
+def check_transaction_notifications() -> list[str]:
+    """Money and approval events notify both parties, exactly once, and a
+    failed notice cannot roll back the payment.
+
+    The bugs this catches, all of which are silent:
+      * a message written somewhere nobody reads, because the app has no
+        surface for it,
+      * a notification insert inside a money function with no error handling,
+        so an undeliverable notice rolls back a real payment,
+      * a message that claims money moved when it did not (the ride
+        commission is DEBITED; a wallet is never credited on completion),
+      * a dedupe key that is not actually derived from the event, so a retry
+        notifies twice or two different events collide on one key.
+    """
+    problems: list[str] = []
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    new_sql = "\n".join(
+        _read(p) for p in migration_files()
+        if p.name >= "20260927000086"
+    )
+
+    # 1. The shared call site exists and does the two things it promises.
+    if "notify_user_once" not in all_sql:
+        problems.append("no notify_user_once() call site: money notifications "
+                        "have no idempotent, failure-isolated helper")
+    else:
+        path, sql = last_migration_defining("notify_user_once")
+        body = function_body(sql, "notify_user_once")
+        body_l = body.lower()
+        # The dedupe check itself, not just the key: a helper that takes a lock
+        # but never reads the table notifies twice on a retry.
+        if "data ->> 'idem_key'" not in body_l and \
+           "data->>'idem_key'" not in body_l:
+            problems.append("notify_user_once() no longer checks for an "
+                            "existing row for the key, so a retried payment "
+                            "notifies twice")
+        # Dedupe must be under a lock. Checking for the key alone passes on a
+        # body that reads-then-writes, which is the race it exists to prevent.
+        if "pg_advisory_xact_lock" not in body_l:
+            problems.append("notify_user_once() dedupes without taking a lock, "
+                            "so two concurrent calls both pass the check and "
+                            "both write")
+        if "exception" not in body_l:
+            problems.append("notify_user_once() has no exception handler, so a "
+                            "failed notification insert would roll back the "
+                            "money movement it is attached to")
+        if "raise warning" not in body_l:
+            problems.append("notify_user_once() swallows failures without "
+                            "logging them, making them invisible")
+        # A client that could call this could notify any user id.
+        if "revoke all on function public.notify_user_once" not in sql.lower():
+            problems.append("notify_user_once() is not revoked from the client "
+                            "roles; a client could notify any user")
+
+    # 2. Both parties are notified on the two money events. A buyer-only or
+    #    provider-only regression is the specific failure this feature fixes.
+    #
+    #    Every needle below is searched in the FUNCTION BODY, lowercased, and
+    #    never in the whole migration file. Two earlier versions of this check
+    #    did search the file, and both were vacuous: each migration carries the
+    #    assert_* function that names these same strings, so disabling the real
+    #    call left the string sitting in the assertion and the check stayed
+    #    green. A check that passes on broken input is worse than none.
+    def _body(name: str) -> str:
+        path, sql = last_migration_defining(name)
+        return function_body(sql, name).lower() if path else ""
+
+    order_src = _body("fn_notify_order_status_change")
+    if not order_src:
+        problems.append("fn_notify_order_status_change() not found")
+    else:
+        if "order-payment-verified:" not in order_src:
+            problems.append("the buyer no longer gets a payment-confirmed "
+                            "notification on order APPROVED")
+        if "order-payment-received:" not in order_src:
+            problems.append("the provider no longer gets a payment-received "
+                            "notification on order APPROVED (both parties are "
+                            "the requirement)")
+
+    ride_src = _body("fn_notify_ride_status_change")
+    if not ride_src:
+        problems.append("fn_notify_ride_status_change() not found")
+    else:
+        if "ride-completed:" not in ride_src:
+            problems.append("the rider no longer gets a trip-completed notice")
+        if "ride-completed-driver:" not in ride_src:
+            problems.append("the driver no longer gets a trip-completed notice")
+        # A trigger that fires on an unchanged status re-notifies on every
+        # unrelated write to the row (the fee and updated_at writes).
+        if "is not distinct from old.status" not in ride_src:
+            problems.append("the ride trigger lost its 'no status change' "
+                            "guard, so unrelated row updates re-notify")
+
+    # 3. The claim the brief got wrong. Completing a ride DEBITS the platform
+    #    commission via deduct_transaction_fee; the fare is settled outside the
+    #    app and never credited to a wallet. A message saying money was added
+    #    contradicts the wallet screen immediately.
+    #
+    #    Checked against the notifier bodies only. Searching the raw migration
+    #    text matches the COMMENT that explains why the message is not written
+    #    that way, which is the opposite of the finding being looked for.
+    notifier_src = "".join(
+        _body(n) for n in ("fn_notify_order_status_change",
+                           "fn_notify_ride_status_change",
+                           "convert_points_to_wallet",
+                           "approve_provider",
+                           "approve_user"))
+    for phrase in ("added to your wallet", "added to their wallet"):
+        if phrase in notifier_src:
+            problems.append(
+                f"a notification message claims '{phrase}'. Ride completion "
+                f"debits the platform commission and order payment is settled "
+                f"outside the app; neither credits a wallet, so the message is "
+                f"false and the wallet screen will contradict it")
+
+    # 4. Dedupe keys must be derived from the event, not from the amount.
+    #    Two conversions of the same size are two different events, and a key
+    #    built from the amount would make the second one a silent no-op.
+    points_src = _body("convert_points_to_wallet")
+    if not points_src:
+        problems.append("convert_points_to_wallet() not found")
+    else:
+        if "notify_user_once" not in points_src:
+            problems.append("the points conversion credits the wallet and "
+                            "notifies nobody; the balance changes with no way "
+                            "for the user to find out")
+        else:
+            # Anchor on the notify call itself. The bare key string also appears
+            # in the wallet ledger's idempotency_key, so searching for the key
+            # anywhere in the body passes even when the notification is
+            # disabled — which is exactly what fault injection found.
+            #
+            # The call is delimited by paren BALANCE, not by the first ')':
+            # the arguments are v_birr::text, jsonb_build_object(...) and
+            # friends, so a non-greedy match stopped inside the first one and
+            # reported a message that had lost its amount as intact.
+            m = re.search(
+                r"notify_user_once\(\s*'points-convert:'.*?\n\s*\);",
+                points_src, re.DOTALL)
+            if not m:
+                problems.append("the points conversion notice is not keyed on "
+                                "the points ledger id, so a retry notifies "
+                                "twice and two identical conversions collide "
+                                "on one key")
+            else:
+                call = m.group(0)
+                if "v_ledger_id" not in call.split("'points-convert:'")[1][:80]:
+                    problems.append("the points conversion key is not derived "
+                                    "from the ledger row id; a key built from "
+                                    "the amount would collide across two "
+                                    "identical conversions")
+                # The two figures the brief asks the MESSAGE to carry. Both are
+                # checked in the message argument, not merely in the call: the
+                # data payload also carries them, so a call-wide search passes
+                # on a message that quotes neither.
+                msg = call.split("'POINTS_REDEEMED',", 1)[-1]
+                msg = msg.rsplit("jsonb_build_object", 1)[0]
+                if "p_points::text" not in msg:
+                    problems.append("the conversion message no longer reports "
+                                    "the points spent")
+                if "v_birr::text" not in msg:
+                    problems.append("the conversion message no longer reports "
+                                    "the birr received")
+        # Money invariants that a restatement of a money function loses.
+        for needle, why in [
+            ("pg_advisory_xact_lock", "its concurrency lock"),
+            ("for update", "the FOR UPDATE balance re-read"),
+            ("not_your_provider_profile", "its provider-ownership check"),
+            ("wallet_transactions", "its ADJUSTMENT ledger row"),
+        ]:
+            if needle not in points_src:
+                problems.append(f"convert_points_to_wallet() lost {why}")
+
+    # 5. The user must have somewhere to read these. A notification nobody can
+    #    see is a row in a table.
+    notif_screen = ROOT / "lib/features/user/user_notifications_screen.dart"
+    if not notif_screen.exists():
+        problems.append("lib/features/user/user_notifications_screen.dart is "
+                        "gone: notifications are written but have no UI")
+    else:
+        screen = _read(notif_screen)
+        if "from('notifications')" not in screen:
+            problems.append("the notifications screen no longer reads the "
+                            "notifications table")
+        # A receipt message that ellipsizes before the amount is visible
+        # defeats the point of quoting the amount.
+        m = re.search(r"maxLines:\s*(\d+)", screen)
+        if m and int(m.group(1)) < 3:
+            problems.append(
+                f"the notifications screen truncates the body to "
+                f"{m.group(1)} line(s). The money messages are receipts "
+                f"('Payment of ETB 12,400.00 for Order #1841 has been "
+                f"verified...') and ellipsize before the amount shows.")
+        # Every notification family this series sends must map to a real icon
+        # and colour. An unmapped type still renders (there is a default), but
+        # a generic bell on a payment notice is how a receipt gets missed.
+        # The screen branches on the enum PREFIX, which is why the families
+        # are checked rather than the four full type names.
+        for branch, why in [
+            ("ORDER", "order payment receipts"),
+            ("RIDE", "ride completion receipts"),
+            ("POINTS", "points conversion receipts"),
+            ("APPROVAL", "the welcome on approval"),
+        ]:
+            # Must appear in BOTH the colour mapper and the icon mapper.
+            if screen.count(f"'{branch}'") + screen.count(f'"{branch}"') < 2:
+                problems.append(f"the notifications screen does not map "
+                                f"{branch} in both the icon and colour "
+                                f"helpers, so {why} render with the default")
+    # ...and an entry point, not just a screen that exists.
+    #
+    # The ROUTER is excluded: app_router.dart registers the /admin-notifications
+    # route, so counting it as an entry point means the check passes even when
+    # no screen links to it — a route nothing navigates to is not a surface.
+    entry = 0
+    for dart in dart_sources():
+        if dart.name == "app_router.dart":
+            continue
+        if "'/admin-notifications'" in _read(dart):
+            entry += 1
+    if entry == 0:
+        problems.append("no screen navigates to the notifications route, so the "
+                        "new notifications are written and never seen (the "
+                        "route alone is not a surface)")
+
+    # 6. The two approval functions must actually send a welcome. Checked in
+    #    the body, for the same reason as the money events above.
+    for fn, key in [("approve_provider", "provider-approved:"),
+                    ("approve_user", "user-approved:")]:
+        body = _body(fn)
+        if not body:
+            problems.append(f"{fn}() not found")
+        elif key not in body:
+            problems.append(f"{fn}() no longer sends the welcome "
+                            f"({key})")
+
+    # 7. The live assertions must be registered in the connectivity suite, or
+    #    they never run against a real database.
+    conn = ROOT / "tools/integration_test/connectivity_test.dart"
+    if not conn.exists():
+        problems.append("tools/integration_test/connectivity_test.dart is gone")
+    else:
+        conn_sql = _read(conn)
+        for fn in ("assert_notify_user_once_is_idempotent",
+                   "assert_approval_welcome_covers_all_paths",
+                   "assert_order_and_ride_receipts_are_sent",
+                   "assert_points_conversion_notifies"):
+            if fn not in all_sql:
+                problems.append(f"{fn}() is not defined by any migration")
+            if fn not in conn_sql:
+                problems.append(f"{fn}() is never called from the connectivity "
+                                f"test, so it will not run against the live "
+                                f"database")
+
+    # 8. The restatements in this series must not have lost anything. This runs
+    #    the real differ rather than a proxy for it, because a proxy that
+    #    cannot tell a rewrite from a deletion is the exact failure mode that
+    #    has hit this repo twice.
+    differ = ROOT / "tools/harness/restatement_diff.py"
+    if not differ.exists():
+        problems.append("tools/harness/restatement_diff.py is missing: the "
+                        "restatements in this series are unverified")
+    else:
+        for migration, fns in [
+            ("20260927000087_welcome_on_approval.sql",
+             ["approve_provider", "approve_user"]),
+            ("20260927000088_order_and_ride_receipts.sql",
+             ["fn_notify_order_status_change", "fn_notify_ride_status_change"]),
+            ("20260927000089_points_conversion_notice.sql",
+             ["convert_points_to_wallet"]),
+        ]:
+            target = ROOT / "supabase/migrations" / migration
+            if not target.exists():
+                problems.append(f"{migration} is missing")
+                continue
+            proc = subprocess.run(
+                [sys.executable, str(differ), str(target), *fns],
+                capture_output=True, text=True, cwd=str(ROOT))
+            if proc.returncode != 0:
+                for line in proc.stdout.splitlines():
+                    if line.strip().startswith(("-", "LOST", "FAIL")):
+                        problems.append(f"{migration}: {line.strip()}")
+
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
@@ -1084,6 +1372,8 @@ CHECKS = [
      check_error_handling_wiring),
     ("the components ARCHITECTURE.md names exist in the code, and vice versa",
      check_documented_components_exist),
+    ("money/approval notifications: both parties, once, and never fatal to the payment",
+     check_transaction_notifications),
 ]
 
 
