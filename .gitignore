@@ -12,6 +12,10 @@ supabase/.branches
 supabase/.temp
 node_modules/
 
+# Python bytecode from the static harnesses (tools/harness/)
+__pycache__/
+*.pyc
+
 # Android signing keystores are never committed (see docs/SIGNING.md)
 *.p12
 **/*.p12
