@@ -419,10 +419,12 @@ Two notes that are easy to get wrong:
 - A function present in `supabase/functions/` is **not** deployed unless the
   workflow has a step for it. That is how "Change password" and "approve
   account deletion" shipped broken (§5.6).
-- `send-otp` additionally needs `RESEND_API_KEY` and `OTP_FROM_EMAIL` in
-  Supabase → Edge Functions → `send-otp → Secrets`. Without them it returns
-  `email_provider_not_configured` and **no registration email is ever sent**,
-  which is the current state.
+- `send-otp` additionally needs an email provider configured in
+  Supabase → Edge Functions → `send-otp → Secrets`. **Resend**:
+  `RESEND_API_KEY` + `OTP_FROM_EMAIL`. **Brevo** (free tier, no card):
+  `BREVO_API_KEY` + `BREVO_FROM_EMAIL`. Resend is tried first; with neither
+  pair set the function returns `email_provider_not_configured` and **no
+  registration email is ever sent**.
 
 ### 7.3 Secrets
 
