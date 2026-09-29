@@ -172,6 +172,18 @@ MUTATIONS = [
         "  IF position('points-convert:''||v_ledgerid' IN v_src) = 0 THEN",
     ),
     (
+        "a declared source needle has a typo (v_ledgerid, the bug that shipped)",
+        "20260927000093_two_assertion_needles_were_wrong.sql",
+        "ARRAY['points-convert:''||v_ledger_id', 'convert_points_to_wallet'],",
+        "ARRAY['points-convert:''||v_ledgerid', 'convert_points_to_wallet'],",
+    ),
+    (
+        "a declared needle names a function that does not exist",
+        "20260927000093_two_assertion_needles_were_wrong.sql",
+        "ARRAY['ride-completed-driver:',          'fn_notify_ride_status_change'],",
+        "ARRAY['ride-completed-driver:',          'fn_notify_ride_status_typo'],",
+    ),
+    (
         "no screen links to the notifications route (all entry points removed)",
         "__ALL_SCREEN_ENTRIES__",
         "'/admin-notifications'",

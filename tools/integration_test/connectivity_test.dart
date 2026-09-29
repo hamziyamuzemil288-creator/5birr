@@ -1279,5 +1279,28 @@ void main() {
       // ignore: avoid_print
       print('    assertion reachability -> $detail');
     });
+
+    test('the assertions compare against text that is actually there',
+        () async {
+      // Every failure in this group so far was in the CHECK, not the checked.
+      // Two of these assertions compared pg_proc.prosrc against a hand-typed
+      // needle that did not match: one was defeated by where the author had
+      // wrapped a line, one had a typo (v_ledgerid for v_ledger_id). Each then
+      // reported a defect that did not exist, on every run, until a live run
+      // caught it. An assertion whose needle is wrong cannot be caught by
+      // anything else, because it is the thing doing the checking.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_source_needles_match');
+      expect(detail, isNotNull,
+          reason: 'assert_source_needles_match() could not run, so nothing '
+              'verified that the source-matching assertions are comparing '
+              'against text that exists. Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'An assertion is searching for text its target does not '
+              'contain, so it reports phantom defects or passes when it '
+              'should fail: $detail');
+      // ignore: avoid_print
+      print('    source needles -> $detail');
+    });
   });
 }

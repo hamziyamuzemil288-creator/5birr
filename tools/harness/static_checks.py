@@ -1148,7 +1148,7 @@ def check_transaction_notifications() -> list[str]:
     #    assert_* function that names these same strings, so disabling the real
     #    call left the string sitting in the assertion and the check stayed
     #    green. A check that passes on broken input is worse than none.
-    # 4. The claim the brief got wrong. Completing a ride DEBITS the platform
+    # 5. The claim the brief got wrong. Completing a ride DEBITS the platform
     #    commission via deduct_transaction_fee; the fare is settled outside the
     #    app and never credited to a wallet. A message saying money was added
     #    contradicts the wallet screen immediately.
@@ -1159,6 +1159,44 @@ def check_transaction_notifications() -> list[str]:
     def _body(name: str) -> str:
         path, sql = last_migration_defining(name)
         return function_body(sql, name).lower() if path else ""
+
+    # 7. Declared source needles must occur in the bodies they inspect.
+    #
+    #    Two needles in this series were wrong and each reported a defect that
+    #    did not exist, on every run, until a live run caught it: one was
+    #    sensitive to line wrapping, one had a typo (v_ledgerid). The assertion
+    #    is the thing that is broken in both cases, so nothing else in CI can
+    #    notice. Migration 93 declares the needles for the live database to
+    #    check; this checks the same list here, which is the same answer a
+    #    deploy cycle earlier and without one.
+    needle_decl = ROOT / ("supabase/migrations/"
+                          "20260927000093_two_assertion_needles_were_wrong.sql")
+    if needle_decl.exists():
+        decl_sql = _read(needle_decl)
+        rows = re.findall(
+            r"ARRAY\[('(?:[^']|'')+'),\s*'(\w+)'\],", decl_sql)
+        if not rows:
+            problems.append("the declared-needle list in 0093 is empty or "
+                            "unparseable, so no needle is being verified")
+        for lit, fn in rows:
+            # '' inside a SQL string literal is one quote.
+            needle = lit.strip("'").replace("''", "'")
+            target = _body(fn)
+            if not target:
+                problems.append(f"declared needle {needle!r} names {fn}(), "
+                                f"which is not defined")
+                continue
+            if needle.replace(" ", "") not in target.replace(" ", ""):
+                problems.append(
+                    f"declared needle {needle!r} does not occur in {fn}(). An "
+                    f"assertion comparing against text that is not there "
+                    f"reports defects that do not exist and passes when it "
+                    f"should fail; this exact typo shipped once "
+                    f"(v_ledgerid for v_ledger_id).")
+    else:
+        problems.append("migration 0093 is missing: the declared source "
+                        "needles are never verified")
+
 
     order_src = _body("fn_notify_order_status_change")
     if not order_src:

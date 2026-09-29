@@ -467,20 +467,27 @@ RPC):
   separates *lost* from *rewritten*: a branch only counts as rewritten if the
   new body still notifies on that same status, and every rewrite must be
   declared in `REVIEWED_REWRITES`. An undeclared rewrite fails.
-* `python3 tools/harness/fault_inject_notifications.py` reintroduces 21 real
+* `python3 tools/harness/fault_inject_notifications.py` reintroduces 23 real
   bugs — a dropped dedupe check, a dedupe that reads only one delivery table,
   a missing lock, a removed error handler, an unrevoked privilege, a lost
   authorization clause, a false "money added" claim, an assertion the CI
-  client cannot reach — and requires the harness to go red for each. A check
-  that passes on broken input is worse than no check, because it is reported
-  as a safety net while providing none.
+  client cannot reach, a mistyped source needle — and requires the harness to
+  go red for each. A check that passes on broken input is worse than no check,
+  because it is reported as a safety net while providing none.
 
-  It found **nine** vacuous checks across two rounds. The recurring cause was
-  matching on text that was not the thing being checked: a substring of the
-  whole migration that also appears in that migration's own assertion; a
-  comment inside a function body keeping a deleted `EXISTS` alive; a needle
-  sensitive to the author's line wrapping; and a privilege model that ignored
-  statement order. Each is a way a check can look thorough and decide nothing.
+  It found **eleven** vacuous or wrong checks across three rounds. The
+  recurring cause was matching on text that was not the thing being checked: a
+  substring of the whole migration that also appears in that migration's own
+  assertion; a comment inside a function body keeping a deleted `EXISTS`
+  alive; a needle sensitive to the author's line wrapping; a needle with a
+  typo; and a privilege model that ignored statement order.
+
+**The pattern across the three live rounds is worth stating:** of the eight
+failures, one was a defect in the notifications and **seven were defects in the
+assertions written to check them.** Two of those would have "passed" by
+deleting a working feature. `assert_source_needles_match()` exists because of
+that: an assertion whose needle does not match its target cannot be caught by
+anything else, since it is the thing doing the checking.
 
 All SQL is parsed with `pglast` (libpg_query, the real PostgreSQL parser)
 before commit rather than read by eye. Two pre-existing files fail to parse and
@@ -508,6 +515,7 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | Points→birr says so, and the money invariants survived the restatement | `assert_points_conversion_notifies()` (migration 89) |
 | The notifications inbox is owner-scoped and still guarded | `assert_notification_inbox_is_owner_only()` (migration 90) |
 | Every assertion the suite calls is reachable by the role the suite runs as | `assert_every_assertion_is_reachable()` (migration 91) |
+| Source-matching assertions compare against text that exists | `assert_source_needles_match()` (migration 93) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
@@ -572,6 +580,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0090` | the notifications inbox is still owner-scoped (assertion) | a new definer function could widen who reads the inbox |
 | `0091` | the new assertions are executable by `anon` | Connectivity CI cannot call them; PostgREST reports PGRST202, which reads like a missing migration |
 | `0092` | the dedupe covers the client-path queue, and two wrong assertions corrected | a retried payment queues the same message twice |
+| `0093` | two more assertion needles corrected, and needles are declared + verified | an assertion searches for text that is not there and reports phantom defects |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
@@ -635,7 +644,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (63 tests). If it is red, the failure message names
+1. Connectivity CI green (64 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
@@ -654,6 +663,8 @@ the dashboard survives a deploy.
    `assert_notification_inbox_is_owner_only();` and
    `assert_every_assertion_is_reachable();` each return a string beginning
    `ok:`. A `FAIL:` prefix names the specific thing that regressed.
+9. `select public.assert_source_needles_match();` returns `ok:` — the
+   source-matching assertions are comparing against text that exists.
 
 **Migrations must be applied before Connectivity CI can pass.** It runs against
 the live database, and it runs as the **`anon`** role: the suite builds
