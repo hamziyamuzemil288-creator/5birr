@@ -19,6 +19,15 @@ class _State extends State<ProviderBusinessProfileScreen> {
   final _descCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _phoneCtrl.dispose();
+    _addressCtrl.dispose();
+    super.dispose();
+  }
   String? _selectedCategoryId;
   List<Map<String, dynamic>> _categories = [];
   Map<String, dynamic>? _profile;

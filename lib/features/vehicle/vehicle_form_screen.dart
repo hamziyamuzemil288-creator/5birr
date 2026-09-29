@@ -23,6 +23,16 @@ class _State extends State<VehicleFormScreen> {
   final _plateCtrl = TextEditingController();
   final _colorCtrl = TextEditingController();
   final _capacityCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _brandCtrl.dispose();
+    _modelCtrl.dispose();
+    _plateCtrl.dispose();
+    _colorCtrl.dispose();
+    _capacityCtrl.dispose();
+    super.dispose();
+  }
   String? _categoryId;
   List<Map<String, dynamic>> _categories = [];
   String? _providerId;

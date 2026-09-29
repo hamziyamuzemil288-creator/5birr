@@ -22,6 +22,13 @@ class _RechargeScreenState extends State<RechargeScreen> {
   Map<String, dynamic>? _selectedMethod;
   final _amountCtrl = TextEditingController();
   final _refCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    _refCtrl.dispose();
+    super.dispose();
+  }
   File? _screenshot;
   bool _loading = true;
   bool _submitting = false;

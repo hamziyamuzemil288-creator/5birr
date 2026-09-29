@@ -830,7 +830,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString())));
+            .showSnackBar(SnackBar(
+                content:
+                    Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }
@@ -861,7 +863,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString())));
+            .showSnackBar(SnackBar(
+                content:
+                    Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }
@@ -1011,7 +1015,7 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            e.toString().replaceFirst('Exception: ', '').split('\n').first,
+            friendlyError(e, context: 'Could not send that warning'),
           ),
         ),
       );
@@ -1095,7 +1099,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString())));
+            .showSnackBar(SnackBar(
+                content:
+                    Text(friendlyError(e, context: 'Could not complete that action'))));
       }
     }
   }

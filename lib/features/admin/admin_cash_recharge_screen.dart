@@ -15,6 +15,13 @@ class AdminCashRechargeScreen extends StatefulWidget {
 class _State extends State<AdminCashRechargeScreen> {
   final _amountCtrl = TextEditingController();
   final _reasonCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
   bool _saving = false;
   String? _error;
   String? _success;

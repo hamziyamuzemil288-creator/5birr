@@ -26,6 +26,15 @@ class _State extends State<ProviderProductFormScreen> {
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
   final _qtyCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _priceCtrl.dispose();
+    _qtyCtrl.dispose();
+    super.dispose();
+  }
   // Listing pricing mode: fixed price (default) or per-unit (kg / liter).
   // Unit mode keeps the existing full listing (images optional) and stores
   // the per-unit price in `price` AND `price_per_unit`, plus `unit`.

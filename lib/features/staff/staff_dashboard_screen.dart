@@ -671,7 +671,11 @@ class _StaffDashboardScreenState extends ConsumerState<StaffDashboardScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not mark it as read. ${e.toString().split('\n').first}')),
+          SnackBar(
+            content: Text(
+              friendlyError(e, context: 'Could not mark it as read'),
+            ),
+          ),
         );
       }
     }
