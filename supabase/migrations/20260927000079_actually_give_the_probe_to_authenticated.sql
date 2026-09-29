@@ -20,15 +20,28 @@
 -- proceed unless current_user really is authenticated, rather than running the
 -- whole body and reporting a pass it never earned.
 --
--- The target is authenticated, unconditionally. The caller is then granted
--- EXECUTE separately, because the two roles genuinely are different here:
--- postgres calls it, authenticated owns it.
+-- ── Then the transfer itself failed, for a reason worth writing down ───────
 --
--- Grant before the transfer, still: only the owner may GRANT, and immediately
--- after the ALTER this session is no longer the owner. REVOKE from PUBLIC in the
--- same breath, because a SECURITY DEFINER function that any client can call is
--- not something to leave lying around — and the owner needs the grant, not
--- PUBLIC, to reach it.
+--   ERROR: permission denied for schema public (SQLSTATE 42501)
+--
+-- AlterObjectOwnership checks one thing that is easy not to know about: the NEW
+-- owner must hold CREATE on the schema the object lives in. Supabase grants
+-- authenticated only USAGE on public, and deliberately never CREATE — a client
+-- that can create objects in public is a privilege the platform does not hand
+-- out. So the transfer could not be granted into existence, only borrowed.
+--
+-- Which is what this does: CREATE is granted and revoked inside the one
+-- transaction this migration already runs in, so no other session can ever see
+-- authenticated holding it. It is not a standing grant, it is a key handed over
+-- for exactly one statement and taken back, and the REVOKE is conditional on
+-- having granted it, so an environment where authenticated legitimately has
+-- CREATE is left alone.
+--
+-- Grant before the transfer, still, for the older reason: only the owner may
+-- GRANT, and immediately after the ALTER this session is no longer the owner.
+-- REVOKE from PUBLIC in the same breath, because a SECURITY DEFINER function
+-- any client can call is not something to leave lying around — the owner needs
+-- the grant, not PUBLIC, to reach it.
 --
 -- No application behaviour changes. This migration only changes who owns a
 -- test function and who may call it.
@@ -36,8 +49,8 @@
 
 DO $$
 DECLARE
-  v_owner  name;
   v_caller name;
+  v_borrowed_create boolean := false;
 BEGIN
   -- The role that may call this: whoever owns the assertion that builds the
   -- fixtures, captured rather than assumed.
@@ -55,19 +68,28 @@ BEGIN
                     'by it and the like probe cannot run as a real client';
   END IF;
 
-  -- The current owner, before the transfer, so the GRANT below is legal.
-  SELECT pg_get_userbyid(p.proowner) INTO v_owner
-    FROM pg_proc p
-   WHERE p.oid = 'public.like_probe_as_client()'::regprocedure;
-
-  IF v_owner IS NULL THEN
+  IF NOT EXISTS (select 1 from pg_proc
+                  where oid = 'public.like_probe_as_client()'::regprocedure) THEN
     RAISE EXCEPTION 'like_probe_as_client() does not exist; migration 78 must be applied '
                     'before this one';
   END IF;
 
   EXECUTE 'REVOKE ALL ON FUNCTION public.like_probe_as_client() FROM PUBLIC';
   EXECUTE format('GRANT EXECUTE ON FUNCTION public.like_probe_as_client() TO %I', v_caller);
+
+  -- Borrowed, not granted. See the header.
+  IF NOT has_schema_privilege('authenticated', 'public', 'CREATE') THEN
+    EXECUTE 'GRANT CREATE ON SCHEMA public TO authenticated';
+    v_borrowed_create := true;
+  END IF;
+
   EXECUTE 'ALTER FUNCTION public.like_probe_as_client() OWNER TO authenticated';
+
+  -- Handed straight back. Conditional, so an environment that already had it
+  -- is not stripped of a privilege it was relying on.
+  IF v_borrowed_create THEN
+    EXECUTE 'REVOKE CREATE ON SCHEMA public FROM authenticated';
+  END IF;
 END;
 $$;
 
@@ -75,41 +97,45 @@ $$;
 -- And prove the transfer took, at deploy time, rather than leaving it to be
 -- discovered by a failing test run twenty minutes later.
 --
--- current_user is checked by CALLING the function, not by reading
--- pg_class/pg_proc: what matters is who Postgres resolves as the effective user
--- inside the body, and only a call answers that. A SECURITY DEFINER function
--- owned by postgres will return true here, which is exactly the bug 78 shipped,
--- so this check cannot pass by inspecting the catalog alone.
+-- current_user is checked by CALLING the function, not by reading pg_proc:
+-- what matters is who Postgres resolves as the effective user inside the body,
+-- and only a call answers that. A function still owned by postgres reports the
+-- identity failure, which is exactly the bug 78 shipped — so an inspection of
+-- the catalog could not have caught this one.
+--
+-- The claims are set first so that the probe gets past the auth.uid() check
+-- too. There are no fixtures in this transaction, so the call then stops at
+-- the first step that needs one, and that is the expected ending: getting that
+-- far is the evidence.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
   v_reported text;
 BEGIN
+  PERFORM set_config('request.jwt.claim.sub',
+                     '00000000-0000-4000-8000-00000000e7a1', true);
+  PERFORM set_config('request.jwt.claims',
+                     json_build_object('sub', '00000000-0000-4000-8000-00000000e7a1',
+                                       'role', 'authenticated')::text, true);
+
   BEGIN
-    -- Runs to its first assertion and stops there: the fixtures do not exist in
-    -- this transaction, so it fails on the identity check, which is the one
-    -- check that does not need fixtures. Anything else is a real problem worth
-    -- surfacing here.
     PERFORM public.like_probe_as_client();
+    v_reported := 'returned normally';
   EXCEPTION WHEN OTHERS THEN
     v_reported := SQLERRM;
   END;
 
-  IF v_reported IS NULL THEN
-    RAISE EXCEPTION 'like_probe_as_client() ran to completion as authenticated on an empty '
-                    'database. Its fixtures are missing, so this is not evidence the owner '
-                    'transfer worked -- it means the probe is not checking what it claims to.';
+  -- The one failure that means the transfer did not take. Anything else means
+  -- it did, including the fixture errors expected here.
+  IF v_reported LIKE '%not as authenticated%' THEN
+    RAISE EXCEPTION 'the owner transfer still did not take -- %', v_reported;
   END IF;
 
-  IF v_reported NOT LIKE '%running as %not as authenticated%' THEN
-    RAISE EXCEPTION 'like_probe_as_client() failed on something other than the identity '
-                    'check: %', v_reported;
-  END IF;
-
-  RAISE NOTICE 'like_probe_as_client() is owned by authenticated and reports the identity '
-               'before it does anything else -- the owner transfer took';
+  RAISE NOTICE 'like_probe_as_client() is owned by authenticated and cleared its identity '
+               'check; it then stopped where there are no fixtures to work with: %',
+               v_reported;
 END;
 $$;
 
 COMMENT ON FUNCTION public.like_probe_as_client() IS
-  'WRITE test helper: SECURITY DEFINER and OWNED BY authenticated, so current_user is a real client inside it and row-level security is genuinely evaluated. Never call this directly -- it assumes the fixtures exist. Asserts its own identity on entry and refuses to run otherwise, which is how migration 78''s no-op owner transfer was caught immediately: 77 tried set_config(''role'', ...), which PostgreSQL forbids inside a SECURITY DEFINER function, and 78 transferred the function to the caller''s own role instead of to authenticated.';
+  'WRITE test helper: SECURITY DEFINER and OWNED BY authenticated, so current_user is a real client inside it and row-level security is genuinely evaluated. Never call this directly -- it assumes the fixtures exist. Asserts its own identity on entry and refuses to run otherwise, which is how migration 78''s no-op owner transfer was caught immediately: 77 tried set_config(''role'', ...), which PostgreSQL forbids inside a SECURITY DEFINER function, and 78 transferred the function to the caller''s own role instead of to authenticated. Migrating it needs authenticated to hold CREATE on public, which Supabase does not grant, so 79 borrows it for the one statement and revokes it.';
