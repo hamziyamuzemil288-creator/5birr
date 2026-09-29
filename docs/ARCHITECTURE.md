@@ -135,6 +135,29 @@ that is only ever written and never read is a guess with a database behind it.
 value is a guess until the response lands, and a rejected write returns the
 `AppFailure` so the UI can say why rather than reverting in silence.
 
+**Identity is verified after signup, and the liveness signal is a signal, not
+a gate.** No ID is collected at registration — for users or providers — so
+the document step lives where the action is: in-app, before a booking, a
+listing upload, or a ride claim (`ProviderDocGate`, enforced server-side by
+`provider_docs_satisfied`). When a document row is written,
+`DocumentUploadService` takes one GPS fix and records it on that row
+(`user_documents.gps_*`, `location_capture_status`). A photo and the place it
+was submitted from are hard to fake together, which is the value. Two things
+follow, and both are deliberate:
+
+- **It never blocks.** GPS off or permission denied records `UNAVAILABLE` and
+  the upload proceeds. A check that locks out users on poor signal breaks
+  verification for exactly the people who cannot afford to lose it.
+- **It is not tracked.** One reading, on one row, at submission time. It is
+  readable only by the owner, admins and staff with `registrations` — the
+  table's existing policies — and it appears in no public view.
+
+`prevent_document_verification_forgery` overwrites the *verification* columns
+on insert and deliberately leaves the liveness columns alone;
+`assert_document_liveness_is_recorded` fails if that ever changes, since a
+trigger that quietly overwrote the signal would leave the feature present,
+documented, and recording nothing.
+
 ## Where the code actually is today
 
 The target above is the direction. These are the gaps, written down so nobody

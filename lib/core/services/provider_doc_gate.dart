@@ -455,6 +455,17 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
               ],
             ] else ...[
               _slot(),
+              const SizedBox(height: 10),
+              // Said out loud because it is a location: the app takes ONE fix
+              // at the moment of upload as a verification signal, keeps it on
+              // that document row, and never tracks the person afterwards.
+              const Text(
+                'We note your location once, at the moment you upload, as a '
+                'verification signal. It is not tracked, and turning GPS off '
+                'does not block your upload.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+              ),
+              const SizedBox(height: 10),
               TextButton.icon(
                 onPressed: _uploading
                     ? null

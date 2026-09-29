@@ -1031,6 +1031,23 @@ void main() {
       print('    live map -> $detail');
     });
 
+    test('a document submission records where the device was', () async {
+      // The liveness signal. A document photo and the location it was
+      // submitted from are very hard to fake together, which is the whole
+      // point — but it is a SIGNAL only: nothing gates on it, and the
+      // upload must still succeed with GPS off (that is why the column
+      // carries UNAVAILABLE/NOT_ATTEMPTED rather than being required).
+      final detail =
+          await rpcText('assert_document_liveness_is_recorded');
+      expect(detail, isNotNull,
+          reason: 'user_documents has lost the GPS liveness columns or their '
+              'integrity constraints, so an ID submission records no location, '
+              'or the BEFORE INSERT trigger now overwrites the signal, or the '
+              'client can no longer insert documents at all.');
+      // ignore: avoid_print
+      print('    document liveness -> $detail');
+    });
+
     test('the rank ladder is readable and its boundaries behave', () async {
       // The ladder is data the CEO edits. This asserts the stored array is
       // the shape the readers expect and that the boundary is real: at the
