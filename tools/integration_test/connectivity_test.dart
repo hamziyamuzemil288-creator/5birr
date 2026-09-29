@@ -1037,13 +1037,17 @@ void main() {
       // point — but it is a SIGNAL only: nothing gates on it, and the
       // upload must still succeed with GPS off (that is why the column
       // carries UNAVAILABLE/NOT_ATTEMPTED rather than being required).
-      final detail =
-          await rpcText('assert_document_liveness_is_recorded');
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_document_liveness_is_recorded');
       expect(detail, isNotNull,
           reason: 'user_documents has lost the GPS liveness columns or their '
               'integrity constraints, so an ID submission records no location, '
               'or the BEFORE INSERT trigger now overwrites the signal, or the '
-              'client can no longer insert documents at all.');
+              'client can no longer insert documents at all. If this is null '
+              'WITH the function present, read the error below before '
+              'changing anything: it is either a genuine finding or a '
+              'PostgREST cache / RPC problem, and they are not the same. '
+              'Diagnostic: $error');
       // ignore: avoid_print
       print('    document liveness -> $detail');
     });
