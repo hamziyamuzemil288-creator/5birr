@@ -20,6 +20,14 @@
 --
 -- Corrected in a new file rather than by editing 00080: that one is already
 -- in the migration history, so an edit to it would never be applied again.
+--
+-- Applied by hand, not through Deploy Supabase: GitHub Actions was refusing to
+-- schedule any run ("recent account payments have failed or your spending
+-- limit needs to be increased"), so this was pasted into the Supabase SQL
+-- editor. That means `supabase db push` will still see 00081 as pending and
+-- apply it once Actions works again — which is harmless, because this file is
+-- a CREATE OR REPLACE of the same signature plus a GRANT and a NOTIFY. Do not
+-- delete it on the assumption that it has "already run".
 
 CREATE OR REPLACE FUNCTION public.assert_document_liveness_is_recorded()
 RETURNS text
