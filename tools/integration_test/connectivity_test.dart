@@ -1254,5 +1254,30 @@ void main() {
       // ignore: avoid_print
       print('    notification inbox scope -> $detail');
     });
+
+    test('every assertion this suite calls is executable by the anon role',
+        () async {
+      // This suite builds SupabaseClient with the ANON key and no session, so
+      // every RPC here runs as `anon`. An assertion granted to `authenticated`
+      // only is invisible to it, and PostgREST reports that as PGRST202 "could
+      // not find the function in the schema cache" — which reads like a
+      // missing migration and sends you looking in the wrong place.
+      //
+      // Five assertions in this file were unreachable for exactly that reason
+      // and failed CI after a clean deploy. This checks the whole assert_*
+      // family, so the next one written without anon fails immediately and by
+      // name instead of as a confusing schema-cache error.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_every_assertion_is_reachable');
+      expect(detail, isNotNull,
+          reason: 'assert_every_assertion_is_reachable() could not run, so '
+              'nothing verified that the assertions in this suite are '
+              'reachable. Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'An assertion in this suite cannot be called by the role '
+              'this suite runs as, so it will never pass: $detail');
+      // ignore: avoid_print
+      print('    assertion reachability -> $detail');
+    });
   });
 }

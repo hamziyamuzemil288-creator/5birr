@@ -145,6 +145,25 @@ MUTATIONS = [
         None, None, None,
     ),
     (
+        "an assertion is revoked from anon with no anon grant (the CI failure)",
+        "20260927000091_assertion_privileges_reach_the_anon_client.sql",
+        "GRANT EXECUTE ON FUNCTION public.assert_points_conversion_notifies()\n"
+        "  TO anon, authenticated, service_role;\n"
+        "\n"
+        "GRANT EXECUTE ON FUNCTION public.assert_notification_inbox_is_owner_only()",
+        "REVOKE ALL ON FUNCTION public.assert_points_conversion_notifies()\n"
+        "  FROM anon;\n"
+        "GRANT EXECUTE ON FUNCTION public.assert_notification_inbox_is_owner_only()",
+    ),
+    (
+        "an assertion drops anon from its grant (PGRST202 in CI)",
+        "20260927000091_assertion_privileges_reach_the_anon_client.sql",
+        "GRANT EXECUTE ON FUNCTION public.assert_order_and_ride_receipts_are_sent()\n"
+        "  TO anon, authenticated, service_role;",
+        "GRANT EXECUTE ON FUNCTION public.assert_order_and_ride_receipts_are_sent()\n"
+        "  TO authenticated, service_role;",
+    ),
+    (
         "no screen links to the notifications route (all entry points removed)",
         "__ALL_SCREEN_ENTRIES__",
         "'/admin-notifications'",

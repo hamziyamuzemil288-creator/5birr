@@ -458,14 +458,15 @@ RPC):
   separates *lost* from *rewritten*: a branch only counts as rewritten if the
   new body still notifies on that same status, and every rewrite must be
   declared in `REVIEWED_REWRITES`. An undeclared rewrite fails.
-* `python3 tools/harness/fault_inject_notifications.py` reintroduces 17 real
+* `python3 tools/harness/fault_inject_notifications.py` reintroduces 19 real
   bugs — a dropped dedupe check, a missing lock, a removed error handler, an
   unrevoked privilege, a lost authorization clause, a false "money added"
-  claim — and requires the harness to go red for each. A check that passes on
-  broken input is worse than no check, because it is reported as a safety net
-  while providing none; this found five vacuous checks in the first version,
-  each of which had to search a function body rather than the whole migration
-  (the migration also contains the assertion that names the same strings).
+  claim, an assertion the CI client cannot reach — and requires the harness to
+  go red for each. A check that passes on broken input is worse than no check,
+  because it is reported as a safety net while providing none; this found five
+  vacuous checks in the first version, each of which had to search a function
+  body rather than the whole migration (the migration also contains the
+  assertion that names the same strings).
 
 All SQL is parsed with `pglast` (libpg_query, the real PostgreSQL parser)
 before commit rather than read by eye. Two pre-existing files fail to parse and
@@ -492,6 +493,7 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | Both parties are told an order payment and a ride completion, with the amount | `assert_order_and_ride_receipts_are_sent()` (migration 88) |
 | Points→birr says so, and the money invariants survived the restatement | `assert_points_conversion_notifies()` (migration 89) |
 | The notifications inbox is owner-scoped and still guarded | `assert_notification_inbox_is_owner_only()` (migration 90) |
+| Every assertion the suite calls is reachable by the role the suite runs as | `assert_every_assertion_is_reachable()` (migration 91) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
@@ -554,6 +556,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0088` | both parties notified on an order payment and a completed ride, with the amount | the provider is never told a payment cleared; the rider is told nothing about the fare |
 | `0089` | points→wallet conversion notifies with both figures | points convert to birr silently |
 | `0090` | the notifications inbox is still owner-scoped (assertion) | a new definer function could widen who reads the inbox |
+| `0091` | the new assertions are executable by `anon` | Connectivity CI cannot call them; PostgREST reports PGRST202, which reads like a missing migration |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
@@ -617,7 +620,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (62 tests). If it is red, the failure message names
+1. Connectivity CI green (63 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
@@ -632,9 +635,22 @@ the dashboard survives a deploy.
    failure isolation are actually exercised rather than inspected.
 8. `select public.assert_approval_welcome_covers_all_paths();`,
    `assert_order_and_ride_receipts_are_sent();`,
-   `assert_points_conversion_notifies();` and
-   `assert_notification_inbox_is_owner_only();` each return a string beginning
+   `assert_points_conversion_notifies();`,
+   `assert_notification_inbox_is_owner_only();` and
+   `assert_every_assertion_is_reachable();` each return a string beginning
    `ok:`. A `FAIL:` prefix names the specific thing that regressed.
+
+**Migrations must be applied before Connectivity CI can pass.** It runs against
+the live database, and it runs as the **`anon`** role: the suite builds
+`SupabaseClient(_url, _anonKey)` with no session. An assertion granted to
+`authenticated` only, and revoked from `anon`, is invisible to it — and
+PostgREST reports that as `PGRST202 "could not find the function in the schema
+cache"`, which reads like a missing migration and sends you to the wrong file.
+Five new assertions failed exactly that way after a clean deploy; migration 91
+fixes them and `assert_every_assertion_is_reachable()` now checks the whole
+`assert_*` family so the next one fails by name. A `GRANT` to `authenticated` on
+its own is harmless — anon inherits EXECUTE-for-PUBLIC — and it is the
+`REVOKE ... FROM anon` that removes the suite's only path.
 
 **Nothing can log in until `login-gate` is redeployed with `--no-verify-jwt`**
 (§7.2). The flag is in `deploy-supabase.yml`, so any run of the Deploy Supabase

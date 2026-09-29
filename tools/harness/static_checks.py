@@ -1312,7 +1312,110 @@ def check_transaction_notifications() -> list[str]:
                                 f"test, so it will not run against the live "
                                 f"database")
 
-    # 8. The restatements in this series must not have lost anything. This runs
+    # 8. Every assertion the suite calls must be executable by the role the
+    #    suite ACTUALLY runs as.
+    #
+    #    The suite builds SupabaseClient with the anon key and no session, so
+    #    its RPCs run as `anon`. An assertion granted to `authenticated` only is
+    #    invisible to it, and PostgREST reports that as PGRST202 "could not find
+    #    the function in the schema cache" — which reads like a missing
+    #    migration and sends the reader to the wrong file. Five assertions
+    #    shipped that way and failed CI after a clean deploy.
+    #
+    #    The check has to pair the GRANT with the revoke: a function created in
+    #    public has EXECUTE for PUBLIC by default and anon inherits it, so a
+    #    GRANT naming authenticated looks correct while `REVOKE ... FROM anon`
+    #    silently removes the only path the suite has.
+    conn_path = ROOT / "tools/integration_test/connectivity_test.dart"
+    if conn_path.exists():
+        conn_sql = _read(conn_path)
+        # (privilege statements are scanned in file order below, so a later
+        # grant correctly supersedes an earlier revoke)
+
+        # The real rule, established by checking what actually passes:
+        #
+        #   * A function created in public has EXECUTE for PUBLIC by default,
+        #     and anon inherits it. GRANTing to `authenticated` is ADDITIVE and
+        #     changes nothing for anon — several older assertions do exactly
+        #     that and pass.
+        #   * REVOKE ... FROM public, anon is what REMOVES the anon path. That
+        #     is the active narrowing, and it is the mistake: the GRANT beside
+        #     it reads correct while the suite still cannot call the function.
+        #
+        # So the check is not "is anon in the grant" but "is there a revoke of
+        # anon/PUBLIC that the last privilege statement does not undo".
+        #
+        # Verified by the failure this was written for: five assertions in
+        # migrations 86-90 were granted `authenticated, service_role` AND
+        # revoked anon, and failed CI with PGRST202 after a clean deploy.
+        # assert_ride_chain_has_no_dead_ends and six others are granted
+        # `authenticated` only and are fine, because nothing revokes them.
+        # Both statement shapes are used in this repo and both must be read:        #
+        #   GRANT EXECUTE ON FUNCTION public.assert_x() TO anon, authenticated;
+        #   GRANT EXECUTE ON FUNCTION public.assert_x(), public.assert_y()
+        #     TO anon, authenticated, service_role;
+        #
+        # An earlier version of this check only understood the first and read
+        # the second's "revoke ... from public" as removing the suite's only
+        # access, flagging an assertion that demonstrably passes.
+        stmt_rx = re.compile(
+            r"(GRANT|REVOKE)\s+(?:ALL\s+)?(?:EXECUTE\s+)?ON\s+FUNCTION\s+"
+            r"((?:public\.\w+\s*\(\s*\)\s*,?\s*)+)"
+            r"((?:TO|FROM)\s+[^;]+);", re.IGNORECASE)
+        # Postgres applies these CUMULATIVELY, so a grant and a revoke are two
+        # facts about a function, not two competing "last" values. Keeping only
+        # the last statement per function is what made
+        # assert_ride_transition_covers_chain look unreachable: it is granted
+        # to anon and THEN revoked from public in the same file, and the anon
+        # grant — the one that matters — was being overwritten.
+        anon_granted: set[str] = set()
+        revoked: dict[str, set[str]] = {}
+        for path in migration_files():
+            text = _read(path)
+            for m in stmt_rx.finditer(text):
+                verb = m.group(1).upper()
+                funcs = re.findall(r"public\.(\w+)\s*\(\s*\)", m.group(2))
+                keyword = "TO" if verb == "GRANT" else "FROM"
+                roles_m = re.search(keyword + r"\s+([^;]+)", m.group(3),
+                                    re.IGNORECASE)
+                named = ({r.strip().lower() for r in roles_m.group(1).split(",")}
+                         if roles_m else set())
+                for fn in funcs:
+                    if verb == "GRANT":
+                        if "anon" in named:
+                            anon_granted.add(fn)
+                    else:
+                        revoked.setdefault(fn, set()).update(named)
+
+        # "Called by the suite" must mean CALLED, not merely named. A substring
+        # search matched list_staff_jobs() and my_staff_record(), which appear
+        # only inside comments explaining that anon is correctly refused — and
+        # those two are supposed to be anon-revoked. Reading the comment as a
+        # call is how a check starts demanding the opposite of the invariant.
+        called = set(re.findall(r"rpcText(?:Diagnosed)?\('([\w]+)'\)", conn_sql))
+        called |= set(re.findall(r"\bok\('([\w]+)'\)", conn_sql))
+        # One test calls a function with a named argument list rather than
+        # through ok()/rpcText; pick those up too.
+        called |= set(re.findall(r"client\.rpc\('([\w]+)'", conn_sql))
+
+        for name, roles in sorted(revoked.items()):
+            if name not in called:
+                continue  # not called by the suite; not this check's business
+            if not ("anon" in roles or "public" in roles):
+                continue
+            if name in anon_granted:
+                continue  # anon holds a direct grant; the revoke is harmless
+            problems.append(
+                f"{name}() is called by the connectivity suite, which runs as "
+                f"the anon role, but nothing ever grants it EXECUTE to anon "
+                f"and a REVOKE ... FROM {sorted(roles)} is present. A function "
+                f"in public has EXECUTE for PUBLIC by default and anon "
+                f"inherits it, so that revoke removes the only path the suite "
+                f"has. PostgREST reports it as PGRST202 'could not find the "
+                f"function in the schema cache', which reads like a missing "
+                f"migration rather than a missing privilege.")
+
+    # 9. The restatements in this series must not have lost anything. This runs
     #    the real differ rather than a proxy for it, because a proxy that
     #    cannot tell a rewrite from a deletion is the exact failure mode that
     #    has hit this repo twice.
