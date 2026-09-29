@@ -184,6 +184,13 @@ MUTATIONS = [
         "ARRAY['ride-completed-driver:',          'fn_notify_ride_status_typo'],",
     ),
     (
+        "a plpgsql FOREACH iterates with an array-typed loop variable",
+        "20260927000094_needles_match_loop_is_iterable.sql",
+        "  FOR v_i IN 1 .. COALESCE(array_length(v_cases, 1), 0) LOOP\n"
+        "    v_row := v_cases[v_i];",
+        "  FOREACH v_row IN ARRAY v_cases LOOP",
+    ),
+    (
         "no screen links to the notifications route (all entry points removed)",
         "__ALL_SCREEN_ENTRIES__",
         "'/admin-notifications'",

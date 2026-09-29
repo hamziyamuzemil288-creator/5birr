@@ -38,11 +38,29 @@ DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "deploy-supabase.yml"
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+_READ_CACHE: dict[str, str] = {}
+
+
 def _read(path: Path) -> str:
+    """Read a file, memoised.
+
+    The FOREACH check resolves the last definition of every function in the
+    schema, and last_migration_defining re-reads all 189 migrations each time.
+    Uncached that is a few million reads per harness run, which pushed the
+    fault injector past the shell's time limit. The injector edits files
+    between runs, so the cache is keyed on path plus mtime and size.
+    """
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        st = path.stat()
     except OSError:
         return ""
+    key = f"{path}:{st.st_mtime_ns}:{st.st_size}"
+    if key not in _READ_CACHE:
+        try:
+            _READ_CACHE[key] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            _READ_CACHE[key] = ""
+    return _READ_CACHE[key]
 
 
 def dart_sources() -> list[Path]:
@@ -1160,7 +1178,49 @@ def check_transaction_notifications() -> list[str]:
         path, sql = last_migration_defining(name)
         return function_body(sql, name).lower() if path else ""
 
-    # 7. Declared source needles must occur in the bodies they inspect.
+    # 7. A plpgsql FOREACH may not iterate with an array-typed loop variable.
+    #
+    #    plpgsql refuses it at run time with 42804, and nothing catches it
+    #    earlier: CREATE FUNCTION does not parse a plpgsql body, db push
+    #    succeeds, and the privilege check passes because the function exists
+    #    and is executable. Only calling it raises — so the assertion silently
+    #    stops asserting, which is the most expensive way to fail.
+    #
+    #    The static approximation: find FOREACH loops and confirm the loop
+    #    variable is not declared as an array type in the same file.
+    foreach_rx = re.compile(r"FOREACH\s+(\w+)\s+IN\s+ARRAY", re.IGNORECASE)
+    defn_rx = re.compile(
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?(\w+)\s*\(",
+        re.IGNORECASE)
+    # Only the CURRENT definition of each function is judged. A migration that
+    # restated a function to fix it must not leave the harness permanently red
+    # on the superseded body — that trains people to ignore it, and the fix
+    # itself is what the check is asking for.
+    all_fns: set[str] = set()
+    for path in migration_files():
+        all_fns.update(m.group(1) for m in defn_rx.finditer(_read(path)))
+
+    for fn in sorted(all_fns):
+        latest, sql = last_migration_defining(fn)
+        if not sql:
+            continue
+        body = function_body(sql, fn)
+        if not body:
+            continue
+        for f in foreach_rx.finditer(body):
+            var = f.group(1)
+            if re.search(r"\b%s\s+[a-z_]+\[\]" % re.escape(var), body,
+                         re.IGNORECASE):
+                problems.append(
+                    f"{fn}() (last defined in {latest.name}) does FOREACH "
+                    f"{var} IN ARRAY ... but {var} is declared as an array. "
+                    f"plpgsql refuses an array-typed FOREACH loop variable at "
+                    f"run time (42804) and CREATE FUNCTION will not catch it, "
+                    f"so the function deploys and then raises on every call. "
+                    f"Use a subscripted FOR i IN 1 .. array_length(x, 1) loop "
+                    f"instead.")
+
+    # 8. Declared source needles must occur in the bodies they inspect.
     #
     #    Two needles in this series were wrong and each reported a defect that
     #    did not exist, on every run, until a live run caught it: one was
