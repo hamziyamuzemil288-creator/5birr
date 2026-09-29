@@ -113,18 +113,43 @@ Deno.serve(async (req: Request) => {
       return json({ error: "invalid_email" }, 400);
     }
 
-    // Fail closed until a real provider is configured. Never fall back to a
-    // response body, log, or other client-visible development channel.
-    const mailer = resolveProvider();
-    if (!mailer) {
-      return json({ error: "email_provider_not_configured" }, 503);
-    }
-
     const admin = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       { auth: { persistSession: false } },
     );
+
+    // Email verification is switched off (migration 82), so there is nothing
+    // to send and nothing to verify. Skipping here rather than failing gives
+    // the app a clean pass: the client treats any response without an `error`
+    // key as success, so the code screen moves on instead of showing a
+    // "could not send" message the user can do nothing about.
+    //
+    // `delivered: false` is the truth — nothing was sent. It is not an
+    // error, because the user did nothing wrong and there is no retry that
+    // would help.
+    const { data: otpRequired, error: otpCheckError } = await admin.rpc(
+      "signup_otp_required",
+    );
+    if (otpCheckError) {
+      console.error("signup_otp_required failed:", otpCheckError.message);
+      return json({ error: "security_check_unavailable" }, 503);
+    }
+    if (otpRequired !== true) {
+      return json({
+        delivered: false,
+        skipped: "email_verification_disabled",
+      });
+    }
+
+    // Past this point a real code WILL be sent and verified, so a provider
+    // is genuinely required. Fail closed rather than generating a code no
+    // user can ever receive — a silently undeliverable code looks identical
+    // to a user who mistyped theirs.
+    const mailer = resolveProvider();
+    if (!mailer) {
+      return json({ error: "email_provider_not_configured" }, 503);
+    }
 
     const required = await admin.rpc("captcha_required");
     if (required.error) {

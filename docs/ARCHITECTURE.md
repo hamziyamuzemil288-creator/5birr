@@ -257,9 +257,19 @@ records it on that row. It never blocks: GPS off or permission denied records
 `UNAVAILABLE` and the upload proceeds.
 
 **The signup OTP is a toggle, not a rule.** `signup_otp_required` (migration
-82) is currently **false**, because `send-otp` has no Resend key configured and
-the gate was taking registration down entirely. Admin approval is the gate on
-a new account. Turning the OTP back on is one `UPDATE`.
+82) is currently **false**, because `send-otp` has no working email provider
+and the gate was taking registration down entirely. Admin approval is the gate
+on a new account, and identity is checked later at the document step. Turning
+the OTP back on is one `UPDATE`.
+
+While it is off, `verify_email_otp()` completes the code screen **without
+stamping `verified_at`** (migration 84). That single property is the whole
+safety of the arrangement: `handle_new_user()` reads `otp_verified_recently()`,
+which reads `verified_at`, so an address that skipped the code carries no
+verification forward and must produce a real code the moment the OTP is
+switched back on. `assert_otp_bypass_is_scoped()` fails if that ever changes —
+because a bypass that records a verification is invisible in review and its
+consequence is a security property quietly disappearing, not a crash.
 
 ---
 
@@ -396,6 +406,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0081` | fixed liveness assertion | Connectivity CI red (test only) |
 | `0082` | `signup_otp_required` toggle | registration fails with "Database error saving new user" |
 | `0083` | `staff_jobs` RLS | the job catalogue is readable with the anon key |
+| `0084` | OTP bypass that records no verification | a build in circulation cannot pass the code screen |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.

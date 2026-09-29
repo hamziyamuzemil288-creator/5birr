@@ -264,6 +264,27 @@ void main() {
     });
   });
 
+  group('exposure: what the anon key can reach', () {
+    test('the OTP bypass records no verification', () async {
+      // Registration is currently open: no email code, admin approval is the
+      // gate. That is only safe because the bypass does NOT stamp
+      // verified_at — so switching the OTP back on restores the gate for
+      // every address, including everyone who signed up while it was off. A
+      // second stamp would exempt those addresses for 24 hours after the
+      // flip, invisibly.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_otp_bypass_is_scoped');
+      expect(detail, isNotNull,
+          reason: 'verify_email_otp() can no longer tell a switched-off gate '
+              'from a real verification, or it stamps verified_at somewhere '
+              'other than the correct-code branch — which would leave every '
+              'address that skipped the OTP exempt once it is switched back '
+              'on. Diagnostic: $error');
+      // ignore: avoid_print
+      print('    OTP bypass scope -> $detail');
+    });
+  });
+
   group('client-write guards do not block the server', () {
     test('order and notification guards exempt server roles', () async {
       // These guards gate on is_admin() = auth.uid(), which is NULL for
