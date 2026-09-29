@@ -246,6 +246,24 @@ void main() {
     });
   });
 
+  group('exposure: what the anon key can reach', () {
+    test('the staff-job catalogue is session-only', () async {
+      // staff_jobs had RLS disabled while list_staff_jobs() was explicitly
+      // revoked from anon — so the table published to the public what the
+      // function withheld from it. The client reads the catalogue as
+      // authenticated (the CEO's staff editor), so the assertion checks both
+      // directions: anon shut out, signed-in accounts still able to load it.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_staff_jobs_are_session_only');
+      expect(detail, isNotNull,
+          reason: 'public.staff_jobs is readable with the anon key, or RLS is '
+              'on with no SELECT policy at all (which would leave every staff '
+              'member with an empty checklist). Diagnostic: $error');
+      // ignore: avoid_print
+      print('    staff_jobs exposure -> $detail');
+    });
+  });
+
   group('client-write guards do not block the server', () {
     test('order and notification guards exempt server roles', () async {
       // These guards gate on is_admin() = auth.uid(), which is NULL for

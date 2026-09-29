@@ -157,8 +157,19 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                   style: const TextStyle(fontSize: 10, color: Colors.white)),
               backgroundColor: AppTheme.error,
               child: IconButton(
+                tooltip: 'Pending items',
                 icon: const Icon(Icons.notifications_outlined),
-                onPressed: () {},
+                // Was `() {}` — a bell carrying a count of pending work that
+                // did nothing when tapped. The badge counts three queues, so
+                // it goes to whichever is actually holding the work:
+                // approvals first, and the payment queue when the only thing
+                // outstanding is a recharge. The per-queue cards further down
+                // the same screen remain the precise way in.
+                onPressed: () => context.push(
+                  _pendingProviders + _pendingUsers > 0
+                      ? '/admin/approvals'
+                      : '/admin/payments',
+                ),
               ),
             ),
           IconButton(

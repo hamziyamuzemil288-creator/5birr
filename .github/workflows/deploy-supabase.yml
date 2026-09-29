@@ -278,6 +278,28 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy login-gate
 
+      # Self-service password change for a signed-in USER or provider
+      # (change_password_screen). It is a separate function from
+      # staff-change-password on purpose — that one refuses anyone without a
+      # staff row, and loosening it to "anyone signed in" would widen the
+      # most privileged endpoint in the product. Both take the caller's own
+      # JWT, so verification stays ON.
+      #
+      # Both functions below were in supabase/functions/ and called from
+      # Flutter, but absent from this workflow, so "Change password" and
+      # "approve account deletion" were calling functions that were never
+      # deployed. Same class of bug as user-admin below.
+      - name: Deploy function account-change-password
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy account-change-password
+
+      # Approving an account-deletion request actually removes the login,
+      # which needs the service role key. Called by the admin queue with the
+      # deciding staff member's JWT; permission is re-checked server-side.
+      - name: Deploy function account-deletion-gateway
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy account-deletion-gateway
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |
