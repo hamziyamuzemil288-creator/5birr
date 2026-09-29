@@ -936,6 +936,14 @@ void main() {
       // backwards-compatibility argument: a default of true would gate
       // every existing listing and every in-flight order the moment the
       // migration lands.
+      //
+      // It also requires create_order_secure() to have exactly one
+      // signature. Migration 74 shipped a six-argument overload beside the
+      // nine-argument one, having copied forward a comment that said the
+      // short form still existed; migration 49 had already dropped it, and
+      // the pair is the 42725 "function is not unique" shape that
+      // assert_no_stale_function_overloads exists to catch. Migration 75
+      // dropped it and turned this requirement around.
       final (detail, error) =
           await rpcTextDiagnosed('assert_availability_gate_is_wired');
       expect(detail, isNotNull,

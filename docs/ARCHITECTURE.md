@@ -138,7 +138,7 @@ Dart is asserted against source.
 |----------|-------------------|
 | Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
 | Every fee switch actually switches | `assert_fee_switches_are_wired()` (migration 73) |
-| Payment is gated on an availability confirmation, contact on verified payment | `assert_availability_gate_is_wired()` (migration 74) |
+| Payment is gated on an availability confirmation, contact on verified payment | `assert_availability_gate_is_wired()` (migration 74, restated by 75) |
 | The CEO reports are callable, not merely present | `assert_ceo_reports_are_callable()` (migration 72) |
 | The CEO authority itself is intact | `assert_ceo_authority_is_wired()` (migration 69) |
 | Live map is actually live | `assert_live_map_is_wired()` (migration 61) |

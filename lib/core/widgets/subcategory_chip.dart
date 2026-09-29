@@ -36,8 +36,10 @@ class SubcategoryChip extends StatelessWidget {
       // header gradient and the primary buttons already use, and a contrast
       // ratio (white on #1B5E20) far above the 4.5:1 minimum.
       backgroundColor: AppTheme.primaryGreen,
-      selectedColor: AppTheme.primaryGreenDark,
-      disabledColor: AppTheme.primaryGreen,
+      // Deliberately no `selectedColor` / `disabledColor`: this is an
+      // ActionChip, whose constructor has neither, and a chip that cannot be
+      // selected or disabled has nothing to colour in those states anyway.
+      // onPressed is always non-null, so the chip is never drawn disabled.
       // No side: a border on a saturated fill only muddies the edge.
       side: BorderSide.none,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
