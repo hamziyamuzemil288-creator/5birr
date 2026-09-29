@@ -53,42 +53,38 @@ MUTATIONS = [
     ),
     (
         "the dedupe check is dropped from notify_user_once (no idempotency)",
-        "20260927000086_transaction_notification_once.sql",
+        "__LAST__:notify_user_once",
         "  IF EXISTS (\n"
-        "    SELECT 1\n"
-        "      FROM public.notifications\n"
+        "    SELECT 1 FROM public.notifications\n"
+        "     WHERE (data ->> 'idem_key') = p_idem_key\n"
+        "  ) OR EXISTS (\n"
+        "    SELECT 1 FROM public.notification_outbox\n"
         "     WHERE (data ->> 'idem_key') = p_idem_key\n"
         "  ) THEN\n"
-        "    RETURN NULL;  -- already delivered by an earlier call\n"
+        "    RETURN NULL;  -- already written by an earlier call\n"
         "  END IF;",
-        "  -- dedupe check removed",
+        "  -- dedupe check removed entirely",
     ),
     (
         "notify_user_once dedupes without taking a lock (concurrency race)",
-        "20260927000086_transaction_notification_once.sql",
+        "__LAST__:notify_user_once",
         "  PERFORM pg_advisory_xact_lock(hashtext('notify:' || p_idem_key));",
         "  -- lock removed",
     ),
     (
         "notify_user_once can no longer be called by a client role",
-        "20260927000086_transaction_notification_once.sql",
+        "__LAST__:notify_user_once",
         "REVOKE ALL ON FUNCTION public.notify_user_once(text, uuid, public.notification_type, text, text, jsonb)\n"
         "  FROM public, anon, authenticated;",
         "-- revoke removed",
     ),
     (
         "a notification failure is no longer swallowed (rolls back the payment)",
-        "20260927000086_transaction_notification_once.sql",
-        "EXCEPTION\n"
-        "  WHEN OTHERS THEN\n"
-        "    -- The whole point: a delivery failure is logged, never raised. Raising\n"
-        "    -- here would roll back the money movement, the approval, or the status\n"
-        "    -- change that this notification was describing.\n"
+        "__LAST__:notify_user_once",
         "    RAISE WARNING 'notify_user_once(%) failed and was swallowed: %',\n"
         "      p_idem_key, SQLERRM;\n"
-        "    RETURN NULL;\n"
-        "END;",
-        "  RETURN NULL;\nEND;",
+        "    RETURN NULL;",
+        "    RETURN NULL;  -- failure no longer logged",
     ),
     (
         "the points conversion stops notifying",
@@ -146,22 +142,34 @@ MUTATIONS = [
     ),
     (
         "an assertion is revoked from anon with no anon grant (the CI failure)",
-        "20260927000091_assertion_privileges_reach_the_anon_client.sql",
+        "__LAST__:assert_points_conversion_notifies",
         "GRANT EXECUTE ON FUNCTION public.assert_points_conversion_notifies()\n"
-        "  TO anon, authenticated, service_role;\n"
-        "\n"
-        "GRANT EXECUTE ON FUNCTION public.assert_notification_inbox_is_owner_only()",
+        "  TO anon, authenticated, service_role;",
         "REVOKE ALL ON FUNCTION public.assert_points_conversion_notifies()\n"
-        "  FROM anon;\n"
-        "GRANT EXECUTE ON FUNCTION public.assert_notification_inbox_is_owner_only()",
+        "  FROM anon;",
     ),
     (
         "an assertion drops anon from its grant (PGRST202 in CI)",
-        "20260927000091_assertion_privileges_reach_the_anon_client.sql",
+        "__LAST__:assert_order_and_ride_receipts_are_sent",
         "GRANT EXECUTE ON FUNCTION public.assert_order_and_ride_receipts_are_sent()\n"
         "  TO anon, authenticated, service_role;",
         "GRANT EXECUTE ON FUNCTION public.assert_order_and_ride_receipts_are_sent()\n"
         "  TO authenticated, service_role;",
+    ),
+    (
+        "the dedupe checks only notifications, not the client-path outbox",
+        "20260927000092_dedupe_the_queue_and_fix_two_assertions.sql",
+        "  ) OR EXISTS (\n"
+        "    SELECT 1 FROM public.notification_outbox\n"
+        "     WHERE (data ->> 'idem_key') = p_idem_key\n"
+        "  ) THEN",
+        "  ) THEN",
+    ),
+    (
+        "the points assertion goes back to a whitespace-sensitive match",
+        "20260927000092_dedupe_the_queue_and_fix_two_assertions.sql",
+        "  IF position('points-convert:''||v_ledgerid' IN v_flat) = 0 THEN",
+        "  IF position('points-convert:''||v_ledgerid' IN v_src) = 0 THEN",
     ),
     (
         "no screen links to the notifications route (all entry points removed)",
@@ -232,6 +240,27 @@ def main() -> int:
 
         if filename is None:
             target = ROOT / "lib/features/user/user_notifications_screen.dart"
+        elif filename.startswith("__LAST__:"):
+            # Resolve the migration that CURRENTLY defines this function.
+            #
+            # Hardcoding a filename rot silently: when a later migration
+            # restates a function, mutating the older file changes nothing and
+            # the mutation is reported as MISS even though the check is fine.
+            # Five mutations went stale that way the moment 92 landed, which
+            # reads as "the harness stopped working" rather than "these
+            # mutations point at superseded text".
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "static_checks_mod", HARNESS)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            defined_at, _ = mod.last_migration_defining(filename.split(":", 1)[1])
+            if defined_at is None:
+                print(f"[FAIL] {label}\n         function "
+                      f"{filename.split(':', 1)[1]} is defined nowhere")
+                failures += 1
+                continue
+            target = defined_at
         elif filename.startswith("2026"):
             target = MIGRATIONS / filename
         else:

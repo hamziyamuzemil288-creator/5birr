@@ -307,6 +307,15 @@ invisible until money is involved:
   call — a double tap, a redelivery, a scheduler running twice — cannot write a
   second row. Reading the key without the lock is a race: two calls both see
   "nothing there yet" and both write.
+
+The check has to read **both** delivery tables, and the first live run proved
+it. `notify_user()` routes on `is_server_write()`: a server write inserts into
+`notifications` directly, a **client write inserts into `notification_outbox`**
+and does not reach `notifications` until pg_cron drains it. A dedupe that read
+only `notifications` therefore missed every client-path notification — and the
+connectivity suite runs as `anon`, so the client path is the normal path, not a
+corner case. A retried call found nothing, queued a second row, and both
+messages were delivered. Migration 92 checks both.
 * **Never fatal.** The body is wrapped so any error becomes a `RAISE WARNING`
   and a NULL return. Without this, an undeliverable notice inside
   `approve_wallet_recharge` or `convert_points_to_wallet` rolls the real
@@ -458,15 +467,20 @@ RPC):
   separates *lost* from *rewritten*: a branch only counts as rewritten if the
   new body still notifies on that same status, and every rewrite must be
   declared in `REVIEWED_REWRITES`. An undeclared rewrite fails.
-* `python3 tools/harness/fault_inject_notifications.py` reintroduces 19 real
-  bugs — a dropped dedupe check, a missing lock, a removed error handler, an
-  unrevoked privilege, a lost authorization clause, a false "money added"
-  claim, an assertion the CI client cannot reach — and requires the harness to
-  go red for each. A check that passes on broken input is worse than no check,
-  because it is reported as a safety net while providing none; this found five
-  vacuous checks in the first version, each of which had to search a function
-  body rather than the whole migration (the migration also contains the
-  assertion that names the same strings).
+* `python3 tools/harness/fault_inject_notifications.py` reintroduces 21 real
+  bugs — a dropped dedupe check, a dedupe that reads only one delivery table,
+  a missing lock, a removed error handler, an unrevoked privilege, a lost
+  authorization clause, a false "money added" claim, an assertion the CI
+  client cannot reach — and requires the harness to go red for each. A check
+  that passes on broken input is worse than no check, because it is reported
+  as a safety net while providing none.
+
+  It found **nine** vacuous checks across two rounds. The recurring cause was
+  matching on text that was not the thing being checked: a substring of the
+  whole migration that also appears in that migration's own assertion; a
+  comment inside a function body keeping a deleted `EXISTS` alive; a needle
+  sensitive to the author's line wrapping; and a privilege model that ignored
+  statement order. Each is a way a check can look thorough and decide nothing.
 
 All SQL is parsed with `pglast` (libpg_query, the real PostgreSQL parser)
 before commit rather than read by eye. Two pre-existing files fail to parse and
@@ -557,6 +571,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0089` | points→wallet conversion notifies with both figures | points convert to birr silently |
 | `0090` | the notifications inbox is still owner-scoped (assertion) | a new definer function could widen who reads the inbox |
 | `0091` | the new assertions are executable by `anon` | Connectivity CI cannot call them; PostgREST reports PGRST202, which reads like a missing migration |
+| `0092` | the dedupe covers the client-path queue, and two wrong assertions corrected | a retried payment queues the same message twice |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.

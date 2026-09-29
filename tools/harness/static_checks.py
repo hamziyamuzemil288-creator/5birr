@@ -79,13 +79,25 @@ def function_body(sql: str, name: str) -> str:
     Needed because a naive count of `verified_at = now()` over the whole
     FILE also counts the header comment that explains the invariant -- which
     is how a correct file would look like a broken one.
+
+    COMMENTS ARE STRIPPED, for the same reason one level down. An inline
+    comment inside the body naming a table or an expression is enough to
+    satisfy a substring check about that table: deleting the real
+    `EXISTS (SELECT 1 FROM notification_outbox ...)` while leaving the
+    comment that explains it passed the check. A body check that prose can
+    satisfy is not a body check.
     """
     m = re.search(
         r"FUNCTION\s+public\.%s\s*\([^)]*\).*?AS\s+\$\$(.*?)\$\$;" % re.escape(name),
         sql,
         re.IGNORECASE | re.DOTALL,
     )
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    body = m.group(1)
+    body = re.sub(r"--[^\n]*", " ", body)
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.DOTALL)
+    return body
 
 
 def literal_calls(pattern: str, flags: int = re.DOTALL) -> dict[str, set[str]]:
@@ -1094,6 +1106,21 @@ def check_transaction_notifications() -> list[str]:
             problems.append("notify_user_once() no longer checks for an "
                             "existing row for the key, so a retried payment "
                             "notifies twice")
+        # It must check BOTH delivery tables. notify_user() writes to
+        # notifications on the server path and to notification_outbox on the
+        # client path; the outbox row does not reach notifications until the
+        # cron drain. A dedupe that reads only notifications therefore misses
+        # every client-path notification — and the connectivity suite runs as
+        # anon, so that is not a corner case, it is the normal case.
+        if "notification_outbox" not in body_l:
+            problems.append(
+                "notify_user_once() deduplicates against notifications only. "
+                "notify_user() queues client-path notifications in "
+                "notification_outbox and they do not reach notifications until "
+                "pg_cron drains them, so a retried call on that path finds no "
+                "existing row and queues the same message a second time. The "
+                "connectivity suite runs as anon, so this is the path it "
+                "exercises.")
         # Dedupe must be under a lock. Checking for the key alone passes on a
         # body that reads-then-writes, which is the race it exists to prevent.
         if "pg_advisory_xact_lock" not in body_l:
@@ -1121,6 +1148,14 @@ def check_transaction_notifications() -> list[str]:
     #    assert_* function that names these same strings, so disabling the real
     #    call left the string sitting in the assertion and the check stayed
     #    green. A check that passes on broken input is worse than none.
+    # 4. The claim the brief got wrong. Completing a ride DEBITS the platform
+    #    commission via deduct_transaction_fee; the fare is settled outside the
+    #    app and never credited to a wallet. A message saying money was added
+    #    contradicts the wallet screen immediately.
+    #
+    #    Checked against the notifier bodies only. Searching the raw migration
+    #    text matches the COMMENT that explains why the message is not written
+    #    that way, which is the opposite of the finding being looked for.
     def _body(name: str) -> str:
         path, sql = last_migration_defining(name)
         return function_body(sql, name).lower() if path else ""
@@ -1151,14 +1186,53 @@ def check_transaction_notifications() -> list[str]:
             problems.append("the ride trigger lost its 'no status change' "
                             "guard, so unrelated row updates re-notify")
 
-    # 3. The claim the brief got wrong. Completing a ride DEBITS the platform
-    #    commission via deduct_transaction_fee; the fare is settled outside the
-    #    app and never credited to a wallet. A message saying money was added
-    #    contradicts the wallet screen immediately.
+    # 3. Source-matching assertions must not be sensitive to line wrapping.
+    #    Two assertions written in this series compared a hand-typed needle
+    #    against whitespace-normalised prosrc and so reported defects that did
+    #    not exist, purely because of where the author had wrapped a line.
+    #    The rule the live database taught: match on the key, with whitespace
+    #    removed on both sides, not on a formatted string.
+    # A substring check against prosrc is fine for a single token
+    # ('pg_advisory_xact_lock'); it is only the KEY match that broke, because a
+    # key is written across a line break in the source and the needle was not.
+    # So the rule is narrow: an assertion that embeds a multi-token SQL
+    # expression (a quoted fragment with an operator) inside a position() call
+    # must compare against a whitespace-stripped copy.
     #
-    #    Checked against the notifier bodies only. Searching the raw migration
-    #    text matches the COMMENT that explains why the message is not written
-    #    that way, which is the opposite of the finding being looked for.
+    # The fragment is `''`-aware: SQL doubles an embedded quote, so the real
+    # needle reads 'points-convert:''||v_ledger_id' and a plain [^']* stops at
+    # the first doubled quote and never matches. That blindness is why the
+    # mutation below went unnoticed until this was fixed.
+    # Structural rather than regex-per-needle: SQL doubles an embedded quote,
+    # so a needle like 'points-convert:''||v_ledger_id' cannot be matched by a
+    # pattern that assumes one closing quote. Scanning the position() call and
+    # asking two questions about it is immune to that.
+    call_rx = re.compile(r"position\((.*?)\)", re.IGNORECASE | re.DOTALL)
+    for name in ("assert_points_conversion_notifies",
+                 "assert_notification_inbox_is_owner_only",
+                 "assert_order_and_ride_receipts_are_sent",
+                 "assert_approval_welcome_covers_all_paths",
+                 "assert_notify_user_once_is_idempotent"):
+        path, sql = last_migration_defining(name)
+        if not path:
+            problems.append(f"{name}() not found")
+            continue
+        for m in call_rx.finditer(sql):
+            call = m.group(1)
+            if "||" not in call:
+                continue  # a single token, safe against line wrapping
+            compared = re.search(r"\bIN\s+(\w+)\s*$", call.strip(),
+                                 re.IGNORECASE)
+            if compared and compared.group(1).lower() == "v_src":
+                problems.append(
+                    f"{name}() matches a multi-token SQL key (one containing "
+                    f"||) against the whitespace-normalised function source. "
+                    f"prosrc is normalised to single spaces, so that "
+                    f"comparison depends on where the author wrapped the line "
+                    f"and it reported a defect that did not exist on the "
+                    f"first live run. Compare against a whitespace-stripped "
+                    f"copy of the source instead.")
+                break
     notifier_src = "".join(
         _body(n) for n in ("fn_notify_order_status_change",
                            "fn_notify_ride_status_change",
@@ -1362,14 +1436,21 @@ def check_transaction_notifications() -> list[str]:
             r"(GRANT|REVOKE)\s+(?:ALL\s+)?(?:EXECUTE\s+)?ON\s+FUNCTION\s+"
             r"((?:public\.\w+\s*\(\s*\)\s*,?\s*)+)"
             r"((?:TO|FROM)\s+[^;]+);", re.IGNORECASE)
-        # Postgres applies these CUMULATIVELY, so a grant and a revoke are two
-        # facts about a function, not two competing "last" values. Keeping only
-        # the last statement per function is what made
-        # assert_ride_transition_covers_chain look unreachable: it is granted
-        # to anon and THEN revoked from public in the same file, and the anon
-        # grant — the one that matters — was being overwritten.
-        anon_granted: set[str] = set()
-        revoked: dict[str, set[str]] = {}
+        # Postgres applies these in ORDER and cumulatively, so the final state
+        # has to be modelled, not guessed:
+        #
+        #   GRANT  EXECUTE ... TO anon   -> anon has a DIRECT grant
+        #   REVOKE EXECUTE ... FROM anon -> removes that direct grant
+        #   REVOKE EXECUTE ... FROM public -> removes the INHERITED path, but
+        #                                        a direct anon grant survives
+        #
+        # Two earlier versions of this check got this wrong in opposite
+        # directions: one kept only the last statement (so a grant sitting
+        # before a revoke-from-public looked lost), and one treated any grant
+        # anywhere as permanent (so a revoke AFTER a grant was ignored — which
+        # is exactly the shape of the bug this is meant to catch).
+        direct: dict[str, set[str]] = {}
+        public_revoked: set[str] = set()
         for path in migration_files():
             text = _read(path)
             for m in stmt_rx.finditer(text):
@@ -1382,10 +1463,12 @@ def check_transaction_notifications() -> list[str]:
                          if roles_m else set())
                 for fn in funcs:
                     if verb == "GRANT":
-                        if "anon" in named:
-                            anon_granted.add(fn)
+                        direct.setdefault(fn, set()).update(named)
                     else:
-                        revoked.setdefault(fn, set()).update(named)
+                        if "anon" in named:
+                            direct.setdefault(fn, set()).discard("anon")
+                        if "public" in named:
+                            public_revoked.add(fn)
 
         # "Called by the suite" must mean CALLED, not merely named. A substring
         # search matched list_staff_jobs() and my_staff_record(), which appear
@@ -1398,22 +1481,20 @@ def check_transaction_notifications() -> list[str]:
         # through ok()/rpcText; pick those up too.
         called |= set(re.findall(r"client\.rpc\('([\w]+)'", conn_sql))
 
-        for name, roles in sorted(revoked.items()):
-            if name not in called:
-                continue  # not called by the suite; not this check's business
-            if not ("anon" in roles or "public" in roles):
-                continue
-            if name in anon_granted:
-                continue  # anon holds a direct grant; the revoke is harmless
+        for name in sorted(called):
+            has_direct = "anon" in direct.get(name, set())
+            if has_direct:
+                continue  # anon holds a direct grant; the suite can call it
+            if name not in public_revoked:
+                continue  # anon still inherits EXECUTE-for-PUBLIC
             problems.append(
                 f"{name}() is called by the connectivity suite, which runs as "
-                f"the anon role, but nothing ever grants it EXECUTE to anon "
-                f"and a REVOKE ... FROM {sorted(roles)} is present. A function "
-                f"in public has EXECUTE for PUBLIC by default and anon "
-                f"inherits it, so that revoke removes the only path the suite "
-                f"has. PostgREST reports it as PGRST202 'could not find the "
-                f"function in the schema cache', which reads like a missing "
-                f"migration rather than a missing privilege.")
+                f"the anon role, but its final privilege state leaves anon "
+                f"with no path: EXECUTE from PUBLIC is revoked and there is no "
+                f"direct GRANT to anon. PostgREST reports that as PGRST202 "
+                f"'could not find the function in the schema cache', which "
+                f"reads like a missing migration rather than a missing "
+                f"privilege.")
 
     # 9. The restatements in this series must not have lost anything. This runs
     #    the real differ rather than a proxy for it, because a proxy that

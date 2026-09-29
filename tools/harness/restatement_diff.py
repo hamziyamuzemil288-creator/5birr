@@ -47,6 +47,26 @@ REVIEWED_REWRITES = {
     "fn_notify_ride_status_change": {"claimed", "completed"},
 }
 
+# Statements the differ reports as LOST that are intentionally REPLACED by a
+# strictly larger form, with the reason. Kept separate from REVIEWED_REWRITES
+# (which is about if/elsif status branches) because these are whole statements
+# that were subsumed into another one rather than deleted.
+#
+# notify_user_once: the single-table dedupe IF became a two-table check, because
+# notify_user() queues client-path notifications in notification_outbox and never
+# touches notifications until the cron drain. Found by the first live run of the
+# connectivity suite, not by reading the code.
+INTENTIONAL_SUPERSESSIONS = {
+    "notify_user_once": [
+        (
+            "if exists ( select 1 from public.notifications "
+            "where (data ->> 'idem_key') = p_idem_key ) then return null",
+            "replaced by a check of notifications AND notification_outbox; "
+            "the notifications half is retained verbatim",
+        ),
+    ],
+}
+
 
 def strip_comments(sql: str) -> str:
     """Remove SQL comments.
@@ -232,6 +252,14 @@ def main(argv: list[str]) -> int:
                 if still_notifies:
                     modified.append((status, n))
                     continue
+            sup = INTENTIONAL_SUPERSESSIONS.get(name, [])
+            superseded = False
+            for needle, why in sup:
+                if needle in n:
+                    print(f"    SUPERSEDED (declared): {why}")
+                    superseded = True
+            if superseded:
+                continue
             dropped.append(n)
 
         expected = REVIEWED_REWRITES.get(name, set())
