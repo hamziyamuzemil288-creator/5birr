@@ -368,10 +368,25 @@ $$;
 -- ===========================================================================
 -- 5. Trending
 --
--- trending_dislike_weight joins the three that exist. CREATE OR REPLACE
--- cannot change a function's return type, so the old one is dropped first;
--- nothing depends on it at the catalog level (a view body does not register a
--- dependency on the functions inside it), which is why the drop is safe.
+-- trending_dislike_weight joins the three that exist.
+--
+-- CREATE OR REPLACE cannot change a function's return type -- adding an OUT
+-- parameter to trending_settings() is a return-type change -- so the old one
+-- has to be dropped and recreated.
+--
+-- ORDER MATTERS, and the first attempt at this file got it wrong. Postgres
+-- DOES record a dependency from a view onto the functions its body calls, so
+-- `drop function trending_settings()` fails with
+--
+--   ERROR: cannot drop function trending_settings() because other objects
+--   depend on it (SQLSTATE 2BP01)
+--   view product_trending depends on function trending_settings()
+--
+-- The view is therefore dropped first, immediately below. Both drops are
+-- re-created further down this file, so the end state is identical; only the
+-- order is different. (The first deploy of 76 failed on exactly this, and
+-- rolled back whole -- which is why the file is corrected in place rather
+-- than superseded by a 77.)
 -- ===========================================================================
 -- Seeded through the same guard-lift the other money and points seeds use:
 -- trg_system_settings_security refuses every write unless is_admin(), which is
@@ -417,6 +432,9 @@ begin
   end loop;
 end $$;
 
+-- The view first: it depends on the function below.
+drop view if exists public.product_trending;
+
 drop function if exists public.trending_settings();
 
 CREATE OR REPLACE FUNCTION public.trending_settings()
@@ -450,12 +468,10 @@ comment on function public.trending_settings() IS
 
 grant execute on function public.trending_settings() to anon, authenticated, service_role;
 
--- The view. Recreated rather than replaced, so disliked_by_me can sit next to
--- liked_by_me instead of being appended after computed_at; CREATE OR REPLACE
--- VIEW may only add columns at the end, and the ordering matters to anyone
--- reading the definition.
-drop view if exists public.product_trending;
-
+-- The view. Dropped above and recreated here, rather than replaced, so
+-- disliked_by_me can sit next to liked_by_me instead of being appended after
+-- computed_at; CREATE OR REPLACE VIEW may only add columns at the end, and
+-- the ordering matters to anyone reading the definition.
 CREATE OR REPLACE VIEW public.product_trending
 WITH (security_invoker = true)
 AS
