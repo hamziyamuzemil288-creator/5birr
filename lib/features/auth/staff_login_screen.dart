@@ -161,7 +161,7 @@ class _StaffLoginScreenState extends ConsumerState<StaffLoginScreen> {
                     ),
                     const SizedBox(height: 28),
                     BirrTextField(
-                      label: 'Username or email',
+                      label: 'Email or Username',
                       controller: _username,
                       textInputAction: TextInputAction.next,
                       textCapitalization: TextCapitalization.none,

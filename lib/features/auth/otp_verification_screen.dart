@@ -27,7 +27,7 @@ class SignupDraft {
   final String? city;
   final String? kebele;
   final String? streetRoad;
-  final String? nationalIdNumber; // provider flows only
+  final String? nationalIdNumber; // unused: no ID is collected at signup
   // Task 8: optional referral code (provider flows only). Parked through OTP
   // verification like every other field; blank/unknown never blocks signup.
   final String? referralCode;

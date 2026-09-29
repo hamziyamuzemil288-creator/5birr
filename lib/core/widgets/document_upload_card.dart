@@ -26,23 +26,33 @@ class DocumentUploadCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The empty state gets a soft green fill so the frame reads as part of
+    // the brand rather than as a grey hole in the form. This is the frame's
+    // own background, and the preview branch below covers it edge to edge, so
+    // nothing about the selected-photo appearance changes.
+    final hasFile = file != null;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: AppTheme.surface,
+        color: hasFile ? AppTheme.surface : _emptyTint,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: error != null
               ? AppTheme.error
-              : file != null
+              : hasFile
                   ? AppTheme.primaryGreen.withOpacity(0.3)
-                  : AppTheme.cardBorder,
-          width: file != null ? 1.5 : 1,
+                  : AppTheme.primaryGreen.withOpacity(0.25),
+          width: hasFile ? 1.5 : 1,
         ),
       ),
-      child: file != null ? _buildPreview() : _buildEmpty(),
+      child: hasFile ? _buildPreview() : _buildEmpty(),
     );
   }
+
+  /// A pale wash of the theme green — light enough that the icon and the
+  /// title keep their contrast, and green enough to read as Aliob rather than
+  /// as a disabled control.
+  static const Color _emptyTint = Color(0xFFEFF7F0);
 
   Widget _buildEmpty() {
     return InkWell(
@@ -56,7 +66,7 @@ class DocumentUploadCard extends StatelessWidget {
               width: 56,
               height: 56,
               decoration: BoxDecoration(
-                color: AppTheme.primaryGreen.withOpacity(0.08),
+                color: AppTheme.primaryGreen.withOpacity(0.12),
                 shape: BoxShape.circle,
               ),
               child: isUploading

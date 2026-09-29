@@ -11,13 +11,21 @@ where you can attach evidence and say how the team should reach you.
 **How do I sign up?**
 Tap "Get Started" on the home screen, choose whether you want a personal
 account, a vehicle provider account, or a service provider account, then
-fill in your details. You'll need a photo of your national ID. Vehicle
-providers also need a photo of their driving license, and service providers
-a photo of their trading license.
+fill in your details. That's it — no ID is needed to register. We ask for
+your ID later, inside the app, when you take an action that needs a verified
+account: booking with a provider, uploading a listing, or accepting a ride.
+Vehicle providers can use a national ID, a driving licence, or a passport;
+service providers can use a national ID or their trading licence.
 
 **Why do I need to upload my ID?**
 Every account is verified by our team before it becomes active. This keeps
-the marketplace safe and honest for everyone.
+the marketplace safe and honest for everyone. You only have to do it once.
+
+**Why does the app ask for my location when I upload an ID?**
+We take a single location reading at the moment you upload, and keep it with
+that document, as a way of checking the upload is real. It is not tracked
+afterwards, and if your phone has location turned off the upload still works
+normally — you will not be blocked.
 
 **What happens after I register?**
 Your application goes to our review team. Most reviews finish quickly —

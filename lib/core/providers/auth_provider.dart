@@ -360,12 +360,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// role and opens the approval request. The app never writes tables
   /// client-side during signup, so this works whether or not Supabase
   /// returns a session.
+  /// No national ID is collected here for any role. The document is uploaded
+  /// later, in-app, through the verification step before a provider may
+  /// upload a product or a vehicle provider may claim a ride.
   Future<void> signUpAsProvider({
     required String email,
     required String phone,
     required String password,
     required String businessName,
-    required String ownerNationalId,
     required String providerType,
     String? city,
     String? kebele,
@@ -386,7 +388,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
         data: {
           'full_name': businessName,
           'phone': e164 ?? phone,
-          'national_id': ownerNationalId,
           'provider_type': providerType,
           'business_name': businessName,
           if (city != null && city.isNotEmpty) 'city': city,

@@ -32,7 +32,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _nationalIdController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
@@ -110,7 +109,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
-    _nationalIdController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     _kebeleController.dispose();
@@ -427,7 +425,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       city: _selectedCity,
       kebele: _kebeleController.text.trim(),
       streetRoad: _streetRoadController.text.trim(),
-      nationalIdNumber: _isProvider ? _nationalIdController.text.trim() : null,
+      nationalIdNumber: null,
       referralCode: _isProvider ? _referralController.text.trim() : null,
       captchaId: _captchaId,
     );
@@ -450,7 +448,6 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               phone: draft.phone,
               password: draft.password,
               businessName: draft.name,
-              ownerNationalId: draft.nationalIdNumber ?? '',
               providerType: _providerType,
               city: draft.city,
               kebele: draft.kebele,
@@ -635,23 +632,13 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           ),
         ),
         const SizedBox(height: 16),
-        // National ID number is collected for the record (providers only);
-        // the ID IMAGE is uploaded later, at the first protected action
-        // (upload product / accept order) after wallet recharge (Task 7).
+        // No National ID is collected at registration, for ANY role. ID
+        // verification happens later and inside the app: the document is
+        // uploaded in the verification step (user_documents) before a
+        // provider may upload a product or a vehicle provider may claim a
+        // ride, which is the same gate a user hits before booking. Asking for
+        // it here collected a number nobody could check against the document.
         if (_isProvider) ...[
-          BirrTextField(
-            label: 'National ID Number',
-            controller: _nationalIdController,
-            textInputAction: TextInputAction.next,
-            validator: (v) {
-              if (v == null || v.trim().isEmpty) {
-                return 'National ID is required';
-              }
-              if (v.trim().length < 4) return 'Invalid national ID';
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
           // Task 8: optional referral code — identifies the sales/staff
           // person who registered this provider. Empty = self-registered;
           // an unknown code never blocks registration (kept as "Other").

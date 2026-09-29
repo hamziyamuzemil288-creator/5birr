@@ -417,8 +417,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         // admin-created staff member types the username they
                         // were given, which is not an email.
                         BirrTextField(
-                          label: 'Email or staff username',
-                          hint: 'you@example.com or staff username',
+                          label: 'Email or Username',
+                          hint: 'you@example.com or username',
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
                           textInputAction: TextInputAction.next,
