@@ -43,6 +43,18 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   /// NATIONAL_ID document exists in user_documents, no upload is needed.
   bool _needsNationalId = true;
 
+  /// True when at least one item in this cart is a listing whose provider
+  /// must confirm it is available before the buyer is shown payment details
+  /// or the screenshot upload.
+  ///
+  /// Snapshotted onto the order by `create_order_secure` at the moment the
+  /// order is created, so the gate cannot move under a buyer after they have
+  /// paid. Read here from the products themselves, best-effort: a database
+  /// that has not run migration 20260927000074 has no such column, the read
+  /// raises, and the flag stays false — the order is then placed exactly as
+  /// it was before this feature existed.
+  bool _needsAvailabilityConfirmation = false;
+
   /// Provider readiness (Fix: orders are blocked when the provider's wallet is
   /// 0 — they cannot cover the transaction fee — or when the provider has not
   /// yet paid the one-time registration fee).
@@ -135,10 +147,32 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       // Provider readiness check.
       await _refreshProviderReadiness();
 
+      // Does anything in this cart need the provider to confirm it is
+      // available? One gated item gates the order: the buyer pays for the
+      // whole basket in one transfer, so there is no way to split the
+      // payment screen either. Same best-effort rule as the fee quote
+      // above — a failure here means "not gated", which is the behaviour
+      // that was already working.
+      var needsConfirmation = false;
+      try {
+        final ids = items.map((i) => i.productId).toList();
+        if (ids.isNotEmpty) {
+          final rows = await Supabase.instance.client
+              .from('products')
+              .select('id, requires_availability_confirmation')
+              .inFilter('id', ids);
+          needsConfirmation = (rows as List)
+              .any((r) => r['requires_availability_confirmation'] == true);
+        }
+      } catch (_) {
+        needsConfirmation = false;
+      }
+
       if (mounted) {
         setState(() {
           _items = items;
           _platformFee = platformFee;
+          _needsAvailabilityConfirmation = needsConfirmation;
           _loading = false;
         });
       }
@@ -553,46 +587,74 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                         ),
                         const SizedBox(height: 16),
                       ],
-                      BirrTextField(
-                        label: 'Payment Reference (optional)',
-                        controller: _refCtrl,
-                        hint: 'Transaction ID or reference number',
-                      ),
-                      const SizedBox(height: 16),
-                      const Text('Payment Screenshot (optional)',
-                          style: TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 8),
-                      GestureDetector(
-                        onTap: _pickScreenshot,
-                        child: Container(
-                          width: double.infinity,
-                          height: _screenshot != null ? 160 : 110,
-                          decoration: BoxDecoration(
-                            color: AppTheme.creamDark,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: AppTheme.cardBorder),
-                          ),
-                          child: _screenshot != null
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Image.file(_screenshot!,
-                                      fit: BoxFit.cover),
-                                )
-                              : const Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.add_a_photo_outlined,
-                                        size: 32, color: AppTheme.textMuted),
-                                    SizedBox(height: 8),
-                                    Text('Tap to upload proof of payment',
-                                        style: TextStyle(
-                                            fontSize: 13,
-                                            color: AppTheme.textMuted)),
-                                  ],
-                                ),
+                      // ── Payment ──
+                      //
+                      // Gated behind the provider's availability
+                      // confirmation. A listing flagged
+                      // requires_availability_confirmation is one where
+                      // "in stock" is a claim rather than a fact — a
+                      // hotel room, a vehicle for a date, a service slot
+                      // — so the buyer is not shown where to pay, or a
+                      // way to pay, until the provider has confirmed it
+                      // exists for this order. The order is still placed
+                      // now; it opens in PENDING_PROVIDER, the provider
+                      // confirms from their order screen, and the buyer's
+                      // order detail then shows the existing
+                      // PAY & UPLOAD PROOF step at PAYMENT_PENDING.
+                      //
+                      // Nothing here is a second checkout: the same
+                      // order-create call, the same order, the same
+                      // payment-proof upload and the same admin
+                      // verification — only the moment the payment
+                      // section appears is conditional. Listings with
+                      // the flag off (every listing today) see exactly
+                      // the screen they saw before.
+                      if (_needsAvailabilityConfirmation) ...[
+                        _AvailabilityNotice(),
+                        const SizedBox(height: 20),
+                      ] else ...[
+                        BirrTextField(
+                          label: 'Payment Reference (optional)',
+                          controller: _refCtrl,
+                          hint: 'Transaction ID or reference number',
                         ),
-                      ),
+                        const SizedBox(height: 16),
+                        const Text('Payment Screenshot (optional)',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: _pickScreenshot,
+                          child: Container(
+                            width: double.infinity,
+                            height: _screenshot != null ? 160 : 110,
+                            decoration: BoxDecoration(
+                              color: AppTheme.creamDark,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: AppTheme.cardBorder),
+                            ),
+                            child: _screenshot != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.file(_screenshot!,
+                                        fit: BoxFit.cover),
+                                  )
+                                : const Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.add_a_photo_outlined,
+                                          size: 32, color: AppTheme.textMuted),
+                                      SizedBox(height: 8),
+                                      Text('Tap to upload proof of payment',
+                                          style: TextStyle(
+                                              fontSize: 13,
+                                              color: AppTheme.textMuted)),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       if (_needsNationalId) ...[
                         const SizedBox(height: 20),
                         Row(
@@ -664,7 +726,9 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: PrimaryButton(
-                          label: 'PLACE ORDER',
+                          label: _needsAvailabilityConfirmation
+                              ? 'REQUEST ORDER'
+                              : 'PLACE ORDER',
                           isLoading: _submitting,
                           onPressed: _placeOrder,
                         ),
@@ -672,6 +736,59 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                     ],
                   ),
                 ),
+    );
+  }
+}
+
+/// Stands in for the payment section when the cart needs a provider
+/// confirmation first.
+///
+/// Says what is happening and what happens next, because the alternative --
+/// silently omitting the payment fields -- reads as a broken screen. The
+/// wording deliberately promises nothing about timing: the provider sets it.
+class _AvailabilityNotice extends StatelessWidget {
+  const _AvailabilityNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.gold.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.gold.withOpacity(0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.hourglass_top_rounded,
+                  size: 18, color: AppTheme.gold),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Waiting for provider to confirm availability',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'This booking is made for a specific date, room or slot, so the '
+            'provider has to confirm it is available before you pay. Send the '
+            'request now — as soon as they confirm, the payment details and '
+            'your upload option appear on the order, and you will be notified.',
+            style: TextStyle(fontSize: 12.5, height: 1.45),
+          ),
+        ],
+      ),
     );
   }
 }

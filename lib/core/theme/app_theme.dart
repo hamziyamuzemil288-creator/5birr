@@ -240,7 +240,17 @@ class AppTheme {
       chipTheme: ChipThemeData(
         backgroundColor: creamDark,
         selectedColor: primaryGreen,
-        labelStyle: const TextStyle(fontSize: 12),
+        // The colour is stated rather than left to inheritance. A chipTheme
+        // labelStyle with no colour made every chip that did not set its own
+        // take its text colour from whatever DefaultTextStyle surrounded it,
+        // which is how a cream chip ended up with a label nobody could read.
+        // textPrimary on creamDark is ~11:1. Chips that want a light label on
+        // a dark fill (the subcategory chips) state both and override this.
+        labelStyle: const TextStyle(fontSize: 12, color: textPrimary),
+        // secondaryLabelStyle is deliberately NOT set here. In Material 3 it
+        // governs the SELECTED state of selectable chips, and several admin /
+        // provider filter chips select with a pale green tint and an explicit
+        // dark label; overriding it would put a light label on that tint.
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
       dividerTheme: const DividerThemeData(

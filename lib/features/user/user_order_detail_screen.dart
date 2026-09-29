@@ -92,6 +92,12 @@ class _UserOrderDetailScreenState
   // Buyer payment-proof submission (PAYMENT_PENDING -> PAYMENT_VERIFICATION).
   bool _paying = false;
 
+  // Escrow-gated provider contact (release_order_contact, APPROVED onwards).
+  Map<String, String>? _providerContact;
+
+  // Where to pay, read once the provider has confirmed availability.
+  List<Map<String, dynamic>>? _paymentMethods;
+
   @override
   void dispose() {
     _chatCtrl.dispose();
@@ -160,6 +166,12 @@ class _UserOrderDetailScreenState
             .hasUserReviewedOrder(widget.orderId);
       } catch (_) {}
 
+      // Escrow-gated provider contact, and the payment details the buyer may
+      // now be shown. Both are read after `_order` is known, because both are
+      // decided by the order's status.
+      final contact = await _loadProviderContact(order);
+      final methods = await _loadPaymentMethods(order);
+
       if (mounted) {
         setState(() {
           _order = order;
@@ -167,6 +179,8 @@ class _UserOrderDetailScreenState
           _actorNames = names;
           _proofUrl = proofUrl;
           _reviewed = reviewed;
+          _providerContact = contact;
+          _paymentMethods = methods;
           _loading = false;
           _error = null;
         });
@@ -184,6 +198,63 @@ class _UserOrderDetailScreenState
   bool get _canCancel {
     final status = _order?['status'] as String?;
     return status != null && _cancellableStatuses.contains(status);
+  }
+
+  /// The provider's contact details, once the escrow releases them.
+  ///
+  /// This does not read `profiles.phone`. It calls
+  /// `release_order_contact(order_id)`, which since migration
+  /// 20260922000001 raises CONTACT_AVAILABLE_AFTER_APPROVAL for anything
+  /// before APPROVED and records the release in admin_history. Until the order
+  /// detail screen called it, the release the Terms screen promises never
+  /// happened — this is what makes it happen, and it puts the rule in the
+  /// database rather than in a `WHERE` clause here.
+  ///
+  /// Returns null (and says nothing) on any failure: the caller's own id not
+  /// being the order owner is the normal case for the provider-side view of
+  /// somebody else's order, not an error worth surfacing.
+  Future<Map<String, String>?> _loadProviderContact(Map<String, dynamic> order) async {
+    final status = order['status'] as String?;
+    if (status != 'APPROVED' && status != 'STARTED' && status != 'COMPLETED') {
+      return null;
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .rpc('release_order_contact', params: {'p_order_id': widget.orderId});
+      final list = (rows as List?) ?? const [];
+      if (list.isEmpty) return null;
+      final row = Map<String, dynamic>.from(list.first as Map);
+      final phone = row['provider_phone'] as String?;
+      final name = row['provider_name'] as String?;
+      if (phone == null || phone.trim().isEmpty) return null;
+      return {'phone': phone, 'name': (name != null && name.isNotEmpty) ? name : 'Provider'};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The accounts a buyer may pay into.
+  ///
+  /// Read only once the provider has confirmed the order is available
+  /// (ACCEPTED or later). Below that the buyer has nothing to pay for yet,
+  /// and this list is the payment information the gate is withholding.
+  /// For an un-gated order nothing changes: the same card appears at the
+  /// same point in the flow, one step before they tap PAY & UPLOAD PROOF.
+  Future<List<Map<String, dynamic>>?> _loadPaymentMethods(
+      Map<String, dynamic> order) async {
+    if (_isProvider) return null;
+    final status = order['status'] as String?;
+    if (status == null || !_afterProviderAccepted.contains(status)) return null;
+    try {
+      final rows = await Supabase.instance.client
+          .from('payment_methods')
+          .select('name, account_name, account_number, instructions')
+          .eq('is_active', true)
+          .order('sort_order');
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// In-order chat: text coordination any time, location sharing gated by
@@ -463,6 +534,41 @@ class _UserOrderDetailScreenState
     return status == 'APPROVED' || status == 'STARTED';
   }
 
+  // ----------------------------------------------------------------
+  // Availability confirmation
+  //
+  // The order carries a snapshot of products.requires_availability_confirmation
+  // taken by create_order_secure when the order was created. It is read off
+  // the order row, never re-joined from order_items, so a provider changing
+  // the flag on a listing next week cannot close the payment screen on an
+  // order a buyer has already paid for.
+  // ----------------------------------------------------------------
+
+  bool get _needsAvailabilityConfirmation =>
+      (_order?['requires_availability_confirmation'] as bool?) ?? false;
+
+  /// Statuses at or past the provider accepting, which is the moment the
+  /// listing is confirmed available for this order. ACCEPTED is the
+  /// confirmation itself; everything after it inherits it.
+  static const _afterProviderAccepted = {
+    'ACCEPTED',
+    'PAYMENT_PENDING',
+    'PAYMENT_VERIFICATION',
+    'APPROVED',
+    'STARTED',
+    'COMPLETED',
+    'DISPUTED',
+    'REFUNDED',
+  };
+
+  /// The buyer is waiting on the provider. Only reachable for a gated order:
+  /// for everything else the order is simply awaiting a response, which the
+  /// timeline already says.
+  bool get _awaitingAvailabilityConfirmation =>
+      !_isProvider &&
+      _needsAvailabilityConfirmation &&
+      (_order?['status'] as String?) == 'PENDING_PROVIDER';
+
   /// Buyer side: grab a fresh live GPS fix and share it for this order.
   Future<void> _shareMyLocation() async {
     setState(() => _locSharing = true);
@@ -594,15 +700,23 @@ class _UserOrderDetailScreenState
     final status = _order?['status'] as String?;
     switch (status) {
       case 'PENDING_PROVIDER':
+        // Same two transitions as always — PENDING_PROVIDER -> ACCEPTED and
+        // PENDING_PROVIDER -> REJECTED, which is the existing state machine's
+        // answer. Only the wording changes on a gated order, so that what the
+        // provider is actually deciding ("do you have it for this date?")
+        // matches what the buyer was told they were waiting for. Un-gated
+        // orders keep the original labels.
         return [
           (
             status: 'ACCEPTED',
-            label: 'Accept Order',
+            label: _needsAvailabilityConfirmation
+                ? 'Confirm Availability'
+                : 'Accept Order',
             icon: Icons.check_circle_outline,
           ),
           (
             status: 'REJECTED',
-            label: 'Reject',
+            label: _needsAvailabilityConfirmation ? 'Not Available' : 'Reject',
             icon: Icons.cancel_outlined,
           ),
         ];
@@ -798,6 +912,18 @@ class _UserOrderDetailScreenState
                       children: [
                         _headerCard(),
                         const SizedBox(height: 16),
+                        if (_awaitingAvailabilityConfirmation) ...[
+                          _waitingCard(),
+                          const SizedBox(height: 16),
+                        ],
+                        if (_paymentMethods != null) ...[
+                          _paymentMethodsCard(),
+                          const SizedBox(height: 16),
+                        ],
+                        if (_providerContact != null) ...[
+                          _contactCard(),
+                          const SizedBox(height: 16),
+                        ],
                         if (_deliveryRevealed) ...[
                           _locationCard(),
                           const SizedBox(height: 16),
@@ -895,6 +1021,193 @@ class _UserOrderDetailScreenState
 
   /// Escrow-gated live location card. Visible only once payment is verified
   /// (APPROVED) or delivery started — matching the DB-side gate exactly.
+  /// "Waiting for provider to confirm availability".
+  ///
+  /// The counterpart of the checkout notice: the buyer placed a request and
+  /// the payment section is deliberately not here yet. It sits directly under
+  /// the header so the state is the first thing read, rather than a
+  /// conspicuous gap where the payment button used to be.
+  Widget _waitingCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.gold.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.gold.withOpacity(0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.hourglass_top_rounded, size: 18, color: AppTheme.gold),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Waiting for provider to confirm availability',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'We have sent your request. Nothing is due yet — payment details '
+            'and your upload option appear here once the provider confirms '
+            'this booking is available.',
+            style: TextStyle(fontSize: 12.5, height: 1.45),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Where to pay, revealed once availability is confirmed.
+  ///
+  /// Reads the same `payment_methods` rows the admin screen edits, through
+  /// the same RLS (`is_active = true OR is_admin()`), so there is no second
+  /// list to keep in sync. Rendered only after the provider has accepted.
+  Widget _paymentMethodsCard() {
+    final methods = _paymentMethods ?? const <Map<String, dynamic>>[];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.account_balance_wallet_outlined,
+                  size: 18, color: AppTheme.primaryGreen),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Where to pay',
+                    style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Pay into any of these accounts, then attach the transfer receipt '
+            'below. An admin verifies it before the order starts.',
+            style: TextStyle(fontSize: 12, height: 1.4, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 12),
+          if (methods.isEmpty)
+            const Text(
+              'No payment account is available right now. Our team will '
+              'contact you with the details.',
+              style: TextStyle(fontSize: 12.5, color: AppTheme.textSecondary),
+            )
+          else
+            for (final m in methods)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${m['name'] ?? 'Payment'}'
+                      '${(m['account_name'] as String?)?.isNotEmpty == true ? ' — ${m['account_name']}' : ''}',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
+                    if ((m['account_number'] as String?)?.isNotEmpty == true)
+                      Text(
+                        m['account_number'] as String,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.primaryGreen,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                    if ((m['instructions'] as String?)?.isNotEmpty == true)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          m['instructions'] as String,
+                          style: const TextStyle(
+                              fontSize: 11.5, color: AppTheme.textMuted),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+
+  /// The provider's number, released by release_order_contact() only after
+  /// the payment proof has been verified.
+  Widget _contactCard() {
+    final contact = _providerContact ?? const <String, String>{};
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryGreen.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_open_rounded,
+                  size: 18, color: AppTheme.primaryGreen),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  contact['name'] ?? 'Provider',
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ),
+              const Text(
+                'PAID',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.primaryGreen,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            contact['phone'] ?? '',
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.primaryGreen,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Your payment has been verified, so you can now contact the '
+            'provider directly. Keep arrangements in the app where you can.',
+            style: TextStyle(fontSize: 12, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _locationCard() {
     final status = (_order?['status'] as String?) ?? '';
     return Container(

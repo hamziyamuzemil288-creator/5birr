@@ -25,6 +25,13 @@ class Product {
   /// `product_likes`. Never computed in Dart: a list query must not count
   /// rows, which is the whole reason the column exists.
   final int likeCount;
+
+  /// When true, a buyer must wait for the provider to confirm this
+  /// listing is available before they see payment details or can upload a
+  /// payment screenshot. Defaults to false so every existing listing keeps
+  /// the behaviour it has today.
+  final bool requiresAvailabilityConfirmation;
+
   final Map<String, dynamic>? metadata;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -51,6 +58,7 @@ class Product {
     this.reviewCount = 0,
     this.salesCount = 0,
     this.likeCount = 0,
+    this.requiresAvailabilityConfirmation = false,
     this.metadata,
     required this.createdAt,
     required this.updatedAt,
@@ -79,6 +87,11 @@ class Product {
       reviewCount: json['review_count'] as int? ?? 0,
       salesCount: json['sales_count'] as int? ?? 0,
       likeCount: (json['like_count'] as num?)?.toInt() ?? 0,
+      // Absent means the column does not exist yet (a database that has not
+      // run migration 20260927000074). `?? false` is the safe direction: an
+      // old database must behave exactly as it did before this field existed.
+      requiresAvailabilityConfirmation:
+          (json['requires_availability_confirmation'] as bool?) ?? false,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
     );

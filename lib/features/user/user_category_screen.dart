@@ -6,6 +6,7 @@ import '../../core/services/city_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/subcategory_chip.dart';
 
 class UserCategoryScreen extends StatefulWidget {
   final String categoryId;
@@ -102,11 +103,15 @@ class _State extends State<UserCategoryScreen> {
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
+                      // SubcategoryChip states its own green background and
+                      // white label, so the name is readable on every
+                      // category screen instead of relying on the ambient
+                      // chip theme.
                       children: _subcategories
-                          .map((s) => ActionChip(
-                                label: Text(s['name'] ?? ''),
-                                onPressed: () => context
-                                    .go('/user/category/${s['id']}'),
+                          .map((s) => SubcategoryChip(
+                                label: s['name'] ?? '',
+                                onTap: () =>
+                                    context.go('/user/category/${s['id']}'),
                               ))
                           .toList(),
                     ),

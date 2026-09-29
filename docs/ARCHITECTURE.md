@@ -90,6 +90,27 @@ problem, not an application fault. `ResilientSubscription` and
 `ResilientFeed` exist so a dropped socket degrades to polling instead of
 reaching the zone's unhandled-error path.
 
+**A buyer never sees payment information before the provider has confirmed
+availability, and neither side sees the other's phone before the payment is
+verified.** The order lifecycle already carries both moments, so this costs
+no new status and no second checkout (migration 74):
+
+```
+PENDING_PROVIDER       provider-only; accepts (availability confirmed) or rejects
+ACCEPTED               payment details become visible
+PAYMENT_PENDING        buyer attaches the proof — the existing step, unchanged
+PAYMENT_VERIFICATION   admin verifies the proof — the existing step, unchanged
+APPROVED               release_order_contact() releases the provider's phone
+```
+
+Two flags carry it, both `NOT NULL DEFAULT false`, so nothing that works
+today changes until a provider opts in: `products.requires_availability_confirmation`
+(per listing, set from the product form) and `orders.requires_availability_confirmation`
+(an OR over the cart, snapshotted by `create_order_secure` at order creation).
+The order-level copy is the one the screens read, deliberately: re-joining
+through `order_items` would let a provider close the payment screen on an
+order a buyer has already paid for.
+
 ## Where the code actually is today
 
 The target above is the direction. These are the gaps, written down so nobody
@@ -117,6 +138,7 @@ Dart is asserted against source.
 |----------|-------------------|
 | Every fee follows `system_settings`, in whichever direction its switch points | `assert_fees_are_data_driven()` (migration 62, switch-aware since 73) |
 | Every fee switch actually switches | `assert_fee_switches_are_wired()` (migration 73) |
+| Payment is gated on an availability confirmation, contact on verified payment | `assert_availability_gate_is_wired()` (migration 74) |
 | The CEO reports are callable, not merely present | `assert_ceo_reports_are_callable()` (migration 72) |
 | The CEO authority itself is intact | `assert_ceo_authority_is_wired()` (migration 69) |
 | Live map is actually live | `assert_live_map_is_wired()` (migration 61) |

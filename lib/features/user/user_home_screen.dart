@@ -290,6 +290,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
               child: _tabEmptyState(tabs),
             )
           else ...[
+            // The ride request screen lost its home entry point when this
+            // screen was rebuilt around tabs (the old header had a "Ride"
+            // quick-action button next to Search). It is back here, above the
+            // grid, so the GPS/map-picker flow is one tap from the top of the
+            // feed on every tab rather than only via Profile -> Live map.
+            SliverToBoxAdapter(child: _rideQuickAction()),
             SliverToBoxAdapter(child: _subTabRail(tabCategories)),
             SliverToBoxAdapter(child: _categoryGrid(tabCategories)),
             if (_activeRide != null && _tab == HomeTab.vehicles)
@@ -375,6 +381,55 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     if (changed == true && mounted) _load();
   }
 
+  // ------------------------------------------------------------ ride action
+
+  /// The "Book a ride" quick action.
+  ///
+  /// Deliberately one pill and not a second row of buttons: the pre-redesign
+  /// screen had "Ride" beside "Search", and Search already survives as a
+  /// header icon, so what is missing is only the ride entry itself. It pushes
+  /// `/user/ride-request` — the same route the live map's "Request a ride"
+  /// drawer tile and the help chat deep link use, so the GPS fix and map
+  /// picker in `UserRideRequestScreen` are reached unchanged.
+  ///
+  /// It is rendered on every tab rather than only the Vehicles tab: the ride
+  /// request screen is a top-level action, and hiding it behind a tab means a
+  /// user who never thinks to switch tabs cannot start a ride.
+  Widget _rideQuickAction() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Material(
+          color: AppTheme.primaryGreen,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () => context.push('/user/ride-request'),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.local_taxi_rounded, color: Colors.white, size: 17),
+                  SizedBox(width: 7),
+                  Text(
+                    'Book a ride',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ------------------------------------------------------------- tab rail
 
   /// The sub-tab row from the sketch: Hotels, Beauty, Events, ... for the
@@ -446,10 +501,19 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         itemCount: items.length,
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           // Three per row, per the sketch.
+          //
+          // 0.80 (was 0.82) gives a 101x126dp tile on a 360dp screen instead
+          // of 101x124. The tile used to need ~121dp for a 2-line label and
+          // overflowed with ~1dp to spare, so anything that made the label
+          // taller — a word that wrapped onto a third line, a wider text scale
+          // — drew the "BOTTOM OVERFLOWED" stripe. The extra height plus the
+          // smaller internal padding and the Flexible/FittedBox label in
+          // _CategoryTile below give real headroom, and the label shrinks
+          // rather than clipping if the headroom is used up anyway.
           crossAxisCount: 3,
           mainAxisSpacing: 12,
           crossAxisSpacing: 12,
-          childAspectRatio: 0.82,
+          childAspectRatio: 0.80,
         ),
         itemBuilder: (context, i) => _CategoryTile(
           category: items[i],
@@ -645,7 +709,9 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                 crossAxisCount: 3,
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: 0.82,
+                // Matches the real grid's ratio so the skeleton does not
+                // resize the layout when the data lands.
+                childAspectRatio: 0.80,
                 children: List.generate(
                   6,
                   (_) => const SkeletonBox(
@@ -839,7 +905,10 @@ class _CategoryTile extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        // Was (vertical: 12, horizontal: 6). The vertical padding is pure
+        // slack: the Column is centred, so 10dp looks identical and hands 4dp
+        // back to the label.
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
         decoration: BoxDecoration(
           color: AppTheme.surface,
           borderRadius: BorderRadius.circular(14),
@@ -849,25 +918,43 @@ class _CategoryTile extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 46,
-              height: 46,
+              width: 44,
+              height: 44,
               decoration: BoxDecoration(
                 color: _tint.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(13),
               ),
-              child: Icon(_icon, color: _tint, size: 23),
+              child: Icon(_icon, color: _tint, size: 22),
             ),
-            const SizedBox(height: 8),
-            Text(
-              category.name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 11.5,
-                height: 1.25,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary,
+            const SizedBox(height: 7),
+            // The label is the only part whose height actually varies.
+            // Flexible (loose fit) caps it at whatever the icon and the count
+            // row left behind, so it can never push the count row off the
+            // bottom of the tile; FittedBox then scales the block down to fit
+            // if it is still too tall. That is why a short label ("Retail") and
+            // a long one ("Motorcycle / Bajaj") both stay inside the tile — the
+            // long one is scaled and, only if it is still too tall, ellipsized,
+            // instead of drawing an overflow stripe.
+            //
+            // Loose fit (not Expanded) on purpose: at the normal text size the
+            // label keeps its natural two lines and the column stays centred,
+            // which is what the grid looked like before.
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.center,
+                child: Text(
+                  category.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
               ),
             ),
             if (childCount > 0) ...[

@@ -33,6 +33,13 @@ class _State extends State<ProviderProductFormScreen> {
   String _unit = 'KG'; // 'KG' | 'LTR'
   String? _categoryId;
   bool _isAvailable = true;
+
+  /// Whether a buyer must wait for this provider to confirm availability
+  /// before payment details are shown. Persisted on
+  /// `products.requires_availability_confirmation`; absent from a database
+  /// that has not run migration 20260927000074, in which case it reads false
+  /// and saving it is skipped.
+  bool _requiresAvailabilityConfirmation = false;
   List<Map<String, dynamic>> _categories = [];
   List<File> _newImages = [];
   List<Map<String, dynamic>> _existingImages = [];
@@ -129,6 +136,8 @@ class _State extends State<ProviderProductFormScreen> {
         _qtyCtrl.text = '${prod['quantity'] ?? ''}';
         _categoryId = prod['category_id'];
         _isAvailable = prod['is_available'] ?? true;
+        _requiresAvailabilityConfirmation =
+            prod['requires_availability_confirmation'] ?? false;
         final unit = prod['unit'] as String?;
         _unitMode = unit != null;
         if (unit == 'LTR') _unit = 'LTR';
@@ -255,6 +264,28 @@ class _State extends State<ProviderProductFormScreen> {
         productId = created['id'] as String;
       }
 
+      // The availability gate is written separately, and best-effort.
+      //
+      // Deliberately NOT folded into the update above: the column is added by
+      // migration 20260927000074, and between the app being installed and
+      // that migration being applied the column does not exist. A single
+      // combined update would then fail on an undefined column and the
+      // provider could not save ANY edit to a listing -- a much worse failure
+      // than not being able to set one new switch.
+      //
+      // Written for both create and edit, and including `false`, so turning
+      // the gate off is exactly as reliable as turning it on. create and edit
+      // share this because a newly created listing comes back with the
+      // column's default of false and would otherwise need a second branch.
+      var gateSaved = true;
+      try {
+        await client.from('products').update({
+          'requires_availability_confirmation': _requiresAvailabilityConfirmation,
+        }).eq('id', productId);
+      } catch (_) {
+        gateSaved = false;
+      }
+
       // Upload new images.
       //
       // The path MUST start with the caller's own auth uid: the storage
@@ -287,7 +318,17 @@ class _State extends State<ProviderProductFormScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(_isEdit ? 'Product updated' : 'Product created')));
+          content: Text(
+            !gateSaved
+                // The listing saved; only the new switch did not. Saying
+                // "Product updated" here would leave a provider believing
+                // buyers must confirm availability when they do not have to.
+                ? 'Listing saved, but the "Confirm before payment" switch could '
+                    'not be saved. Try again in a moment.'
+                : (_isEdit ? 'Product updated' : 'Product created'),
+          ),
+          backgroundColor: gateSaved ? null : AppTheme.warning,
+        ));
         context.pop();
       }
     } catch (e) {
@@ -462,6 +503,21 @@ class _State extends State<ProviderProductFormScreen> {
                       title: const Text('Available'),
                       value: _isAvailable,
                       onChanged: (v) => setState(() => _isAvailable = v),
+                      activeColor: AppTheme.primaryGreen,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    SwitchListTile(
+                      title: const Text('Confirm before payment'),
+                      subtitle: const Text(
+                        'For bookings that are only true for a specific date, '
+                        'room or slot. The buyer requests the order first; you '
+                        'confirm it is available, and only then do they see '
+                        'your payment details. Leave off for things you can '
+                        'sell straight from stock.',
+                      ),
+                      value: _requiresAvailabilityConfirmation,
+                      onChanged: (v) =>
+                          setState(() => _requiresAvailabilityConfirmation = v),
                       activeColor: AppTheme.primaryGreen,
                       contentPadding: EdgeInsets.zero,
                     ),

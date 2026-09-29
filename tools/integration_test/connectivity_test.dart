@@ -918,6 +918,37 @@ void main() {
       print('    fee switch evidence -> $detail');
     });
 
+    test('payment is gated on availability, contact on verified payment',
+        () async {
+      // Two guarantees that were both promised and neither enforced.
+      //
+      // Checkout showed payment details and a screenshot upload with
+      // nothing in between checking that the provider had the item, the
+      // room or the slot. And release_order_contact() — the escrow gate
+      // the Terms screen describes — existed since 20260922000001 and was
+      // never called by the app, so the release it writes to admin_history
+      // never happened.
+      //
+      // The assertion is behavioural where it can be: it CALLS
+      // release_order_contact() and requires it to refuse, rather than
+      // grepping its source for a guard that might be a comment. It also
+      // pins both new columns to defaulting to false, which is the whole
+      // backwards-compatibility argument: a default of true would gate
+      // every existing listing and every in-flight order the moment the
+      // migration lands.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_availability_gate_is_wired');
+      expect(detail, isNotNull,
+          reason: 'assert_availability_gate_is_wired() could not run at all, '
+              'so nothing verified the availability/payment gate. '
+              'Error: $error');
+      expect(detail, isNot(contains('AVAILABILITY_GATE_NOT_WIRED')),
+          reason: 'Payment is not gated on an availability confirmation, or '
+              'contact is not gated on a verified payment: $detail');
+      // ignore: avoid_print
+      print('    availability gate -> $detail');
+    });
+
     test('the error sink, its RLS and the hot-path indexes are wired', () async {
       // The client's ErrorLogger writes here on every crash. If the table,
       // its RLS or a hot-path index is missing, failures become invisible
