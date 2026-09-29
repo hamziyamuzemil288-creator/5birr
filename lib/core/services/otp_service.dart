@@ -15,6 +15,27 @@ class OtpService {
 
   SupabaseClient get _client => Supabase.instance.client;
 
+  /// Whether a new account must verify an email OTP before it can be created.
+  ///
+  /// The server is the only authority here: `handle_new_user()` refuses an
+  /// unverified signup with EMAIL_OTP_REQUIRED, and it reads the same
+  /// `signup_otp_required` setting this returns. A client that guessed wrong
+  /// in either direction breaks registration — skipping the code screen
+  /// while the server refuses every account, or demanding a code whose email
+  /// cannot be delivered.
+  ///
+  /// A lookup failure returns TRUE, i.e. today's behaviour: the screen is
+  /// shown rather than silently skipped. Same reasoning as
+  /// `CaptchaService.isRequired`.
+  static Future<bool> isRequiredAtSignup() async {
+    try {
+      return await Supabase.instance.client.rpc('signup_otp_required') ==
+          true;
+    } catch (_) {
+      return true;
+    }
+  }
+
   /// Requests a code for [email].
   ///
   /// Returns after the server confirms email delivery.

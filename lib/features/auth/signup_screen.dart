@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/captcha_service.dart';
+import '../../core/services/otp_service.dart';
 import '../../core/services/city_service.dart';
 import '../../core/utils/phone_formatter.dart';
 import '../../core/widgets/captcha_challenge_field.dart';
@@ -57,6 +58,14 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   String? _captchaId;
   String? _error;
 
+  // Whether a new account must prove an email OTP before it can be created.
+  // Defaults to true: if the lookup never completes, the screen asks for a
+  // code rather than skipping a gate the server may still enforce. The
+  // captcha rides along with it — the challenge exists to throttle OTP
+  // requests, so asking a visitor to solve one when no email is ever sent
+  // is friction for nothing.
+  bool _otpRequired = true;
+
   // Terms & Privacy agreement (Behavior 5): required before the submit
   // button enables. Acceptance is stored on the profile (0039) right after
   // the account exists, with the version the user actually saw.
@@ -96,12 +105,22 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   @override
   void initState() {
     super.initState();
-    _loadCaptchaRequirement();
+    _loadSignupRequirements();
   }
 
-  Future<void> _loadCaptchaRequirement() async {
-    final required = await CaptchaService.instance.isRequired();
-    if (mounted) setState(() => _captchaRequired = required);
+  Future<void> _loadSignupRequirements() async {
+    // Both lookups run concurrently; neither blocks the other, and neither
+    // can fail the screen.
+    final results = await Future.wait([
+      CaptchaService.instance.isRequired(),
+      OtpService.isRequiredAtSignup(),
+    ]);
+    if (!mounted) return;
+    final otpRequired = results[1];
+    setState(() {
+      _otpRequired = otpRequired;
+      _captchaRequired = results[0] && otpRequired;
+    });
   }
 
   @override
@@ -411,7 +430,8 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
     }
 
     // Park everything the account-creation step will need; the OTP screen
-    // hands it back when the code is verified.
+    // hands it back when the code is verified (and is never opened when the
+    // OTP is switched off).
     final draft = SignupDraft(
       rolePath: switch (widget.role) {
         SignupRole.user => 'user',
@@ -430,12 +450,17 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       captchaId: _captchaId,
     );
 
-    final verified = await context.push<bool>(
-      '/otp-verify',
-      extra: OtpArgs(draft: draft),
-    );
-    if (verified != true || !mounted) return;
-
+    // Ask for a code only while the server is asking for one. When the OTP
+    // is switched off (the email provider is unconfigured) the account is
+    // created immediately and waits for admin approval instead — which is
+    // the gate that has always protected a new account.
+    if (_otpRequired) {
+      final verified = await context.push<bool>(
+        '/otp-verify',
+        extra: OtpArgs(draft: draft),
+      );
+      if (verified != true || !mounted) return;
+    }
     // Code verified — create the account now.
     setState(() {
       _isLoading = true;

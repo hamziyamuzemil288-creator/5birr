@@ -197,6 +197,26 @@ void main() {
               'the signup gate is back to rejecting correctly-typed codes '
               'that needed more than one attempt.');
     });
+
+    test('the OTP gate is a working toggle, in either position', () async {
+      // While the Resend email provider is unconfigured the OTP cannot be
+      // delivered, so the gate is switched OFF and registration completes
+      // into the admin approval queue. The failure that matters here is
+      // silent and total: if handle_new_user() stops reading the toggle,
+      // every signup fails again with "Database error saving new user" and
+      // no account is created to approve. If the gate stops working, "turn
+      // the OTP back on when email is configured" becomes a lie.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_signup_otp_toggle_is_consistent');
+      expect(detail, isNotNull,
+          reason: 'the signup_otp_required setting is missing, '
+              'handle_new_user() no longer reads it (so registration fails '
+              'again while the owner believes the OTP is off), or it no '
+              'longer refuses an unverified signup (so re-enabling the OTP '
+              'would not restore the gate). Diagnostic: $error');
+      // ignore: avoid_print
+      print('    signup OTP toggle -> $detail');
+    });
   });
 
   group('PostgREST embeds are backed by real foreign keys', () {
