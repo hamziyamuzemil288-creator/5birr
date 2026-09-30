@@ -14,6 +14,7 @@ import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/dashboard_top_tabs.dart';
+import '../../core/widgets/quick_action_pill.dart';
 
 class VehicleProviderDashboard extends ConsumerStatefulWidget {
   const VehicleProviderDashboard({super.key});
@@ -334,6 +335,22 @@ class _VehicleProviderDashboardState
                           ),
                         ],
                       ),
+                    ),
+                    const SizedBox(height: 20),
+                    // The one shortcut this role opens most. A vehicle
+                    // provider's whole shift is claiming rides, so the feed is
+                    // the shortcut -- deliberately NOT the service provider's
+                    // "My Gallery", and not "My Vehicles" either: the fleet
+                    // changes a few times a month, the ride feed several times
+                    // an hour. Live Map is the near neighbour and stays in the
+                    // Drive tab; this is the action that earns money, so it is
+                    // the one that gets the pill.
+                    //
+                    // Additive, not a move: the Drive tab entry stays.
+                    QuickActionPill(
+                      icon: Icons.local_taxi_outlined,
+                      label: 'Ride Requests',
+                      onTap: () => context.push('/vehicle/ride-requests'),
                     ),
                     const SizedBox(height: 20),
                     // Rank: the business's standing on the loyalty ladder. A

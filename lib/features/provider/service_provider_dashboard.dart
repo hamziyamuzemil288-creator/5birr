@@ -11,6 +11,7 @@ import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/dashboard_top_tabs.dart';
+import '../../core/widgets/quick_action_pill.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -172,6 +173,28 @@ class _ServiceProviderDashboardState
                         ],
                       ),
                     ),
+                    const SizedBox(height: 20),
+                    // The one shortcut this role opens most: a provider's
+                    // photos are what a customer reads before they book, and
+                    // the Business tab buried them one tab and one list row
+                    // deep. This is the same pill the user home screen uses
+                    // for "Book a ride" — QuickActionPill, not a second
+                    // button style.
+                    //
+                    // Additive, not a move: the Business tab entry stays,
+                    // because a provider who already knows where it is should
+                    // find it there too.
+                    //
+                    // Gated on the same condition as that entry, for the same
+                    // reason: the route is /provider/gallery/:id, so without a
+                    // provider id this would push a path matching no route.
+                    if (_providerProfile?['id'] != null)
+                      QuickActionPill(
+                        icon: Icons.photo_library_outlined,
+                        label: 'My Gallery',
+                        onTap: () => context.push(
+                            '/provider/gallery/${_providerProfile!['id']}'),
+                      ),
                     const SizedBox(height: 20),
                     // Rank: the business's standing on the loyalty ladder, with
                     // the distance to the next rung. Status only — no feature

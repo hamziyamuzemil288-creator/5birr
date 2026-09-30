@@ -2564,10 +2564,142 @@ def check_provider_gallery_is_wired() -> list[str]:
 
     # The shared grid must still be the 3-across default; a per-screen
     # column override here would diverge from every other photo surface.
-    if re.search(r"PhotoGrid\([^)]*crossAxisCount", screen, re.DOTALL):
-        problems.append(
-            "provider_gallery_screen.dart overrides the shared PhotoGrid "
-            "column count; the 3-across default is the product decision")
+    if re.search(r"PhotoGrid\([^)]*crossAxisCount", screen, re.DOTALL):            problems.append(
+                "provider_gallery_screen.dart overrides the shared PhotoGrid "
+                "column count; the 3-across default is the product decision")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 23. the role quick-action shortcuts share one definition and still resolve
+# ---------------------------------------------------------------------------
+# "Book a ride" on the user home screen was the only instance of this pill
+# pattern, which made it simultaneously the only definition of the pattern and
+# the reason two provider dashboards had no shortcut at all. Giving each role
+# its own hand-written pill would restore the drift in a new place, so the
+# markup lives once in QuickActionPill and the roles call it.
+#
+# What this protects, in the order things actually broke here:
+#   1. the pill style is defined once (no second hand-rolled green pill)
+#   2. each role still offers a shortcut at all
+#   3. each shortcut's target is a declared route, not a hopeful push
+#   4. no shortcut is invented for a role that cannot exist
+QUICK_ACTION_ROLES = (
+    ("user_home_screen.dart", "user", "Book a ride", "/user/ride-request"),
+    ("service_provider_dashboard.dart", "service provider",
+     "My Gallery", "/provider/gallery/"),
+    ("vehicle_provider_dashboard.dart", "vehicle provider",
+     "Ride Requests", "/vehicle/ride-requests"),
+)
+
+
+def check_quick_action_shortcuts_are_wired() -> list[str]:
+    problems: list[str] = []
+
+    if not _read(LIB / "core" / "widgets" / "quick_action_pill.dart"):
+        return ["lib/core/widgets/quick_action_pill.dart is missing"]
+
+    # One definition. A role screen that hand-rolls a brand-green rounded pill
+    # is the drift this widget exists to prevent.
+    #
+    # Scoped to the three role screens on purpose. Scanned across all of lib/
+    # it also matches legitimate components that merely share the colour and
+    # radius -- the category chip in the user home tab rail was the first
+    # false positive -- and a check that cries wolf gets ignored.
+    pill_style = re.compile(
+        r"AppTheme\.primaryGreen\s*,[\s\S]{0,200}?BorderRadius\.circular\(20\)")
+    role_files = {f for f, _, _, _ in QUICK_ACTION_ROLES}
+    for path in sorted(dart_sources()):
+        if path.name not in role_files:
+            continue
+        src = _strip_comments(_read(path))
+        # A match that is not inside a QuickActionPill call is a second pill.
+        for m in pill_style.finditer(src):
+            window = src[max(0, m.start() - 400):m.start()]
+            if "QuickActionPill" not in window:
+                line = src[:m.start()].count("\n") + 1
+                problems.append(
+                    "%s hand-rolls a brand-green pill at line %d instead of "
+                    "using QuickActionPill — that is how the dashboards end up "
+                    "with three different button styles"
+                    % (path.name, line))
+
+    router = _read(LIB / "routing" / "app_router.dart")
+
+    for filename, role, label, target in QUICK_ACTION_ROLES:
+        found = False
+        for path in sorted(dart_sources()):
+            if path.name != filename:
+                continue
+            src = _strip_comments(_read(path))
+            if "QuickActionPill" not in src:
+                problems.append(
+                    "%s (%s) offers no QuickActionPill shortcut" % (filename, role))
+                continue
+            found = True
+            # The label and the target must be inside the PILL'S OWN call, not
+            # merely somewhere in the file. A file-level search is satisfied
+            # by the tab entry that the pill duplicates -- so a pill pointed at
+            # the wrong route reads green. Falsification caught exactly that.
+            for m in re.finditer(r"QuickActionPill\(", src):
+                # From this call to the next one (or a generous cap).
+                nxt = src.find("QuickActionPill(", m.end())
+                block = src[m.start():nxt if nxt != -1 else m.start() + 600]
+                if label not in block:
+                    problems.append(
+                        "%s: a QuickActionPill is not labelled %r"
+                        % (filename, label))
+                if target not in block:
+                    problems.append(
+                        "%s: the %s pill does not push %s (found %r in it)"
+                        % (filename, role, target,
+                           re.findall(r"context\.push\('([^']*)'\)", block)))
+            if not re.search(r"QuickActionPill\(", src):
+                problems.append(
+                    "%s (%s) offers no QuickActionPill shortcut"
+                    % (filename, role))
+                # A gallery shortcut needs a provider id in the path; a literal
+                # would match a route but show the wrong provider's photos.
+                if target.endswith("/") and not re.search(
+                        re.escape(target) + r"\$\{", block):
+                    problems.append(
+                        "%s: the gallery pill does not interpolate the provider "
+                        "id into the path" % filename)
+            if not re.search(r"QuickActionPill\(", src):
+                problems.append(
+                    "%s (%s) offers no QuickActionPill shortcut"
+                    % (filename, role))
+            if re.search(r"if\s*\(\s*(false|0|null)\s*\)", src, re.IGNORECASE):
+                problems.append(
+                    "%s contains a constant-false guard, which disables a tile "
+                    "or shortcut" % filename)
+        if not found:
+            problems.append("%s is missing" % filename)
+
+    # Every target must be a declared route. check_routes_resolve covers
+    # every push in lib/; this states the expectation for these three so the
+    # failure names the shortcut rather than a bare push.
+    for filename, role, label, target in QUICK_ACTION_ROLES:
+        route = target.rstrip("/")
+        if route == "/provider/gallery":
+            continue  # parameterised; asserted above
+        if ("path: '%s'" % route) not in router:
+            problems.append(
+                "the %s shortcut targets %s, which is not a declared route"
+                % (role, route))
+
+    # There is no booking provider. `app_role` is exactly
+    # (USER, VEHICLE_PROVIDER, SERVICE_PROVIDER, ADMIN) and provider_type is
+    # constrained to the two provider values, so a booking-provider dashboard
+    # shortcut would point at a screen no account can ever reach. BOOKING is a
+    # category service_group on the shopper side, not a provider role.
+    for path in sorted(dart_sources()):
+        src = _strip_comments(_read(path))
+        if re.search(r"QuickActionPill\([\s\S]{0,200}?BOOKING", src):
+            problems.append(
+                "%s offers a BOOKING_PROVIDER shortcut, but no such role "
+                "exists in app_role" % path.name)
 
     return problems
 
@@ -2624,6 +2756,8 @@ CHECKS = [
      check_recharge_refusals_name_the_real_cause),
     ("the provider gallery is still reachable from the provider dashboard",
      check_provider_gallery_is_wired),
+    ("every role's quick-action shortcut shares one pill and still resolves",
+     check_quick_action_shortcuts_are_wired),
 ]
 
 

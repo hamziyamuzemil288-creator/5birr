@@ -15,6 +15,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/widgets/async_view.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/product_card.dart';
+import '../../core/widgets/quick_action_pill.dart';
 import '../../core/widgets/shimmer_effect.dart';
 import 'city_switcher_sheet.dart';
 
@@ -422,38 +423,15 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// It is rendered on every tab rather than only the Vehicles tab: the ride
   /// request screen is a top-level action, and hiding it behind a tab means a
   /// user who never thinks to switch tabs cannot start a ride.
+  ///
+  /// The markup now lives in [QuickActionPill], which the provider dashboards
+  /// use for their own shortcuts — one definition of this pattern rather than
+  /// one per role. The rendered pill is unchanged.
   Widget _rideQuickAction() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Material(
-          color: AppTheme.primaryGreen,
-          borderRadius: BorderRadius.circular(20),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(20),
-            onTap: () => context.push('/user/ride-request'),
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.local_taxi_rounded, color: Colors.white, size: 17),
-                  SizedBox(width: 7),
-                  Text(
-                    'Book a ride',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
+    return QuickActionPill(
+      icon: Icons.local_taxi_rounded,
+      label: 'Book a ride',
+      onTap: () => context.push('/user/ride-request'),
     );
   }
 

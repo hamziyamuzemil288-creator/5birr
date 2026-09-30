@@ -504,6 +504,26 @@ tracks, and the shim exists only so the documented command keeps working.
 The harnesses need no Dart SDK, no Deno and no credentials, so they run
 anywhere the repository is checked out.
 
+**The dashboard quick-action pill is one component, not three buttons.**
+`QuickActionPill` (`lib/core/widgets/quick_action_pill.dart`) is the single
+prominent shortcut each dashboard offers above its tabbed content: brand
+green, fully rounded, icon + 13px/w700 label, sized to its content rather
+than stretched. The user home screen's "Book a ride" was the original
+instance and is now a call to it, so the style is defined once — the
+alternative is three hand-written pills that drift into three button styles
+and a redesign applied three times. The service provider dashboard shortcuts
+to **My Gallery** and the vehicle provider dashboard to **Ride Requests**;
+both are additive, and both tab entries remain.
+`check_quick_action_shortcuts_are_wired` holds all three to it.
+
+There is deliberately **no booking-provider dashboard**: `app_role` is
+exactly `(USER, VEHICLE_PROVIDER, SERVICE_PROVIDER, ADMIN)` and
+`provider_profiles.provider_type` is constrained to the two provider values.
+`BOOKING_BASED` exists, but as a *category* `service_group` on the shopper
+side (`lib/core/models/category_tabs.dart`), not a provider account type — a
+booking-provider shortcut would point at a screen no account can reach. The
+check fails if one is added.
+
 **Restatements are diffed, not eyeballed.** Two tools back the restatements in
 §4.x, because this repo has twice lost a condition from a function that was
 re-emitted from memory (the `provider_profiles` trigger, the `staff_task_feed`
@@ -540,6 +560,17 @@ RPC):
   are now caught: the picker regex matches both spellings, and the gallery
   check rejects any constant-false guard in the dashboard. **A check that has
   never been seen red is not yet a check.**
+
+  Two more of the same family turned up adding the role quick-action
+  shortcuts. The drift detector first scanned all of `lib/` and flagged the
+  category chip in the user home tab rail — a legitimate component that merely
+  shares the brand green and the 20px radius — so it is now scoped to the
+  three role screens that own a shortcut. And the first version asserted the
+  pill's target with a file-level search, which the *tab entry the pill
+  duplicates* satisfied: pointed at `/vehicle/vehicles`, the pill check read
+  green. (`check_routes_resolve` still caught that one, so nothing shipped
+  broken — but a check that cannot see its own subject is the pattern this
+  file exists to end.) It now reads the route out of the pill's own call.
 
 **The pattern across five live rounds is worth stating plainly:** of the ten
 failures, **one** was a defect in the notifications and **nine** were defects
