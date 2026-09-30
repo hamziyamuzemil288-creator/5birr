@@ -353,6 +353,73 @@ def check_edge_function_required_fields_are_sent() -> list[str]:
     return problems
 
 
+# 3c. the connectivity suite calls each RPC through a helper that matches
+# ---------------------------------------------------------------------------
+# The suite has two ways to ask the database something: ok() for a boolean,
+# rpcText()/rpcTextDiagnosed() for an explanatory string. Nothing checked that
+# each function was asked through the right one, and the mismatch is silent in
+# the worst way -- the call does not fail, it fails to be a CALL. The first
+# live run of the provider photo surface reported
+#
+#   assert_provider_photo_surface_is_wired() could not run.
+#   Diagnostic: returned bool (true), not a String
+#
+# which reads like the database refused to answer. It had answered: the
+# assertion had already passed and returned true. The test was wrong, the
+# database was right, and only a live run could tell them apart.
+FN_DEFINITION = re.compile(
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?(\w+)\s*\("
+    r".*?\)\s*RETURNS\s+(table|bool\w*|text|jsonb|json|void|int\w*|"
+    r"numeric|bigint|uuid|date|timestamptz|setof\s+[\w\s]+?)\s"
+    r"(?:LANGUAGE|AS\b|;)",
+    re.IGNORECASE | re.DOTALL,
+)
+TEXT_RETURNS = {"text", "jsonb", "json"}
+BOOL_RETURNS = {"bool", "boolean"}
+
+
+def check_test_helper_matches_return_type() -> list[str]:
+    """Every rpc the suite calls must be asked through the right helper."""
+    conn = _strip_comments(_read(ROOT / "tools/integration_test"
+                                        "/connectivity_test.dart"))
+    if not conn:
+        return ["tools/integration_test/connectivity_test.dart is missing"]
+
+    # The last definition wins, so read migrations in version order and let
+    # later files overwrite earlier ones -- a function restated post-baseline
+    # is the one that is actually live.
+    returns: dict[str, str] = {}
+    for path in migration_files():
+        for m in FN_DEFINITION.finditer(_strip_comments(_read(path))):
+            returns[m.group(1).lower()] = m.group(2).lower()
+
+    text_calls = set(re.findall(r"rpcText(?:Diagnosed)?\('([\w]+)'\)", conn))
+    bool_calls = set(re.findall(r"\bok\('([\w]+)'\)", conn))
+    if not text_calls and not bool_calls:
+        return ["no rpc calls found in the connectivity suite -- either the "
+                "helpers were renamed or this check has stopped checking"]
+
+    problems: list[str] = []
+    for name in sorted(text_calls):
+        got = returns.get(name.lower())
+        if got and got not in TEXT_RETURNS:
+            problems.append(
+                "the suite calls %s() through rpcText/rpcTextDiagnosed, which "
+                "requires a String, but it RETURNS %s. The call does not fail "
+                "outright -- the helper reports 'returned %s, not a String', "
+                "which reads like the database refused to answer. Use ok()."
+                % (name, got, got))
+    for name in sorted(bool_calls):
+        got = returns.get(name.lower())
+        if got and got not in BOOL_RETURNS:
+            problems.append(
+                "the suite calls %s() through ok(), which requires a boolean, "
+                "but it RETURNS %s. Use rpcText/rpcTextDiagnosed() so the CI "
+                "log shows the live values it measured."
+                % (name, got))
+    return problems
+
+
 # 3. every Edge Function the client invokes is deployed by the workflow
 # ---------------------------------------------------------------------------
 def check_edge_functions_deployed() -> list[str]:
@@ -3001,6 +3068,8 @@ CHECKS = [
      check_gallery_read_path_is_migrated),
     ("every Edge Function field the client must send is actually sent",
      check_edge_function_required_fields_are_sent),
+    ("the connectivity suite asks each RPC through a helper that fits it",
+     check_test_helper_matches_return_type),
     ("an OAuth account can complete its profile, and no account menu row is dead",
      check_profile_completion_and_taps_are_wired),
     ("the router's redirect clauses still match the cycle simulation",

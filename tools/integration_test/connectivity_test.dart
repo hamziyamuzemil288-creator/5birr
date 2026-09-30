@@ -759,14 +759,15 @@ void main() {
       // ignore: avoid_print
       print('    provider photo surface -> $detail');
 
-      final (assertion, assertionError) =
-          await rpcTextDiagnosed('assert_provider_photo_surface_is_wired');
-      expect(assertion, isNotNull,
-          reason: 'assert_provider_photo_surface_is_wired() could not run. '
-              'Diagnostic: $assertionError');
-      expect(assertion, isNot(startsWith('FAIL')),
-          reason: 'The provider photo surface is incomplete or unsafe: '
-              '$assertion');
+      // `ok()`, not rpcTextDiagnosed(): this assertion RETURNS BOOLEAN, and
+      // the text helper rejects a non-String with "returned bool (true), not
+      // a String" -- which reads like the database refused to answer, when in
+      // fact the assertion had already passed. The report above carries the
+      // diagnosis; this only has to carry the verdict.
+      expect(await ok('assert_provider_photo_surface_is_wired'), isTrue,
+          reason: 'The provider photo surface is incomplete or unsafe. The '
+              'report above names which part: the column, the bucket or its '
+              'visibility, the storage policies, or the public view.');
     });
 
     test('the activation fee is withheld and recorded as income', () async {
