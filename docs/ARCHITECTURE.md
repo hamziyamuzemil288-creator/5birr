@@ -587,6 +587,8 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | The income report counts every fee type, and says what it measured | `assert_income_covers_every_fee_type()` (migration 98) |
 | An `OTHER` document keeps its label, the constraints hold, and the insert path is intact | `assert_other_document_type_is_wired()` (migration 99) |
 | A payment screenshot bucket accepts JPEG, keeps the size the client quotes, and stays private | `assert_payment_screenshot_uploads_are_accepted()` (migration 101) |
+| Every bucket the app uploads to has at least one write and one read policy, counted only from policies naming that bucket | `assert_client_buckets_have_write_and_read_policies()` (migration 102) |
+| A provider can read their own wallet and insert + read their own recharge requests, with RLS on | `assert_owner_can_read_and_write_their_money()` (migration 102) |
 | The CEO delete is CEO-gated, the service-role-only cascade is unchanged, and the wrapper calls it | `assert_ceo_delete_is_wired()` (migration 100) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
@@ -664,6 +666,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0099` | `other_document_label` + a `document_type` CHECK carrying every value the app has ever written, and the pairing constraint that requires a label exactly when the type is `OTHER` | an `OTHER` upload is refused by the insert (`column "other_document_label" does not exist`), and nothing records which document the person actually uploaded |
 | `0100` | `is_ceo_authority()`, `ceo_account_directory()`, `ceo_delete_user_account()` — the wrapper that records the reason in `admin_actions` and then CALLS `delete_user_account()` | the CEO directory and its delete button do not exist (`function … in the schema cache`); `delete_user_account` itself is untouched, and it stays service-role-only |
 | `0101` | `assert_payment_screenshot_uploads_are_accepted()` — the two payment-proof buckets stay private, keep accepting JPEG and are not lowered below the limit the app quotes | a payment screenshot upload fails with a bucket error the client cannot explain, or a proof bucket is left public |
+| `0102` | the `user-documents` / `payment-proofs` `storage.objects` policies and the `wallets` / `wallet_recharge_requests` owner policies, restated after the baseline; plus `assert_client_buckets_have_write_and_read_policies()` and `assert_owner_can_read_and_write_their_money()` | **a document upload is refused by storage and a recharge reports "That item could not be found"** — both policies existed only in `0012`/`0009`/`0021`/`0022`, which the workflow marks applied without executing, so the only policies that reached production on those tables were `00042`'s UPDATE-only pair and `20260922000010`'s staff-scoped reads, which no provider can satisfy |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
@@ -755,7 +758,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (70 tests). If it is red, the failure message names
+1. Connectivity CI green (72 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,

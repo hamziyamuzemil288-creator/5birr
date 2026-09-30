@@ -1232,6 +1232,50 @@ void main() {
               '$detail');
     });
 
+    test('every bucket the app uploads to has a policy that permits it', () async {
+      // Migration 0102's assertion, and the hole this whole class of outage
+      // fell through. assert_app_buckets_exist() reads storage.buckets, so it
+      // reports a bucket healthy when the bucket is there, the right size and
+      // correctly private -- while a bucket with no INSERT policy refuses
+      // every upload. assert_private_buckets_are_owner_scoped() inspects the
+      // policies that EXIST and therefore passes vacuously on a bucket with
+      // none. This asks the question an upload actually depends on.
+      final (detail, error) = await rpcTextDiagnosed(
+          'assert_client_buckets_have_write_and_read_policies');
+      expect(detail, isNotNull,
+          reason: 'The bucket write/read policies could not be verified at '
+              'all. If this is null WITH the function deployed, read the '
+              'error: cache vs finding. Diagnostic: $error');
+      expect(detail, isNot(contains('BUCKET_')),
+          reason: 'A storage bucket the app uploads to is not usable: $detail');
+      // ignore: avoid_print
+      print('    bucket policies -> $detail');
+    });
+
+    test('a provider can read their own wallet and submit a recharge', () async {
+      // The other half of migration 0102, and the cause of the reported
+      // "Sorry, we couldn't submit your recharge. That item could not be
+      // found." wallets_owner_read and the two recharge_requests provider
+      // policies are declared only in 0009/0021/0022/0022b, all below the
+      // deploy baseline and therefore marked applied WITHOUT being executed.
+      // What did reach production on those tables is staff-scoped
+      // (20260922000010), which a provider cannot satisfy -- so the wallet
+      // select returned zero rows and the client threw its own not-found.
+      // This suite never saw it because it authenticates as anon and, for
+      // writes, as service_role; both bypass RLS.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_owner_can_read_and_write_their_money');
+      expect(detail, isNotNull,
+          reason: 'The money-path policies could not be verified at all. If '
+              'this is null WITH the function deployed, read the error: '
+              'cache vs finding. Diagnostic: $error');
+      expect(detail, isNot(contains('MONEY_')),
+          reason: 'A provider cannot reach their own wallet or recharge '
+              'requests: $detail');
+      // ignore: avoid_print
+      print('    money policies -> $detail');
+    });
+
     test('the CEO delete routes through the one deletion cascade', () async {
       // Migration 0100's assertion. Three invariants that must never slip:
       // delete_user_account stays service_role-only (a client-reachable

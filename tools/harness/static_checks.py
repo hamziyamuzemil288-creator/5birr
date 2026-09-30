@@ -2136,6 +2136,194 @@ def check_payment_screenshots_are_downscaled() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 20. the policies the upload and money paths need are in a migration the
+#     pipeline actually executes
+# ---------------------------------------------------------------------------
+# check_client_buckets_are_created (6b) asks whether each bucket EXISTS in a
+# migration at or after the baseline. It does not ask whether anyone is allowed
+# to write to it -- and those are separate questions, which is how the gallery
+# was fixed while document upload stayed broken.
+#
+# The live half is assert_client_buckets_have_write_and_read_policies() and
+# assert_owner_can_read_and_write_their_money() (migration 0102). This is the
+# source half: that a CURRENT migration declares those policies at all, so the
+# pipeline has something to execute and the assertions have something to find.
+BUCKET_POLICY_RX = re.compile(
+    r"CREATE\s+POLICY\s+(\w+)\s+ON\s+storage\.objects\s+"
+    r"FOR\s+(INSERT|SELECT|UPDATE|DELETE|ALL)\b(.*?);",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: (table, command) a non-staff caller must be able to perform. Names the
+#: caller, never is_admin()/staff_has_permission(): a provider is neither, and
+#: that gap is the bug migration 0102 exists for.
+MONEY_POLICY_NEEDS = (
+    ("wallets", "SELECT"),
+    ("wallet_recharge_requests", "INSERT"),
+    ("wallet_recharge_requests", "SELECT"),
+)
+
+
+def _current_migrations():
+    """Migrations at or after the deploy baseline -- the only ones that run."""
+    for path in migration_files():
+        version = path.name.split("_", 1)[0]
+        if version.isdigit() and int(version) >= BASELINE:
+            yield path
+
+
+def check_client_write_policies_are_executable() -> list[str]:
+    """Every bucket lib/ writes to has a write AND a read policy, and the
+    wallet tables have caller-named ones, all declared after the baseline.
+
+    A policy declared below the baseline is a policy in a file nobody runs: the
+    deploy workflow marks those applied with `migration repair`, which writes
+    the history table and never executes the file. The gallery bucket proved
+    the assumption is false, and the same reasoning applied to a policy says a
+    bucket can be present, correctly sized, correctly private -- and still
+    refuse every upload, because the INSERT policy that would have permitted it
+    only ever existed on paper.
+    """
+    problems: list[str] = []
+
+    # --- storage buckets ---------------------------------------------------
+    # bucket -> commands declared in a current migration, comments stripped so
+    # a header explaining the policy cannot stand in for the policy itself.
+    cmds: dict[str, set[str]] = {}
+    for path in _current_migrations():
+        body = re.sub(r"--[^\n]*", " ", _read(path))
+        body = re.sub(r"/\*.*?.\*/", " ", body, flags=re.DOTALL)
+        for m in BUCKET_POLICY_RX.finditer(body):
+            rest = m.group(3)
+            names = re.findall(r"bucket_id\s*=\s*'([a-z0-9][a-z0-9-]*)'", rest)
+            for bucket in names:
+                cmds.setdefault(bucket, set()).add(m.group(2).upper())
+
+    for bucket in sorted(dart_buckets()[0]):
+        have = cmds.get(bucket, set())
+        # ALL covers both sides, which is why it is expanded rather than
+        # compared: a bucket guarded by one FOR ALL policy is not half-open.
+        writes = bool(have & {"INSERT", "ALL"})
+        reads = bool(have & {"SELECT", "ALL"})
+        if not writes or not reads:
+            missing = ", ".join(
+                c for c, ok in (("INSERT", writes), ("SELECT", reads)) if not ok
+            )
+            problems.append(
+                "no migration at or after the deploy baseline %d creates a %s "
+                "policy on storage.objects for bucket %r (declared there: %s). "
+                "A bucket with no INSERT policy refuses every upload with 'new "
+                "row violates row-level security policy for table objects', and "
+                "one with no SELECT policy fails every signed-URL fetch. Older "
+                "files are marked applied WITHOUT being executed, so a policy "
+                "declared only there does not exist."
+                % (BASELINE, " and ".join(missing.split(" and ")), bucket,
+                   ", ".join(sorted(have)) or "none")
+            )
+
+    # --- the money tables --------------------------------------------------
+    all_current = "\n".join(
+        re.sub(r"--[^\n]*", " ", _read(p)) for p in _current_migrations()
+    )
+    for table, cmd in MONEY_POLICY_NEEDS:
+        rx = re.compile(
+            r"CREATE\s+POLICY\s+\w+\s+ON\s+(?:public\.)?%s\s+FOR\s+%s\b(.*?);"
+            % (re.escape(table), cmd),
+            re.IGNORECASE | re.DOTALL,
+        )
+        bodies = [m.group(1).lower() for m in rx.finditer(all_current)]
+        if not bodies:
+            problems.append(
+                "no migration at or after the baseline creates a %s policy on "
+                "public.%s, so the client path that performs it is refused and "
+                "the user is told the record does not exist" % (cmd, table)
+            )
+        elif not any(re.search(r"auth\.uid|owns_provider_profile", b) for b in bodies):
+            problems.append(
+                "the only %s policy on public.%s declared after the baseline "
+                "does not name the caller (no auth.uid() and no "
+                "owns_provider_profile()). A staff- or admin-scoped policy is "
+                "unreachable for the signed-in provider who owns the row, which "
+                "is exactly how a wallet lookup returns nothing"
+                % (cmd, table)
+            )
+
+    # --- the assertions that make it stick ---------------------------------
+    for guard in ("assert_client_buckets_have_write_and_read_policies",
+                  "assert_owner_can_read_and_write_their_money"):
+        if guard not in all_current:
+            problems.append(
+                "the live guard %s() is missing, so the policies above can "
+                "quietly stop existing and nothing would say so" % guard
+            )
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 21. a refused recharge names what is actually missing
+# ---------------------------------------------------------------------------
+def check_recharge_refusals_name_the_real_cause() -> list[str]:
+    """friendly_error() maps any error whose text contains 'not found' to
+    "That item could not be found. It may have been removed."
+
+    recharge_screen.dart threw `Exception('Wallet not found')` for a lookup
+    that returned nothing, and `Exception('Provider profile not found')` for
+    the same thing one step earlier. Both were caught by the generic handler
+    and rendered as the generic sentence -- so three unrelated failures (no
+    provider profile, no wallet, an insert RLS refused) reached the user as
+    one indistinguishable "not found", and the report that came back said the
+    wrong thing about which layer was broken.
+
+    The rule this pins: a locally-raised refusal must not carry a phrase the
+    shared mapper will swallow. Either map it to something a person can act
+    on, or let it fall through to the generic fallback -- but it must not
+    borrow the mapper's vocabulary.
+    """
+    problems: list[str] = []
+    screen = _strip_comments(
+        _read(LIB / "features" / "wallet" / "recharge_screen.dart"))
+    if not screen:
+        return ["lib/features/wallet/recharge_screen.dart is missing"]
+
+    mapper = _strip_comments(_read(LIB / "core" / "utils" / "friendly_error.dart"))
+    m = re.search(r"'404',\s*'not found'", mapper)
+    if not m:
+        # The mapper changed shape. Stop asserting against a needle that may no
+        # longer mean what it meant -- a check that cannot see its own subject
+        # is worse than no check.
+        return [
+            "friendly_error.dart no longer contains the 'not found' needle list, "
+            "so this check cannot tell which local refusals it swallows; "
+            "re-derive it against the new classifier"
+        ]
+
+    for thrown in re.findall(r"throw\s+Exception\(\s*'([^']*)'\s*\)", screen):
+        if "not found" in thrown.lower():
+            problems.append(
+                "recharge_screen.dart throws Exception(%r), and "
+                "friendly_error maps any error containing 'not found' to "
+                '"That item could not be found. It may have been removed." A '
+                "local precondition failure must not borrow the mapper's "
+                "vocabulary -- say what is missing in terms the user can act "
+                "on, so this failure is distinguishable from a genuinely "
+                "deleted record" % thrown
+            )
+
+    # The two lookups must still exist: a check that passes because the code
+    # was deleted is the failure mode this file's header warns about.
+    for needle, why in (
+        ("from('provider_profiles')", "the provider profile lookup is gone"),
+        ("from('wallets')", "the wallet lookup is gone"),
+        ("submitRecharge", "the recharge submit call is gone"),
+    ):
+        if needle not in screen:
+            problems.append(f"recharge_screen.dart: {why}")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -2178,6 +2366,12 @@ CHECKS = [
      check_ceo_account_directory_is_wired),
     ("every payment screenshot is downscaled before upload, so the bucket accepts it",
      check_payment_screenshots_are_downscaled),
+    ("the bucket and money policies the client needs are in a migration the "
+     "pipeline executes",
+     check_client_write_policies_are_executable),
+    ("a refused recharge names what is missing instead of borrowing the "
+     "not-found sentence",
+     check_recharge_refusals_name_the_real_cause),
 ]
 
 

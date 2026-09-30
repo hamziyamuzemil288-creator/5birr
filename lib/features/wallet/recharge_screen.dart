@@ -162,13 +162,41 @@ class _RechargeScreenState extends State<RechargeScreen> {
           .select('id')
           .eq('user_id', userId)
           .maybeSingle();
-      if (prov == null) throw Exception('Provider profile not found');
+      // These two preconditions used to be `throw Exception('... not found')`,
+      // and the generic handler below passed them to friendlyError(), whose
+      // "not found" needle turned both into "That item could not be found. It
+      // may have been removed." So a missing provider profile, a missing
+      // wallet and an insert the database refused all reached the user as one
+      // indistinguishable sentence, and the report that came back named the
+      // wrong layer entirely.
+      //
+      // They are answered here instead, in terms the person can act on. A
+      // provider with no wallet row cannot submit a recharge at all -- the
+      // only thing that creates one is provider approval -- so that is a
+      // support question, and it should read like one.
+      if (prov == null) {
+        setState(() {
+          _submitting = false;
+          _error = 'No provider account is linked to this login yet, so there '
+              'is no wallet to top up. Finish applying as a provider, or '
+              'contact support if you have already been approved.';
+        });
+        return;
+      }
       final wallet = await client
           .from('wallets')
           .select('id')
           .eq('provider_id', prov['id'])
           .maybeSingle();
-      if (wallet == null) throw Exception('Wallet not found');
+      if (wallet == null) {
+        setState(() {
+          _submitting = false;
+          _error = 'No wallet has been set up for this business yet, so a '
+              'recharge cannot be recorded against it. Contact support and we '
+              'will open one.';
+        });
+        return;
+      }
 
       String? screenshotPath;
       if (_screenshot != null) {
