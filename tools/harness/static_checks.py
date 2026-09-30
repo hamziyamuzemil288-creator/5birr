@@ -4581,6 +4581,153 @@ def _names_near(src: str, pos: int) -> set[str]:
     return set(re.findall(r"'(fee_[a-z_]+)'", window))
 
 
+def _blank_dollar_bodies(src: str) -> str:
+    """`src` with every dollar-quoted body replaced by spaces of equal length.
+
+    Equal length so any offset computed on the result still refers to the
+    original. Handles the tagged forms this repo uses -- `$$`, `$function$`,
+    `$body$` -- by tagging, not by counting `$$` pairs: a naive
+    `re.sub(r"\$\$.*?\$\$")` mispairs on a file that opens with `$$` and
+    closes with `$function$`, which is how a first attempt at the check it
+    serves reported writes inside function bodies as top-level ones.
+    """
+    out = list(src)
+    i = 0
+    n = len(src)
+    while i < n:
+        if src[i] == "$":
+            m = re.compile(r"\$(\w*)\$").match(src, i)
+            if m:
+                tag = m.group(0)
+                close = src.find(tag, m.end())
+                if close == -1:
+                    i += 1
+                    continue
+                end = close + len(tag)
+                for k in range(i, end):
+                    out[k] = " "
+                i = end
+                continue
+        i += 1
+    return "".join(out)
+
+
+def _do_block_bodies(src: str) -> str:
+    """The concatenated bodies of every `DO $$` block in `src`.
+
+    These run during the migration; a `CREATE FUNCTION` body does not. A
+    privilege or trigger lift that has to happen at migration time therefore
+    lives here, and looking for it in the whole file -- or in the text with
+    dollar-quoted regions blanked -- misses it either way.
+    """
+    out: list[str] = []
+    for m in re.finditer(r"\bDO\s*\$(\w*)\$", src, re.IGNORECASE):
+        tag = "$%s$" % m.group(1)
+        end = src.find(tag, m.end())
+        if end == -1:
+            continue
+        out.append(src[m.end():end])
+    return "\n".join(out)
+
+
+def check_guarded_tables_are_lifted_at_migration_time() -> list[str]:
+    """A migration that seeds a blanket-guarded table must lift the trigger.
+
+    `system_settings` carries a BEFORE INSERT/UPDATE/DELETE row trigger,
+    `trg_system_settings_security` -> `prevent_system_settings_self_modification()`,
+    whose whole body is `IF NOT is_admin() THEN RAISE EXCEPTION
+    'SETTINGS_ARE_ADMIN_ONLY'`. `is_admin()` is `auth.uid()`-derived and
+    `auth.uid()` reads the JWT claim from the GUC store -- a migration
+    connection has no JWT, so it is NULL and the guard raises regardless of how
+    privileged the migration role is. 0113 seeded one setting and the push died
+    on it, after 0107-0112 had all applied.
+
+    0028, 0038 and 0062 lift the trigger for their own seed and restore it
+    immediately. That is the pattern and it is easy to forget, so the reminder
+    is mechanical.
+
+    DELIBERATELY NARROW. The other trigger functions in this repo that mention
+    `is_admin()` -- `prevent_role_escalation`, `prevent_notification_injection`,
+    `enforce_provider_write_gate` and the rest -- are SELECTIVE: they block a
+    specific escalation and permit ordinary writes, which is why the many
+    migrations that write `profiles`, `provider_profiles` and `notifications`
+    from a migration connection all applied cleanly. Treating every
+    is_admin()-mentioning trigger as a blanket guard reported 1014 problems
+    across already-applied history, which is not a check, it is noise. Only a
+    guard whose failure is unconditional belongs here.
+    """
+    problems: list[str] = []
+
+    # (table, trigger). Evidence-based, and asserted to still exist below so a
+    # rename fails loudly instead of silently checking nothing.
+    GUARDED = [("system_settings", "trg_system_settings_security")]
+
+    # The guard must still be defined somewhere, or this check is vacuous.
+    for table, trig in GUARDED:
+        if not any(re.search(r"CREATE\s+TRIGGER\s+%s\b" % re.escape(trig),
+                             _read(p), re.IGNORECASE)
+                   for p in migration_files()):
+            problems.append(
+                "the guard trigger %s is not created by any migration, so this "
+                "check no longer tests anything -- the trigger was renamed or "
+                "dropped and its entry above is stale" % trig)
+
+    for path in migration_files():
+        version = path.name.split("_")[0]
+        if not version.isdigit() or int(version) < BASELINE:
+            continue
+        src = _read(path)
+        # Statements OUTSIDE dollar-quoted bodies. A write inside a function
+        # body runs at call time in the caller's context, where auth.uid() is
+        # real, and is not this migration's problem -- mistaking those for
+        # top-level writes is what produced the 1014-finding version.
+        outside = _blank_dollar_bodies(src)
+        for table, trig in GUARDED:
+            if not re.search(
+                    r"(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"
+                    r"(?:public\.)?%s\b" % re.escape(table), outside,
+                    re.IGNORECASE):
+                continue
+            literal = re.search(
+                r"DISABLE\s+TRIGGER\s+%s\b" % re.escape(trig), src,
+                re.IGNORECASE) and re.search(
+                r"ENABLE\s+TRIGGER\s+%s\b" % re.escape(trig), src,
+                re.IGNORECASE)
+            # The dynamic form: discover the trigger from pg_trigger and lift
+            # it by name. 0068, 0069 and 0076 use this, and it is strictly
+            # better than naming the trigger because it survives a rename.
+            #
+            # Searched in the file's `DO` blocks, NOT in `outside` -- the lift
+            # itself sits inside a dollar-quoted body, so blanking them hid
+            # it and five applied-and-working migrations were reported broken.
+            # A DO block runs at migration time; a plain function body does
+            # not, which is why the distinction is the body's kind and not
+            # whether dollar quotes happen to enclose it.
+            do_blocks = _do_block_bodies(src)
+            # The `regclass` lookup may sit either inside the DO block (0068,
+            # 0069, 0076, 0113) or in a top-level statement just before it
+            # (0003 and 0004 stage the trigger names in a TEMP TABLE first).
+            # Requiring it in one place only reported a working migration as
+            # broken, so both are accepted.
+            where = do_blocks + "\n" + outside
+            dynamic = (re.search(r"DISABLE\s+TRIGGER\s+%I", do_blocks, re.IGNORECASE)
+                       and re.search(r"ENABLE\s+TRIGGER\s+%I", do_blocks, re.IGNORECASE)
+                       and re.search(r"'public\.%s'::regclass" % re.escape(table),
+                                     where, re.IGNORECASE))
+            if literal or dynamic:
+                continue
+            problems.append(
+                "%s writes public.%s at top level, which carries the guard "
+                "trigger %s. That trigger raises unless is_admin(), and a "
+                "migration connection has no JWT so auth.uid() is NULL and it "
+                "raises REGARDLESS of role -- SETTINGS_ARE_ADMIN_ONLY (P0001), "
+                "aborting the whole push. Lift it with ALTER TABLE ... DISABLE "
+                "TRIGGER %s before the write and ENABLE it after, as "
+                "0028/0038/0062 do." % (path.name, table, trig, trig))
+
+    return problems
+
+
 def _privilege_loop_is_derived(src: str) -> bool:
     """Does the GRANT/REVOKE loop read its signatures from pg_proc?
 
@@ -4814,6 +4961,8 @@ CHECKS = [
      check_notification_types_exist),
     ("the other side of an order or a ride is told, not left to poll",
      check_provider_is_told_about_work),
+    ("a migration seeding a blanket-guarded table lifts the guard first",
+     check_guarded_tables_are_lifted_at_migration_time),
     ("a dynamic GRANT/REVOKE only names signatures the file actually creates",
      check_dynamic_privileges_name_real_signatures),
     ("every RPC the app calls is executable by the role that calls it",

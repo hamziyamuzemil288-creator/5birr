@@ -475,6 +475,35 @@ GRANT EXECUTE ON FUNCTION public.provider_fulfilment_gate_report()
 -- 7. The switch
 -- -----------------------------------------------------------------------------
 
+-- `system_settings` carries a row trigger, trg_system_settings_security ->
+-- prevent_system_settings_self_modification() -> is_admin() -> has_role() ->
+-- user_id = auth.uid(). `auth.uid()` reads the JWT claim from the GUC store,
+-- and a migration connection has no JWT, so it is NULL and the guard raises
+-- SETTINGS_ARE_ADMIN_ONLY (P0001) no matter how privileged the migration role
+-- is. That aborted this migration at statement 23.
+--
+-- 0028, 0038 and 0062 lift the trigger by name; 0068, 0069 and 0076 do it by
+-- DISCOVERING the trigger, which is the form used here because it names the
+-- guard by its FUNCTION rather than by a trigger name that can be recreated.
+-- Session-local, requires owner privilege the app's anon and authenticated
+-- roles do not have, and it neither disables RLS nor alters the trigger
+-- definition -- every app-level write stays guarded exactly as before.
+do $$
+declare
+  r record;
+begin
+  for r in
+    select t.tgname
+      from pg_trigger t
+      join pg_proc p on p.oid = t.tgfoid
+     where t.tgrelid = 'public.system_settings'::regclass
+       and not t.tgisinternal
+       and p.proname = 'prevent_system_settings_self_modification'
+  loop
+    execute format('alter table public.system_settings disable trigger %I', r.tgname);
+  end loop;
+end $$;
+
 INSERT INTO public.system_settings (key, value, description)
 VALUES (
   'enforce_verified_documents',
@@ -486,6 +515,22 @@ VALUES (
   'document", which is what the gate meant before 0113.'
 )
 ON CONFLICT (key) DO NOTHING;
+
+do $$
+declare
+  r record;
+begin
+  for r in
+    select t.tgname
+      from pg_trigger t
+      join pg_proc p on p.oid = t.tgfoid
+     where t.tgrelid = 'public.system_settings'::regclass
+       and not t.tgisinternal
+       and p.proname = 'prevent_system_settings_self_modification'
+  loop
+    execute format('alter table public.system_settings enable trigger %I', r.tgname);
+  end loop;
+end $$;
 
 -- -----------------------------------------------------------------------------
 -- 8. Assertion
