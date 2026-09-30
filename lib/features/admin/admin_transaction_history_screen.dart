@@ -32,8 +32,12 @@ class _State extends State<AdminTransactionHistoryScreen> {
     try {
       var query = Supabase.instance.client
           .from('wallet_transactions')
+          // `orders(order_number)` came from migration 0037, which is below the
+          // deploy baseline and so never executed -- the column does not exist
+          // and naming it in the embed made this screen fail with 42703.
+          // `orders(id)` is what `orderLabel()` falls back to.
           .select(
-              '*, provider_profiles(business_name, user_id, profiles(full_name, phone)), orders(order_number)');
+              '*, provider_profiles(business_name, user_id, profiles(full_name, phone)), orders(id)');
       
       if (_startDate != null) {
         query = query.gte('created_at', _startDate!.toIso8601String());
@@ -106,7 +110,7 @@ class _State extends State<AdminTransactionHistoryScreen> {
         'Date': CsvExport.formatDate(dt),
         'Provider': provider?['business_name'] ?? profile?['full_name'] ?? '',
         'Type': t['transaction_type'] ?? '',
-        'Order Number': order?['order_number'] ?? '',
+        'Order Number': order == null ? '' : orderLabel(order),
         'Gross Amount': t['gross_amount'] ?? 0,
         'Fee': t['platform_fee'] ?? 0,
         'Net Amount': t['net_amount'] ?? 0,
@@ -272,7 +276,9 @@ class _State extends State<AdminTransactionHistoryScreen> {
     final type = t['transaction_type'] ?? '';
     final dt = DateTime.parse(t['created_at']);
     final isCredit = type == 'RECHARGE' || type == 'ADMIN_CASH';
-    final orderNumber = formatOrderNumber(order?['order_number']);
+    // `orderLabel` (not `formatOrderNumber` alone) so a row with no stored
+    // number still shows the short id rather than nothing.
+    final orderNumber = order == null ? null : orderLabel(order);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),

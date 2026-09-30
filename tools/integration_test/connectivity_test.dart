@@ -1670,4 +1670,83 @@ void main() {
       print('    source needles -> $detail');
     });
   });
+
+  group('admin screens: the columns they select must exist', () {
+    /// Runs a PostgREST select and returns the error, or null if it resolved.
+    ///
+    /// A missing column raises 42703 here even though RLS hides every row: the
+    /// column list is resolved against the catalogue before row visibility is
+    /// decided. That is what makes this a probe of the SCHEMA rather than of
+    /// the data.
+    Future<String?> selectError(String table, String columns) async {
+      try {
+        await client.from(table).select(columns).limit(1);
+        return null;
+      } catch (e) {
+        return '$e';
+      }
+    }
+
+    /// A column error is the only failure that matters here. Anything else --
+    /// a permission error, an empty result, a network hiccup -- is not a
+    /// finding about the schema, and treating it as one would make this a
+    /// false red that people learn to ignore.
+    void expectNoColumnError(String where, String? error) {
+      final isColumnError = error != null &&
+          (error.contains('42703') ||
+              error.contains('does not exist') ||
+              error.contains('PGRST204'));
+      expect(isColumnError, isFalse,
+          reason: 'The $where screen selects a column the database does not '
+              'have, so the whole screen fails to load the first time it is '
+              'opened. This is how orders.order_number shipped: migration 0037 '
+              'created it, but 0037 is BELOW the deploy baseline, so it was '
+              'recorded as applied without ever being executed. Error: $error');
+    }
+
+    test('the order payments screen can select its own columns', () async {
+      // Verbatim from admin_order_payments_screen.dart.
+      expectNoColumnError(
+          'admin order payments',
+          await selectError(
+              'orders',
+              'id, status, total_amount, currency, created_at, '
+                  'user_id, provider_id, '
+                  'payment_proofs(id, storage_path, verification_status, '
+                  'created_at), '
+                  'provider_profiles!inner(business_name, '
+                  'profiles(full_name, phone))'));
+    });
+
+    test('the transaction history screen can select its own columns',
+        () async {
+      // Verbatim from admin_transaction_history_screen.dart.
+      expectNoColumnError(
+          'admin transaction history',
+          await selectError(
+              'wallet_transactions',
+              '*, provider_profiles(business_name, user_id, '
+                  'profiles(full_name, phone)), orders(id)'));
+    });
+
+    test('the support ticket fields the screen reads are REPORTED, not judged',
+        () async {
+      // `select('*')` cannot raise a column error, so this cannot go red -- and
+      // a test that cannot fail is not a test. It is here to ANSWER a question
+      // instead: the screen reads t['order_number'] and t['provider_city'],
+      // both added by migration 0039, which is below the baseline and so was
+      // recorded as applied without being executed. A `select('*')` returns no
+      // key for a column that does not exist, so those fields would be
+      // silently empty rather than broken.
+      //
+      // Named explicitly, the catalogue answers. Reported rather than asserted
+      // because a missing display field is a finding about data shape, not a
+      // crash, and failing the suite on it would be a red that blocks a deploy
+      // over something no user can see. Same treatment as income coverage.
+      final error = await selectError('support_tickets',
+          'order_number, provider_city, provider_name, provider_reference');
+      // ignore: avoid_print
+      print('    support ticket fields -> ${error == null ? 'all present' : error}');
+    });
+  });
 }

@@ -72,7 +72,12 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
       final data = await Supabase.instance.client
           .from('orders')
           .select(
-            'id, order_number, status, total_amount, currency, created_at, '
+            // `order_number` is NOT selected. Migration 0037 created that
+            // column, but 0037 is below the deploy baseline, so it was
+            // recorded as applied WITHOUT being executed and the column does
+            // not exist -- selecting it made this whole screen fail with
+            // 42703. The label below already falls back to the short id.
+            'id, status, total_amount, currency, created_at, '
             'user_id, provider_id, '
             'payment_proofs(id, storage_path, verification_status, created_at), '
             'provider_profiles!inner(business_name, profiles(full_name, phone))'
