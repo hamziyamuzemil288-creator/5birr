@@ -192,7 +192,13 @@ class _State extends State<VehicleFormScreen> {
   }
 
   Future<void> _addPhotos() async {
-    final picked = await _picker.pickMultiImage(imageQuality: 85);
+    // Downscaled, not forwarded — `vehicle-images` has a 5MB limit and
+    // imageQuality alone re-encodes at full resolution.
+    final picked = await _picker.pickMultiImage(
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked.isEmpty || !mounted) return;
 
     // New vehicle: no id to build a path from yet, so hold the files and let

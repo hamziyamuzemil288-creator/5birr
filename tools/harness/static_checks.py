@@ -2068,7 +2068,7 @@ def check_ceo_account_directory_is_wired() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 19. a payment screenshot is downscaled before it is uploaded
+# 19. every picker that feeds a storage bucket is downscaled first
 # ---------------------------------------------------------------------------
 def check_payment_screenshots_are_downscaled() -> list[str]:
     """Every picker that feeds a storage bucket must re-encode, not forward.
@@ -2081,8 +2081,14 @@ def check_payment_screenshots_are_downscaled() -> list[str]:
     from provider section", because the refusal happens server-side inside a
     bucket the client never sees.
 
-    Checked at the call site, not in the picker: these are three independent
+    Checked at the call site, not in the picker: these are independent
     screens, and the one that was wrong was correct code in isolation.
+
+    `pickMultiImage` takes no `source:` argument, so a regex written for
+    `pickImage` silently reports zero matches against it — a check that
+    reads as green because it never looked. Both spellings are matched here,
+    and the multi-image sites (provider gallery, product form, vehicle form)
+    are the three that had been uncovered for the life of the check.
     """
     problems: list[str] = []
 
@@ -2091,23 +2097,41 @@ def check_payment_screenshots_are_downscaled() -> list[str]:
     sites = [
         ("recharge_screen.dart (payment-screenshots, 5MB)",
          LIB / "features" / "wallet" / "recharge_screen.dart",
-         ["_pickScreenshot"]),
+         ["_pickScreenshot"], "single"),
         ("user_checkout_screen.dart (payment-proofs)",
          LIB / "features" / "user" / "user_checkout_screen.dart",
-         ["_pickScreenshot", "_pickNationalId"]),
+         ["_pickScreenshot", "_pickNationalId"], "single"),
         ("user_order_detail_screen.dart (payment-proofs)",
          LIB / "features" / "user" / "user_order_detail_screen.dart",
-         ["_submitPayment"]),
+         ["_submitPayment"], "single"),
+        # Multi-image pickers are a different API with no `source:` argument,
+        # so the pickImage regex above can never see them. That is how three
+        # 5MB-bucket uploads sat here forwarding full-resolution phone photos
+        # with nothing complaining: this check read as green the whole time.
+        ("provider_gallery_screen.dart (provider-gallery, 5MB)",
+         LIB / "features" / "provider" / "provider_gallery_screen.dart",
+         ["_add"], "multi"),
+        ("provider_product_form_screen.dart (product-images, 5MB)",
+         LIB / "features" / "provider" / "provider_product_form_screen.dart",
+         ["_pickImages"], "multi"),
+        ("vehicle_form_screen.dart (vehicle-images, 5MB)",
+         LIB / "features" / "vehicle" / "vehicle_form_screen.dart",
+         ["_addPhotos"], "multi"),
     ]
 
-    for label, path, fns in sites:
+    for label, path, fns, kind in sites:
         src = _strip_comments(_read(path))
         if not src:
             problems.append(f"{label}: the file is missing")
             continue
-        for m in re.finditer(
+        if kind == "single":
+            found = re.finditer(
                 r"pickImage\(\s*source:\s*ImageSource\.gallery(.{0,320}?)\)",
-                src, re.DOTALL):
+                src, re.DOTALL)
+        else:
+            found = re.finditer(
+                r"pickMultiImage\((.{0,320}?)\)\s*;", src, re.DOTALL)
+        for m in found:
             args = m.group(1)
             if "maxWidth" not in args or "maxHeight" not in args:
                 line = src[:m.start()].count("\n") + 1
@@ -2427,6 +2451,128 @@ def check_recharge_refusals_name_the_real_cause() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 22. the provider gallery is still reachable from the provider dashboard
+# ---------------------------------------------------------------------------
+# Reported as "the gallery is gone from the dashboard". Nothing had been
+# deleted: the dashboard redesign had moved the tile one level down, into the
+# Business tab of DashboardTopTabs, and the screen, the route, the bucket and
+# the RPCs were all exactly where they had been since the root commit.
+#
+# A feature that is one refactor away from being unreachable needs its entry
+# point asserted, the same way the CEO directory's is (check 18). The tile is
+# allowed to live inside a tab -- what cannot be allowed is for the tab, the
+# route, or the tile to disappear without a check going red.
+def check_provider_gallery_is_wired() -> list[str]:
+    """Gallery screen, route, dashboard tile, shared grid, loud errors.
+
+    The SQL half is asserted in the database (assert_app_buckets_exist in
+    migration 96 for the bucket; the INSERT/UPDATE/DELETE policies on
+    `provider-gallery` are checked by check_client_write_policies_are_executable).
+    This is the Dart half: the feature a provider is told to use actually has
+    something to tap.
+    """
+    problems: list[str] = []
+
+    screen_path = LIB / "features" / "provider" / "provider_gallery_screen.dart"
+    raw = _read(screen_path)
+    if not raw:
+        return ["lib/features/provider/provider_gallery_screen.dart is missing"]
+    # Comments stripped: this screen's doc comment names the bucket, the path
+    # convention and both RPCs, so a raw search would be satisfied by prose
+    # describing code that is no longer there.
+    screen = _strip_comments(raw)
+
+    # The screen's own contract: read its table, write through the two RPCs,
+    # render the shared grid.
+    for needle, why in (
+        ("from('provider_gallery')", "the gallery is no longer read"),
+        ("add_gallery_image", "the add call is gone"),
+        ("delete_gallery_image", "the delete call is gone"),
+        ("PhotoGrid", "the gallery no longer uses the shared photo grid"),
+        ("provider-gallery", "the gallery no longer names its bucket"),
+    ):
+        if needle not in screen:
+            problems.append(f"provider_gallery_screen.dart: {why}")
+
+    # The owner-scoped storage path. The bucket's INSERT/UPDATE/DELETE
+    # policies scope on `auth.uid()::text = first path segment`, so a path
+    # that does not lead with the caller's uid is refused by storage with an
+    # error the provider cannot act on.
+    if not re.search(r"\$uid/\$", screen):
+        problems.append(
+            "provider_gallery_screen.dart no longer builds the owner-scoped "
+            "'<uid>/<image id>/<file>' path its bucket policies require")
+
+    # Routed, and tiled from the provider dashboard. The tile may sit inside a
+    # DashboardTopTabs entry -- that is a design choice, not a lost feature.
+    router = _read(LIB / "routing" / "app_router.dart")
+    if "/provider/gallery/:id" not in router:
+        problems.append("/provider/gallery/:id is no longer routed")
+    if "ProviderGalleryScreen" not in router:
+        problems.append("the gallery route no longer builds ProviderGalleryScreen")
+
+    dashboard = _strip_comments(
+        _read(LIB / "features" / "provider" / "service_provider_dashboard.dart"))
+    if not dashboard:
+        problems.append("service_provider_dashboard.dart is missing")
+    else:
+        if "/provider/gallery/" not in dashboard:
+            problems.append(
+                "no tile on the provider dashboard points at /provider/gallery/ "
+                "-- the gallery is unreachable")
+        # The route is /provider/gallery/:id, so the tile must interpolate the
+        # provider id. Pushing a literal or a null would match no route.
+        if not re.search(r"/provider/gallery/\$\{", dashboard):
+            problems.append(
+                "the gallery tile does not interpolate the provider id into "
+                "/provider/gallery/, so the path it pushes matches no route")
+        # A string search finds dead code. A tile switched off with
+        # `if (false)`, or commented out, still contains the path -- the
+        # feature is unreachable and this check reads green. Falsification
+        # caught exactly that when this check was written: the guard is not
+        # adjacent to the push, so matching "the nearest if before the string"
+        # does not catch it either. The rule is therefore blunt on purpose --
+        # a constant-false condition anywhere in a dashboard is always a
+        # disabled feature, never a legitimate branch.
+        for cond in re.findall(r"if\s*\(\s*(false|0|null)\s*\)", dashboard,
+                               re.IGNORECASE):
+            problems.append(
+                "the provider dashboard contains a constant-false guard "
+                "`if (%s)`, which disables a tile -- the gallery is "
+                "unreachable however correct the rest of it is"
+                % cond.lower())
+        # The tile must actually be inside a tab/entry list that gets built,
+        # not commented out of one.
+        if "DashboardTopTabs" not in dashboard:
+            problems.append(
+                "the provider dashboard no longer builds DashboardTopTabs; "
+                "the gallery tile is expected to live in one of its tabs")
+        # ...and that id has to come from a provider profile row that the
+        # dashboard actually loads, or the tile is dead on arrival.
+        if "from('provider_profiles')" not in dashboard:
+            problems.append(
+                "the provider dashboard no longer loads provider_profiles, so "
+                "it has no id to push to the gallery route with")
+
+    # Errors surface. A gallery that silently swallows a failed upload reads
+    # to the provider as "the app is broken", which is the exact report that
+    # sent us looking.
+    if "friendlyError" not in screen:
+        problems.append(
+            "provider_gallery_screen.dart no longer routes failures through "
+            "friendlyError, so a refused upload would fail silently")
+
+    # The shared grid must still be the 3-across default; a per-screen
+    # column override here would diverge from every other photo surface.
+    if re.search(r"PhotoGrid\([^)]*crossAxisCount", screen, re.DOTALL):
+        problems.append(
+            "provider_gallery_screen.dart overrides the shared PhotoGrid "
+            "column count; the 3-across default is the product decision")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -2467,7 +2613,8 @@ CHECKS = [
      check_other_document_type_is_wired),
     ("the CEO account directory routes through the one deletion cascade",
      check_ceo_account_directory_is_wired),
-    ("every payment screenshot is downscaled before upload, so the bucket accepts it",
+    ("every image picker that feeds a storage bucket is downscaled before upload, "
+     "so the bucket accepts it",
      check_payment_screenshots_are_downscaled),
     ("the bucket and money policies the client needs are in a migration the "
      "pipeline executes",
@@ -2475,6 +2622,8 @@ CHECKS = [
     ("a refused recharge names what is missing instead of borrowing the "
      "not-found sentence",
      check_recharge_refusals_name_the_real_cause),
+    ("the provider gallery is still reachable from the provider dashboard",
+     check_provider_gallery_is_wired),
 ]
 
 

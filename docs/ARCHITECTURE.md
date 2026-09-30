@@ -530,6 +530,17 @@ RPC):
   alive; a needle sensitive to the author's line wrapping; a needle with a
   typo; and a privilege model that ignored statement order.
 
+  A fourteenth and fifteenth turned up in the gallery review, both the same
+  shape. The downscale check matched `pickImage(source: ImageSource.gallery`,
+  and `pickMultiImage` takes no `source:` argument — so the three multi-image
+  pickers (provider gallery, product form, vehicle form) were never inspected
+  by a check that had read green for its whole life. And the new
+  `check_provider_gallery_is_wired` passed with the dashboard tile disabled by
+  `if (false)`, because the dead tile still contained the route string. Both
+  are now caught: the picker regex matches both spellings, and the gallery
+  check rejects any constant-false guard in the dashboard. **A check that has
+  never been seen red is not yet a check.**
+
 **The pattern across five live rounds is worth stating plainly:** of the ten
 failures, **one** was a defect in the notifications and **nine** were defects
 in the assertions written to check them. Two of those would have "passed" only

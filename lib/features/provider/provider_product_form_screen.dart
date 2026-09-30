@@ -174,7 +174,13 @@ class _State extends State<ProviderProductFormScreen> {
   }
 
   Future<void> _pickImages() async {
-    final picked = await _picker.pickMultiImage(imageQuality: 85);
+    // Downscaled, not forwarded — `product-images` has a 5MB limit and
+    // imageQuality alone re-encodes at full resolution.
+    final picked = await _picker.pickMultiImage(
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked.isNotEmpty) {
       setState(() {
         _newImages.addAll(picked.map((x) => File(x.path)));

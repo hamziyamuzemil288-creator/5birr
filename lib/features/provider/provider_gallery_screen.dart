@@ -68,7 +68,17 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
   }
 
   Future<void> _add() async {
-    final picked = await _picker.pickMultiImage(imageQuality: 85);
+    // Downscaled, not forwarded. `provider-gallery` has a 5MB limit, and
+    // imageQuality alone re-encodes at full resolution -- a 12MP phone photo
+    // still lands over the limit and is refused inside storage, where the
+    // provider only ever sees a generic failure. Matches every other picker
+    // in the app (and provider_product_form/vehicle_form, which had the same
+    // gap on this same call).
+    final picked = await _picker.pickMultiImage(
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked.isEmpty || !mounted) return;
 
     final uid = _client.auth.currentUser?.id;
