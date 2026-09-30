@@ -143,6 +143,32 @@ SQL_COMMAND = re.compile(
 #: red means nothing.
 PLPGSQL_DYNAMIC = re.compile(r"^\s*EXECUTE\b", re.IGNORECASE)
 
+#: A dollar-quoted body is plpgsql if the statement opening it declared
+#: `LANGUAGE plpgsql` (`CREATE FUNCTION ... AS $$`) or if it is a bare
+#: `DO $$ ... $$` block, which is always plpgsql.
+#:
+#: The `LANGUAGE plpgsql` test alone was the first version, and it had a hole
+#: big enough to hide the whole class of conditional DDL this repo relies on:
+#: `DO $$ ... $$` is never preceded by that string, so every DO block was
+#: skipped. That is where 20260927000104 puts the gallery read policies, where
+#: 20260927000096 puts its bucket, and where 20260927000106 puts the column and
+#: the view rebuild -- so the gate reported "ok" on all three while never
+#: having parsed a single statement in them. Found by falsification: an invalid
+#: `ALTER TABLE ... ADD COLUMN` planted inside a DO block came back green.
+TRAILING_COMMENT = re.compile(r"(?:--[^\n]*\n|\s)+\Z")
+DO_OPENER = re.compile(r"(?:^|[\s;)])DO\Z", re.IGNORECASE)
+
+
+def is_plpgsql_body(prefix: str) -> bool:
+    if "LANGUAGE plpgsql" in prefix:
+        return True
+    # Trailing comments and whitespace are stripped first, so a
+    # `-- add the column, guarded` comment between `DO` and `$$` is not what
+    # decides this. Requiring a non-word character before DO keeps a name that
+    # merely ends in "do" (`undo`) from reading as the keyword.
+    return DO_OPENER.search(TRAILING_COMMENT.sub("", prefix)) is not None
+
+
 #: Leading SQL comments, stripped before matching: a `--` line glued to the
 #: statement after it otherwise hides the statement's real first keyword.
 LEADING_COMMENTS = re.compile(r"\A(?:\s|--[^\n]*\n|\s)+")
@@ -180,7 +206,7 @@ def check_file(path: pathlib.Path) -> list[str]:
 
     for start, body in find_bodies(text):
         prefix = text[max(0, start - 800):start]
-        if "LANGUAGE plpgsql" not in prefix:
+        if not is_plpgsql_body(prefix):
             continue
         bodies += 1
         offset = 0

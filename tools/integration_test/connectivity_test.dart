@@ -741,6 +741,34 @@ void main() {
       print('    app buckets -> $detail');
     });
 
+    test('the provider photo surface is complete and still safe', () async {
+      // The provider had no photo and no way to put one there: no column, no
+      // bucket, and a public page that rendered a bare gradient. This asserts
+      // the whole surface at once, and the view column SET rather than the
+      // view's existence -- the view is rebuilt in this migration because
+      // CREATE OR REPLACE VIEW cannot add a column, so it is the one
+      // destructive statement here, and a view that quietly lost a column
+      // would break the public provider page with no other symptom.
+      final (detail, error) =
+          await rpcTextDiagnosed('provider_photo_surface_report');
+      expect(detail, isNotNull,
+          reason: 'provider_photo_surface_report() could not run, so nothing '
+              'verified the provider photo surface. If this is null WITH the '
+              'function deployed, read the error: cache vs finding. '
+              'Diagnostic: $error');
+      // ignore: avoid_print
+      print('    provider photo surface -> $detail');
+
+      final (assertion, assertionError) =
+          await rpcTextDiagnosed('assert_provider_photo_surface_is_wired');
+      expect(assertion, isNotNull,
+          reason: 'assert_provider_photo_surface_is_wired() could not run. '
+              'Diagnostic: $assertionError');
+      expect(assertion, isNot(startsWith('FAIL')),
+          reason: 'The provider photo surface is incomplete or unsafe: '
+              '$assertion');
+    });
+
     test('the activation fee is withheld and recorded as income', () async {
       // The bug this closes: the registration/activation fee was collected on
       // the provider's first approved recharge -- approve_wallet_recharge

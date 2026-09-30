@@ -692,6 +692,81 @@ RPC):
   assertion could never be true, so it failed against a perfectly correct
   `complete_profile()`.
 
+  The same round, on the plpgsql gate, found a hole of the opposite kind.
+  `tools/harness/plpgsql_body_syntax.py` decided which dollar-quoted bodies
+  to examine by looking for `LANGUAGE plpgsql` in the 800 characters before
+  the opening delimiter. A `DO $$ … $$` block is never preceded by that
+  string, so **every `DO` block was skipped** — and `DO` blocks are where
+  this repo puts all of its conditional DDL: 0104's gallery read policies,
+  0096's bucket, 0106's column and its view rebuild. The gate had been
+  reporting "ok" on all of them without parsing a single statement. It was
+  found by planting an invalid `ALTER TABLE` inside a `DO` block and getting
+  green back, and the first attempt to reproduce it was itself wrong: the
+  mutation `ADD COLUMN c text <word>` is *valid* Postgres, which reads the
+  trailing word as a constraint name. Both facts are the reason the rule
+  stands — a check is only real once it has been seen to go red, and a
+  reproduction has to be checked before it is believed.
+
+  ## The admin "Delete user" button that could never work
+
+  Reported as "the delete button does nothing", in both the admin and the CEO
+  interfaces. They are not the same code, and only one of them was broken.
+
+  The **CEO** path is `admin_account_directory_screen.dart` → the
+  `ceo_delete_user_account` RPC → the shared `delete_user_account()` cascade.
+  It asks for a reason, then a typed `DELETE`, translates every refusal code
+  into a sentence, and it works.
+
+  The **admin** path is `admin_staff_assignment_screen.dart` → the
+  `user-admin` Edge Function, `action: 'delete_user'`. The function requires
+
+  ```ts
+  if ((body.confirm ?? "").trim() !== targetId) {
+    return json({ error: "confirmation_required" }, 400);
+  }
+  ```
+
+  — a deliberate second factor of intent, so a mis-wired button or a stale
+  screen cannot destroy the wrong account. The client sent `{action, user_id}`
+  and **never sent `confirm`**. The string `confirm` appeared nowhere in
+  `lib/`. Every press returned 400 `confirmation_required`, so the button had
+  never once succeeded.
+
+  The three hypotheses worth naming, because two of them were wrong:
+
+  - **A swallowed exception** — no. There is a `catch`, and it shows
+    `friendlyError`. The non-2xx branch also ran; it just printed the raw code,
+    `Delete failed: confirmation_required`, which reads to an admin as broken.
+  - **A missing RLS DELETE policy** — no, and it could not be. Neither path
+    deletes a table row as a client: both run as `service_role` (the Edge
+    Function's own key, and the RPC's `SECURITY DEFINER`), so RLS on
+    `profiles` is bypassed entirely. There is no `DELETE` policy on
+    `profiles` and there does not need to be one.
+  - **A blocking foreign key** — this was a *real* bug, and it is fixed, but
+    it was not what the button was hitting. Migration `00054`'s own header
+    says "deleting auth.users today fails for almost any real account": eight
+    columns (`orders.user_id`, `reviews.user_id`, `ride_requests.user_id`,
+    `support_tickets.user_id`, `payment_agreements.user_id`,
+    `ride_ratings.rater_id`, `admin_actions.admin_id`,
+    `admin_wallet_actions.admin_id`) were `NOT NULL` with no action, and are
+    now `ON DELETE SET NULL` so the record survives and the link does not.
+    `00054` is above the baseline, so it ran. Had the client been fixed first
+    and only, the button would have gone from *always 400* to *mostly 500*.
+
+  What is left is the smallest possible fix: send the field the function asks
+  for, and translate its refusal codes. The two paths remain deliberately
+  separate — the admin cannot call the CEO-only RPC, and the Edge Function
+  audits into `admin_actions` while the CEO cascade audits into `audit_logs`.
+
+  `check_edge_function_required_fields_are_sent` now guards it. An Edge
+  Function's request contract lives in TypeScript and the caller's lives in
+  Dart, and nothing in either language checked the other. It is scoped to
+  fields that appear in a guard which *rejects* the request, not every
+  `body.X` a function reads — `user-admin` also reads `body.reason` for a
+  different action, and demanding that on every call would be a false
+  positive that teaches everyone to ignore the check. It fails if it finds no
+  guard at all, for the same reason the plpgsql gate does.
+
   Worth keeping for what it is. Every other fake pass in this repo's history
   went the other way — a needle satisfied by a doc comment, a check matching
   zero things, an assertion green on a table it never opened. **A check that
@@ -759,6 +834,7 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | A payment screenshot bucket accepts JPEG, keeps the size the client quotes, and stays private | `assert_payment_screenshot_uploads_are_accepted()` (migration 101) |
 | Every bucket the app uploads to has at least one write and one read policy, counted only from policies naming that bucket | `assert_client_buckets_have_write_and_read_policies()` (migration 102) |
 | A provider can read their own wallet and insert + read their own recharge requests, with RLS on | `assert_owner_can_read_and_write_their_money()` (migration 102) |
+| A provider can set a shop photo, the bucket takes it, and the public view still reads | `assert_provider_photo_surface_is_wired()` (migration 106), reported by `provider_photo_surface_report()` |
 | The CEO delete is CEO-gated, the service-role-only cascade is unchanged, and the wrapper calls it | `assert_ceo_delete_is_wired()` (migration 100) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
@@ -840,6 +916,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 
 | `0104` | the `provider_gallery` owner + public **read** policies, restated after the baseline; `complete_profile()` for OAuth accounts; `gallery_read_surface_report()` (a report, not an assertion) and `assert_provider_can_read_their_own_gallery()` / `assert_profile_completion_is_wired()` | **the gallery upload succeeds and the gallery is always empty.** `provider_gallery_owner_read` is defined only in `0014`/`0021`/`0022`, which the workflow marks applied without executing. The write path is `SECURITY DEFINER`, so it bypassed both the `20260927000050` revoke and any missing RLS — the upload worked, the row was written, and the screen's own `SELECT` returned zero rows. Every prior gallery report blamed a write, because every prior check inspected `storage.objects` and never the table the rows live in |
 | `0105` | corrects 0104's signature assertion, which compared `proargnames` to an unprefixed rendering and so failed on a correct function; now also proves `complete_profile()` writes only its caller's own row | a false red that would have trained everyone to ignore the assertion |
+| `0106` | `provider_profiles.photo_storage_path` (nullable), the public `provider-photos` bucket with four owner-scoped/public `storage.objects` policies, and `public_provider_profiles` rebuilt inside one `DO` block as a verbatim copy of `20260924000006`'s column list **plus** that one column; plus `provider_photo_surface_report()` and `assert_provider_photo_surface_is_wired()` | **every provider's public page is a flat gradient and the business profile screen has no way to change that** — `provider_profiles` had no photo column, no bucket existed, and the only photo-bearing table in the schema (`provider_stores.logo_storage_path`) is declared only in pre-baseline `0013`–`0022d`, which the workflow marks applied without executing, and which no file in `lib/` references |
 | — | no migration: the two redirect loops were Dart-only. `tools/harness/redirect_cycle_simulation.py` now searches the router's rules for cycles | `GoException: redirect loop detected` — `/ => /complete-profile => /user => /complete-profile` |
 
 **0080 before any build that ships the liveness client.** The client inserts
@@ -932,7 +1009,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (75 tests). If it is red, the failure message names
+1. Connectivity CI green (76 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,

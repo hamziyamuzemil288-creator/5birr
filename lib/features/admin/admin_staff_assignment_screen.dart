@@ -406,10 +406,16 @@ class _AdminStaffAssignmentScreenState
     if (ok != true) return;
     setState(() => _saving = true);
     try {
+      // `confirm` is REQUIRED by the user-admin function and must equal the
+      // target id; it is the server's second factor of intent, so a mis-wired
+      // button or a stale screen cannot destroy the wrong account. This client
+      // never sent it, so every single press came back 400
+      // confirmation_required and the button could never work.
       final res = await Supabase.instance.client.functions
           .invoke('user-admin', body: {
         'action': 'delete_user',
         'user_id': u['id'],
+        'confirm': u['id'],
       });
       final data = res.data as Map<String, dynamic>?;
       if (!mounted) return;
@@ -421,13 +427,49 @@ class _AdminStaffAssignmentScreenState
       } else {
         setState(() => _saving = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Delete failed: ${data?['error'] ?? res.status}')));
+            content: Text(_deleteRefusal(data?['error'] as String?,
+                data?['detail'] as String?))));
       }
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not delete this staff member'))));
+    }
+  }
+
+  /// Turn the function's refusal codes into something an admin can act on.
+  ///
+  /// It used to render `Delete failed: confirmation_required` — the raw code
+  /// straight from the function, which is the same string a developer reads and
+  /// tells an admin nothing. Every code the user-admin function can return for
+  /// a delete is named here; anything unrecognised falls through to the
+  /// generic message rather than leaking a code onto the screen.
+  String _deleteRefusal(String? code, String? detail) {
+    switch (code) {
+      case 'cannot_delete_self':
+        return 'You cannot delete your own account.';
+      case 'cannot_delete_ceo':
+        return 'This account holds the CEO authority and cannot be deleted '
+            'here. A CEO account is removed by the database owner.';
+      case 'cannot_delete_admin':
+        return 'An admin account cannot be deleted from here. The CEO removes '
+            'admin accounts from the account directory.';
+      case 'confirmation_required':
+        return 'The delete was not confirmed. Reopen the page and try again.';
+      case 'user_id_required':
+        return 'No account was selected.';
+      case 'role_check_failed':
+        return "Could not read this account's roles, so nothing was deleted.";
+      case 'delete_failed':
+        return detail == null || detail.isEmpty
+            ? 'The account could not be deleted. It may still have records '
+                'attached that must be cleared first.'
+            : 'The account could not be deleted: $detail';
+      case 'unauthorized':
+        return 'Your session has expired. Sign in again and retry.';
+      default:
+        return 'Could not delete this account. Nothing was removed.';
     }
   }
 

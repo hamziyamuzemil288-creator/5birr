@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
@@ -14,6 +17,13 @@ class ProviderBusinessProfileScreen extends StatefulWidget {
 }
 
 class _State extends State<ProviderBusinessProfileScreen> {
+  /// Public bucket created by 20260927000106. Public because the provider's
+  /// public page is reachable by a signed-out customer; the write policies
+  /// scope on `auth.uid()::text = (string_to_array(name,'/'))[1]`, which is why
+  /// the path below must start with the caller's own uid.
+  static const _photoBucket = 'provider-photos';
+
+  final _picker = ImagePicker();
   final _formKey = GlobalKey<FormState>();
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
@@ -29,6 +39,8 @@ class _State extends State<ProviderBusinessProfileScreen> {
     super.dispose();
   }
   String? _selectedCategoryId;
+  String? _photoPath;
+  bool _uploadingPhoto = false;
   List<Map<String, dynamic>> _categories = [];
   Map<String, dynamic>? _profile;
   bool _loading = true;
@@ -79,6 +91,7 @@ class _State extends State<ProviderBusinessProfileScreen> {
             _phoneCtrl.text = '';
             _addressCtrl.text = prov['business_address'] ?? prov['address_text'] ?? '';
             _selectedCategoryId = prov['category_id'];
+            _photoPath = prov['photo_storage_path'] as String?;
             _lat = (prov['location_lat'] as num?)?.toDouble();
             _lng = (prov['location_lng'] as num?)?.toDouble();
           }
@@ -126,6 +139,96 @@ class _State extends State<ProviderBusinessProfileScreen> {
     }
   }
 
+  /// Upload a shop photo and record it on the provider's own row.
+  ///
+  /// Saves immediately rather than waiting for SAVE PROFILE: the photo is a
+  /// single tap-to-change control, and making it ride along with the text form
+  /// would mean a provider who picks a photo and navigates away loses it. The
+  /// write is the same direct `.update()` the form already uses --
+  /// `provider_profiles` is on the 22-table client allowlist in
+  /// 20260927000050, and the guard trigger in 20260927000027 compares only
+  /// status / provider_type / owner_national_id, so it cannot see this column.
+  Future<void> _pickPhoto() async {
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      // Downscaled, not forwarded: `provider-photos` is 5MB and accepts only
+      // jpeg/png/webp, so a forwarded 12MP phone photo or a HEIC is refused
+      // inside storage, where it surfaces as a generic upload failure.
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
+    if (picked == null || !mounted) return;
+
+    final client = Supabase.instance.client;
+    final uid = client.auth.currentUser?.id;
+    final profileId = _profile?['id'] as String?;
+    if (uid == null || profileId == null) {
+      _toast('Please sign in again.');
+      return;
+    }
+
+    setState(() => _uploadingPhoto = true);
+    try {
+      final file = File(picked.path);
+      final name = Uri.encodeComponent(file.uri.pathSegments.last);
+      final path = '$uid/photo/${DateTime.now().microsecondsSinceEpoch}/$name';
+      await client.storage
+          .from(_photoBucket)
+          .upload(path, file, fileOptions: const FileOptions(upsert: true));
+      await client
+          .from('provider_profiles')
+          .update({'photo_storage_path': path})
+          .eq('id', profileId);
+      if (!mounted) return;
+      setState(() => _photoPath = path);
+      _toast('Photo updated');
+    } catch (e) {
+      if (mounted) {
+        _toast(friendlyError(e, context: 'Could not upload your photo'));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+    }
+  }
+
+  Future<void> _removePhoto() async {
+    final client = Supabase.instance.client;
+    final profileId = _profile?['id'] as String?;
+    final old = _photoPath;
+    if (profileId == null || old == null) return;
+
+    setState(() => _uploadingPhoto = true);
+    try {
+      await client
+          .from('provider_profiles')
+          .update({'photo_storage_path': null})
+          .eq('id', profileId);
+      // The row is cleared first: a failure to delete the object leaves an
+      // orphan file, which is invisible to a customer, whereas failing to
+      // clear the row would leave the old photo still on the public page.
+      try {
+        await client.storage.from(_photoBucket).remove([old]);
+      } catch (_) {
+        // Nothing to say to the provider about an orphaned object.
+      }
+      if (!mounted) return;
+      setState(() => _photoPath = null);
+      _toast('Photo removed');
+    } catch (e) {
+      if (mounted) {
+        _toast(friendlyError(e, context: 'Could not remove your photo'));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+    }
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
   /// Capture the real device GPS as the business location so buyers see
   /// accurate distance and can navigate here.
   Future<void> _useCurrentLocation() async {
@@ -169,6 +272,69 @@ class _State extends State<ProviderBusinessProfileScreen> {
                 key: _formKey,
                 child: Column(
                   children: [
+                    // Shop photo — the first thing a customer sees on the
+                    // public provider page, and the one control here that
+                    // saves on its own rather than with the form.
+                    Row(
+                      children: [
+                        Container(
+                          width: 76,
+                          height: 76,
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            color: AppTheme.creamDark,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: _photoPath == null
+                              ? const Icon(Icons.storefront_outlined,
+                                  color: AppTheme.textMuted, size: 28)
+                              : Image.network(
+                                  Supabase.instance.client.storage
+                                      .from(_photoBucket)
+                                      .getPublicUrl(_photoPath!),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Icon(
+                                      Icons.storefront_outlined,
+                                      color: AppTheme.textMuted,
+                                      size: 28),
+                                ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              TextButton(
+                                onPressed:
+                                    _uploadingPhoto ? null : _pickPhoto,
+                                child: Text(_photoPath == null
+                                    ? 'Add a photo'
+                                    : 'Change photo'),
+                              ),
+                              if (_photoPath != null)
+                                TextButton(
+                                  onPressed: _uploadingPhoto
+                                      ? null
+                                      : _removePhoto,
+                                  child: const Text('Remove'),
+                                ),
+                              if (_uploadingPhoto)
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 6),
+                                  child: SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppTheme.primaryGreen),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
                     BirrTextField(
                       label: 'Business Name',
                       controller: _nameCtrl,

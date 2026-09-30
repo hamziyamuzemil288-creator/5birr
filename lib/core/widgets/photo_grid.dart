@@ -31,6 +31,20 @@ class PhotoGridItem {
     this.onLongPress,
     this.overlay,
   }) : file = null;
+
+  /// An already-resolved URL, for a PUBLIC bucket. `stored` without a
+  /// [publicUrl] falls back to `createSignedUrl`, which costs a round trip and
+  /// a spinner per tile for a URL the bucket serves unsigned -- the shape
+  /// product_card.dart has always used. [path] is null here because there is
+  /// no storage path to keep, and [_tile] checks [publicUrl] first.
+  const PhotoGridItem.url(
+    this.publicUrl, {
+    this.onTap,
+    this.onLongPress,
+    this.overlay,
+  })  : path = null,
+        bucket = null,
+        file = null;
 }
 
 /// A square, tightly-spaced image grid — the layout every phone photo app uses,

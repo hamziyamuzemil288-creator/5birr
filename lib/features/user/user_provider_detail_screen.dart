@@ -6,6 +6,7 @@ import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/photo_grid.dart';
 import '../../core/widgets/provider_trust_section.dart';
 import '../../core/widgets/rank_badge.dart';
 
@@ -103,6 +104,32 @@ class _State extends State<UserProviderDetailScreen> {
           body: const Center(child: Text('Provider not found')));
     }
     final p = _provider!;
+    // Added by 20260927000106 as a storage PATH, not a URL, and exposed on the
+    // public_provider_profiles view rather than on provider_profiles so this
+    // screen never needs a read policy on the base table. Null for every
+    // provider that has not set one, which renders exactly as the page did
+    // before.
+    final photoPath = p['photo_storage_path'] as String?;
+    final photoUrl = photoPath == null || photoPath.isEmpty
+        ? null
+        : Supabase.instance.client.storage
+            .from('provider-photos')
+            .getPublicUrl(photoPath);
+    // product_images comes back with the products query above and was being
+    // discarded; these are the tiles for the gallery grid. Resolved once here
+    // rather than per-widget: `_firstImagePath` sorts, and the grid, the header
+    // and every list row all need the same answer.
+    final photoProducts = <({String id, String url})>[];
+    for (final prod in _products) {
+      final path = _firstImagePath(prod);
+      if (path == null) continue;
+      photoProducts.add((
+        id: prod['id'] as String,
+        url: Supabase.instance.client.storage
+            .from('product-images')
+            .getPublicUrl(path),
+      ));
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -134,11 +161,43 @@ class _State extends State<UserProviderDetailScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(p['business_name'] ?? '',
-                      style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white)),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 64,
+                        height: 64,
+                        clipBehavior: Clip.antiAlias,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.35)),
+                        ),
+                        child: photoUrl == null
+                            ? const Icon(Icons.storefront_outlined,
+                                color: Colors.white, size: 28)
+                            : Image.network(
+                                photoUrl,
+                                fit: BoxFit.cover,
+                                // A photo that 404s must not take the header
+                                // with it, and must not look like a crash.
+                                errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.storefront_outlined,
+                                    color: Colors.white,
+                                    size: 28),
+                              ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(p['business_name'] ?? '',
+                            style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white)),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 4),
                   Text(p['address_text'] ?? 'Location not set',
                       style: TextStyle(
@@ -166,6 +225,34 @@ class _State extends State<UserProviderDetailScreen> {
             ),
             // Trust & quality summary — real aggregated stats
             ProviderTrustSection(stats: _trust),
+            // Gallery grid — one tile per product photo, read-only, tapping a
+            // tile opens that product. Uses product_images, which the products
+            // query already fetched, so this costs no extra round trip.
+            if (photoProducts.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Text('Photos (${photoProducts.length})',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: PhotoGrid(
+                  // PhotoGridItem.url, not stored(path, bucket:): `product-images`
+                  // is public, and `stored` without a publicUrl falls back to
+                  // createSignedUrl -- a round trip and a spinner per tile for
+                  // a URL the bucket serves unsigned. This is what
+                  // product_card.dart does.
+                  items: [
+                    for (final prod in photoProducts)
+                      PhotoGridItem.url(
+                        prod.url,
+                        onTap: () => context.push('/user/product/${prod.id}'),
+                      ),
+                  ],
+                ),
+              ),
+            ],
             // Products
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
@@ -194,11 +281,11 @@ class _State extends State<UserProviderDetailScreen> {
                     leading: Container(
                       width: 48,
                       height: 48,
+                      clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
                           color: AppTheme.creamDark,
                           borderRadius: BorderRadius.circular(8)),
-                      child: const Icon(Icons.inventory_2_outlined,
-                          color: AppTheme.textMuted),
+                      child: _thumbnailFor(prod),
                     ),
                     title: Text(prod['name'] ?? '',
                         maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -216,6 +303,39 @@ class _State extends State<UserProviderDetailScreen> {
         ),
       ),
     );
+  }
+
+  /// Leading thumbnail for the product list. Falls back to the same box-drawing
+  /// icon the row showed before this screen had photos, so a product with no
+  /// image — or one whose image 404s — looks the same as it always did.
+  Widget _thumbnailFor(Map<String, dynamic> product) {
+    const fallback = Icon(Icons.inventory_2_outlined,
+        color: AppTheme.textMuted);
+    final path = _firstImagePath(product);
+    if (path == null) return fallback;
+    return Image.network(
+      Supabase.instance.client.storage
+          .from('product-images')
+          .getPublicUrl(path),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => fallback,
+    );
+  }
+
+  /// First photo path on a product, or null when it has none. Sorted by
+  /// `sort_order` the way product_card.dart expects, so a product whose
+  /// cover was deliberately ordered first still shows that one.
+  String? _firstImagePath(Map<String, dynamic> product) {
+    final raw = product['product_images'];
+    if (raw is! List || raw.isEmpty) return null;
+    final images = raw
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false)
+      ..sort((a, b) =>
+          ((a['sort_order'] as num?)?.toInt() ?? 0)
+              .compareTo((b['sort_order'] as num?)?.toInt() ?? 0));
+    final path = images.first['storage_path'] as String?;
+    return (path == null || path.isEmpty) ? null : path;
   }
 
   Widget _reviewsSection() {

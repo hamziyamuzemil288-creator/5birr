@@ -288,6 +288,71 @@ def check_rpc_targets_exist() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 3b. the client sends every body field a function REQUIRES
+# ---------------------------------------------------------------------------
+# An Edge Function's request contract lives in TypeScript; the caller's lives in
+# Dart; nothing in either language checks the other. The admin "Delete user"
+# button was dead for exactly this reason and nothing went red: the `user-admin`
+# function requires `confirm` to equal the target id -- its second factor of
+# intent against a mis-wired button -- and the client sent only
+# {action, user_id}. Every press returned 400 confirmation_required, so the
+# button could never have worked, and the UI reported the raw code.
+#
+# Scoped to REQUIRED fields only: a `body.X` that appears in an `if` guard
+# which rejects the request with a named `error:` code. Reading every `body.X`
+# a function touches would be wrong -- user-admin also reads `body.reason`,
+# for a different action, and demanding it on every call would be a false
+# positive that trains everyone to ignore this check.
+REQUIRED_BODY_FIELD = re.compile(
+    r"if\s*\(\s*\(?\s*body\.([a-z_][a-z0-9_]*)", re.IGNORECASE)
+
+
+def check_edge_function_required_fields_are_sent() -> list[str]:
+    problems: list[str] = []
+    invoked = literal_calls(r"\.invoke\(\s*'([^']+)'")
+    if not invoked:
+        return ["no literal functions.invoke('...') calls found -- did the "
+                "client move?"]
+
+    found_any = 0
+    for name in sorted(invoked):
+        index = FUNCTIONS / name / "index.ts"
+        if not index.is_file():
+            continue  # check_edge_functions_deployed already reports this
+        src = _strip_comments(_read(index))
+        # literal_calls maps to paths RELATIVE to the repo root, not Path objects.
+        dart = "".join(_strip_comments(_read(ROOT / p)) for p in invoked[name])
+
+        required: set[str] = set()
+        for m in REQUIRED_BODY_FIELD.finditer(src):
+            # A guard only counts if it actually rejects the request. The
+            # look-ahead is bounded so a dispatch `if (body.action === "x")`
+            # is not mistaken for a requirement -- it opens a branch, and the
+            # error inside that branch belongs to the branch, not the contract.
+            window = src[m.end():m.end() + 260]
+            if "return json(" in window and "error:" in window:
+                required.add(m.group(1))
+
+        for field in sorted(required):
+            found_any += 1
+            if not re.search(r"['\"]%s['\"]\s*:" % re.escape(field), dart):
+                problems.append(
+                    "supabase/functions/%s/index.ts rejects a request whose "
+                    "body.%s is missing, but no caller in %s sends it -- the "
+                    "call can only ever fail. Send '%s' from the Dart client."
+                    % (name, field, ", ".join(sorted(invoked[name])), field))
+
+    if not found_any:
+        # Same rule as the plpgsql gate: a check that finds nothing to check
+        # has stopped checking. A regex change that silently matches zero
+        # guards would report green forever.
+        problems.append(
+            "no required body field was found in any Edge Function the app "
+            "invokes -- the guard pattern has stopped matching and this check "
+            "is now vacuous")
+    return problems
+
+
 # 3. every Edge Function the client invokes is deployed by the workflow
 # ---------------------------------------------------------------------------
 def check_edge_functions_deployed() -> list[str]:
@@ -639,7 +704,7 @@ BUCKET_ID_RX = re.compile(r"'([a-z0-9][a-z0-9-]*)'")
 #: together with the first Dart code that writes it -- the bucket, the policy
 #: and the upload path move together, or the check below is the thing that says
 #: so.
-EXPECTED_CLIENT_BUCKETS = 6
+EXPECTED_CLIENT_BUCKETS = 7
 
 
 def dart_buckets() -> tuple[dict[str, set[str]], list[str]]:
@@ -2117,6 +2182,13 @@ def check_payment_screenshots_are_downscaled() -> list[str]:
         ("vehicle_form_screen.dart (vehicle-images, 5MB)",
          LIB / "features" / "vehicle" / "vehicle_form_screen.dart",
          ["_addPhotos"], "multi"),
+        # The provider shop photo (provider-photos, 5MB, 20260927000106).
+        # Added to the list rather than left off it: an upload path that no
+        # check knows about is exactly how the gallery shipped broken, and
+        # this list is the only thing that keeps new pickers honest.
+        ("provider_business_profile_screen.dart (provider-photos, 5MB)",
+         LIB / "features" / "provider" / "provider_business_profile_screen.dart",
+         ["_pickPhoto"], "single"),
     ]
 
     for label, path, fns, kind in sites:
@@ -2927,6 +2999,8 @@ CHECKS = [
      check_quick_action_shortcuts_are_wired),
     ("the gallery's READ path is in a migration the pipeline executes",
      check_gallery_read_path_is_migrated),
+    ("every Edge Function field the client must send is actually sent",
+     check_edge_function_required_fields_are_sent),
     ("an OAuth account can complete its profile, and no account menu row is dead",
      check_profile_completion_and_taps_are_wired),
     ("the router's redirect clauses still match the cycle simulation",
