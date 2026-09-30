@@ -103,7 +103,7 @@ BEGIN
 
   SELECT count(*) FILTER (WHERE p.cmd = 'SELECT'),
          count(*) FILTER (WHERE p.cmd = 'ALL'),
-         coalesce(string_agg(p policyname, ', ' ORDER BY p.policyname), '(none)')
+         coalesce(string_agg(p.policyname::text, ', ' ORDER BY p.policyname::text), '(none)')
     INTO v_select, v_all, v_names
     FROM pg_policies p
    WHERE p.schemaname = 'public'

@@ -628,6 +628,36 @@ RPC):
   crashes the suite is worse than one that fails, because it hides the
   results of the twenty-four checks that would have told you what to fix.
 
+  Then `0104` deployed and failed, and the cause was the deepest version of
+  this pattern yet. `pglast` is libpg_query — the real PostgreSQL grammar —
+  but on a `CREATE FUNCTION ... AS $$ ... $$` body it parses *plpgsql*, and
+  plpgsql defers every embedded statement to execution time. So
+  `string_agg(p policyname, ...)` — a space where the dot belonged — passed
+  `pglast.parse_sql()` on the whole file and was rejected by the server:
+  `syntax error at or near "policyname" (SQLSTATE 42601)`. "Parses clean" was
+  never evidence about function bodies.
+
+  `tools/harness/plpgsql_body_syntax.py` closes that gap: it splits each
+  dollar-quoted body and parses every embedded statement as plain SQL, and
+  `sh build/run_all.sh` runs it on the newest migration. It is scoped that
+  way deliberately — the already-applied history trips its splitter on control
+  flow sharing a `;` boundary, and failing the build on live, working SQL
+  teaches everyone to ignore it. It took four attempts to get right, each
+  caught by falsifying it against the real typo:
+
+  * it matched `$$ … $$` with a backreference to an *optional* tag, which
+    cannot match when the tag is absent — so it found **zero** bodies and
+    reported success on all 200 migrations
+  * its statement splitter was a nested-quantifier regex that backtracked
+    exponentially and hung past a 120s timeout
+  * it skipped `SELECT … INTO`, which is the exact shape it exists to check
+  * it stripped `INTO` unconditionally, eating the `INTO` of `INSERT INTO` and
+    inventing 500-odd false positives
+
+  It now has a vacuity guard that fails if it examines zero statements,
+  because a check that inspects nothing and says "ok" is a green light for the
+  failure it was written to prevent.
+
 **The pattern across five live rounds is worth stating plainly:** of the ten
 failures, **one** was a defect in the notifications and **nine** were defects
 in the assertions written to check them. Two of those would have "passed" only
