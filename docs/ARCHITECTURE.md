@@ -654,9 +654,25 @@ RPC):
   * it stripped `INTO` unconditionally, eating the `INTO` of `INSERT INTO` and
     inventing 500-odd false positives
 
-  It now has a vacuity guard that fails if it examines zero statements,
+  It now has a vacuity guard that fails if it finds no plpgsql body at all,
   because a check that inspects nothing and says "ok" is a green light for the
   failure it was written to prevent.
+
+  And the first thing it found was a check that was wrong, not a bug: 0104's
+  `assert_profile_completion_is_wired()` compared `pg_proc.proargnames`
+  against `'full_name,phone,city,kebele,street_road'`, but the catalog
+  renders it `{p_full_name,p_phone,p_city,p_kebele,p_street_road}` — braces
+  and the `p_` prefix the parameters are actually declared with. The
+  assertion could never be true, so it failed against a perfectly correct
+  `complete_profile()`.
+
+  Worth keeping for what it is. Every other fake pass in this repo's history
+  went the other way — a needle satisfied by a doc comment, a check matching
+  zero things, an assertion green on a table it never opened. **A check that
+  is too strict is a nuisance; a check that is too lenient is what costs
+  days.** This one caught itself. Migration 0105 compares against the array
+  the catalog really produces, and additionally proves the RPC writes only
+  its caller's own row.
 
 **The pattern across five live rounds is worth stating plainly:** of the ten
 failures, **one** was a defect in the notifications and **nine** were defects
@@ -797,6 +813,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0102` | the `user-documents` / `payment-proofs` `storage.objects` policies and the `wallets` / `wallet_recharge_requests` owner policies, restated after the baseline; plus `assert_client_buckets_have_write_and_read_policies()` and `assert_owner_can_read_and_write_their_money()` | **a document upload is refused by storage and a recharge reports "That item could not be found"** — both policies existed only in `0012`/`0009`/`0021`/`0022`, which the workflow marks applied without executing, so the only policies that reached production on those tables were `00042`'s UPDATE-only pair and `20260922000010`'s staff-scoped reads, which no provider can satisfy |
 
 | `0104` | the `provider_gallery` owner + public **read** policies, restated after the baseline; `complete_profile()` for OAuth accounts; `gallery_read_surface_report()` (a report, not an assertion) and `assert_provider_can_read_their_own_gallery()` / `assert_profile_completion_is_wired()` | **the gallery upload succeeds and the gallery is always empty.** `provider_gallery_owner_read` is defined only in `0014`/`0021`/`0022`, which the workflow marks applied without executing. The write path is `SECURITY DEFINER`, so it bypassed both the `20260927000050` revoke and any missing RLS — the upload worked, the row was written, and the screen's own `SELECT` returned zero rows. Every prior gallery report blamed a write, because every prior check inspected `storage.objects` and never the table the rows live in |
+| `0105` | corrects 0104's signature assertion, which compared `proargnames` to an unprefixed rendering and so failed on a correct function; now also proves `complete_profile()` writes only its caller's own row | a false red that would have trained everyone to ignore the assertion |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.

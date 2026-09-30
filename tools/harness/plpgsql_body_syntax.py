@@ -65,6 +65,14 @@ def split_statements(body: str):
     A scanner, not a regex: the alternation-with-nested-quantifier version
     backtracked exponentially and the tool hung past a 120s timeout instead of
     returning an answer.
+
+    `--` comments are skipped, and that is not cosmetic. An apostrophe inside
+    a comment -- "the caller's own row" -- otherwise flips the scanner into
+    string mode, where it swallows text until the next quote, eating the `;`
+    that separated two statements. The result is a chunk that is SQL followed
+    by plpgsql control flow, reported as a syntax error in a statement that
+    is fine. That single missing case produced every false positive in the
+    already-applied history.
     """
     buf: list[str] = []
     depth = 0
@@ -81,6 +89,13 @@ def split_statements(body: str):
                     continue
                 in_str = False
             buf.append(ch)
+        elif ch == "-" and body.startswith("--", i):
+            j = body.find("\n", i)
+            if j == -1:
+                break
+            buf.append(body[i:j])
+            i = j
+            continue
         elif ch == "'":
             in_str = True
             buf.append(ch)
@@ -117,9 +132,16 @@ SQL_COMMAND = re.compile(
     r"^\s*(select|insert|update|delete|with|merge|create|alter|drop|truncate|"
     r"grant|revoke|comment|notify|set|copy|call|do|values|refresh|"
     r"reindex|cluster|analyze|vacuum|listen|unlisten|begin|commit|rollback|"
-    r"savepoint|release|prepare|execute|deallocate|declare cursor)\b",
+    r"savepoint|release|prepare|deallocate|declare cursor)\b",
     re.IGNORECASE,
 )
+
+#: plpgsql's dynamic `EXECUTE 'sql string'` is a plpgsql statement whose SQL
+#: lives in a string, so it is not parseable as plain SQL and cannot be checked
+#: by this tool at all. Skipped rather than reported: its contents are only
+#: known at runtime, and a check that flags uncheckable code is a check whose
+#: red means nothing.
+PLPGSQL_DYNAMIC = re.compile(r"^\s*EXECUTE\b", re.IGNORECASE)
 
 #: Leading SQL comments, stripped before matching: a `--` line glued to the
 #: statement after it otherwise hides the statement's real first keyword.
@@ -154,20 +176,36 @@ def check_file(path: pathlib.Path) -> list[str]:
     text = path.read_text()
     problems: list[str] = []
     examined = 0
+    bodies = 0
 
     for start, body in find_bodies(text):
         prefix = text[max(0, start - 800):start]
         if "LANGUAGE plpgsql" not in prefix:
             continue
+        bodies += 1
         offset = 0
         for raw in split_statements(body):
+            # Order matters: `BEGIN` may be followed by a comment before the
+            # first real statement, so the block opener is removed first and
+            # the leading comments second. The other way round leaves the
+            # statement starting with `--` and it matches no command.
             stmt = LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", raw))
             if not stmt or not SQL_COMMAND.match(stmt):
                 continue
-            examined += 1
-            to_parse = (INTO_TARGETS.sub("", stmt, count=1)
-                        if (SELECT_START.match(stmt) or HAS_RETURNING.search(stmt))
-                        else stmt)
+            if PLPGSQL_DYNAMIC.match(stmt):
+                continue
+            if SELECT_START.match(stmt):
+                # `SELECT ... INTO v` -- the INTO is the assignment.
+                to_parse = INTO_TARGETS.sub("", stmt, count=1)
+            elif HAS_RETURNING.search(stmt):
+                # `INSERT/UPDATE/DELETE ... RETURNING * INTO v`. The INTO to
+                # remove is the one AFTER RETURNING -- for an INSERT, the
+                # first INTO belongs to `INSERT INTO` and stripping it yields
+                # `INSERT public.t ...`, a syntax error in a good statement.
+                cut = stmt.upper().index("RETURNING")
+                to_parse = stmt[:cut] + INTO_TARGETS.sub("", stmt[cut:], count=1)
+            else:
+                to_parse = stmt
             try:
                 pglast.parse_sql(to_parse)
             except Exception as exc:  # noqa: BLE001 - report, never raise
@@ -179,10 +217,15 @@ def check_file(path: pathlib.Path) -> list[str]:
                 )
             offset += len(raw) + 1
 
-    if examined == 0:
+    # The guard fires when the extractor found NO plpgsql body at all -- the
+    # bug that made the first version report success over 200 unexamined
+    # files. It must not fire merely because a body held no parseable SQL
+    # (a body that is entirely dynamic `EXECUTE`, say): that file was read,
+    # there was simply nothing in it this tool can judge.
+    if bodies == 0:
         problems.append(
-            f"{path.name}: examined 0 statements inside a plpgsql body -- the "
-            f"body extractor matched nothing, so this file was NOT checked"
+            f"{path.name}: found 0 plpgsql bodies -- the body extractor "
+            f"matched nothing, so this file was NOT checked"
         )
     return problems
 
