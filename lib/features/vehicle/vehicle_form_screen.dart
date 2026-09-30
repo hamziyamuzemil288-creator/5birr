@@ -174,7 +174,7 @@ class _State extends State<VehicleFormScreen> {
       // otherwise collide on one path and upsert:true would silently replace
       // the first.
       final stamp = DateTime.now().microsecondsSinceEpoch;
-      final name = Uri.encodeComponent(files[i].uri.pathSegments.last);
+      final name = Uri.encodeComponent(file.uri.pathSegments.last);
       final path = '$uid/$vehicleId/${stamp}_$i-$name';
       try {
         await client.storage
