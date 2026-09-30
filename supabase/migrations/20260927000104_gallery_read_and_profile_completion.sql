@@ -129,30 +129,63 @@ COMMENT ON FUNCTION public.gallery_read_surface_report() IS
 -- ===========================================================================
 -- Taken from 0014 / the 0021 live snapshot, with the inner reference
 -- qualified (the 0021 form) rather than left to scope resolution.
-DROP POLICY IF EXISTS provider_gallery_owner_read ON public.provider_gallery;
-CREATE POLICY provider_gallery_owner_read ON public.provider_gallery
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1
-        FROM public.provider_profiles pp
-       WHERE pp.id = provider_gallery.provider_id
-         AND pp.user_id = auth.uid()
-    )
-  );
+--
+-- Wrapped in an existence check because this is the one statement in the
+-- migration that can fail for a reason unrelated to its own correctness:
+-- `DROP POLICY ... ON public.provider_gallery` raises "relation does not
+-- exist" if the table was never created by a migration the pipeline ran, and
+-- a transaction that aborts takes the rest of this file with it -- the RPC,
+-- the report and both assertions. Whether the table is actually there is the
+-- question this migration is trying to answer, so it must not be assumed
+-- either way. The report above states it, and
+-- assert_provider_can_read_their_own_gallery() fails loudly on it.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public'
+       AND c.relname = 'provider_gallery'
+  ) THEN
+    DROP POLICY IF EXISTS provider_gallery_owner_read ON public.provider_gallery;
+    CREATE POLICY provider_gallery_owner_read ON public.provider_gallery
+      FOR SELECT
+      USING (
+        EXISTS (
+          SELECT 1
+            FROM public.provider_profiles pp
+           WHERE pp.id = provider_gallery.provider_id
+             AND pp.user_id = auth.uid()
+        )
+      );
 
-DROP POLICY IF EXISTS provider_gallery_public_read ON public.provider_gallery;
-CREATE POLICY provider_gallery_public_read ON public.provider_gallery
-  FOR SELECT
-  USING (
-    is_active = true
-    AND EXISTS (
-      SELECT 1
-        FROM public.provider_profiles pp
-       WHERE pp.id = provider_gallery.provider_id
-         AND pp.status = 'APPROVED'::account_status
-    )
-  );
+    DROP POLICY IF EXISTS provider_gallery_public_read ON public.provider_gallery;
+    CREATE POLICY provider_gallery_public_read ON public.provider_gallery
+      FOR SELECT
+      USING (
+        is_active = true
+        AND EXISTS (
+          SELECT 1
+            FROM public.provider_profiles pp
+           WHERE pp.id = provider_gallery.provider_id
+             AND pp.status = 'APPROVED'::account_status
+        )
+      );
+
+    -- RLS is enabled in 0013/0021/0022a, all pre-baseline. Enabling it again
+    -- is a no-op where it is already on and the fix where it is not; without
+    -- it the owner read policy above is inert and every row is visible to
+    -- every caller.
+    ALTER TABLE public.provider_gallery ENABLE ROW LEVEL SECURITY;
+  ELSE
+    RAISE NOTICE
+      'provider_gallery is absent from public; read policies not restated. '
+      'gallery_read_surface_report() and '
+      'assert_provider_can_read_their_own_gallery() will both say so.';
+  END IF;
+END;
+$$;
 
 -- The remaining three (insert/update/delete) are deliberately NOT restated.
 -- 20260927000050 revoked client INSERT/UPDATE/DELETE on this table on
@@ -164,7 +197,8 @@ CREATE POLICY provider_gallery_public_read ON public.provider_gallery
 -- RLS is enabled in 0013/0021/0022a, all pre-baseline. Enabling it again is
 -- a no-op where it is already on and the fix where it is not; without it the
 -- owner read policy above is inert and every row is visible to every caller.
-ALTER TABLE public.provider_gallery ENABLE ROW LEVEL SECURITY;
+-- It is issued inside the existence check above, because naming a table that
+-- is not there is an error rather than a no-op.
 
 -- ===========================================================================
 -- 3. The assertion that would have caught it
