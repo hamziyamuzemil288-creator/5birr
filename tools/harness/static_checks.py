@@ -2833,6 +2833,45 @@ def check_profile_completion_and_taps_are_wired() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 26. the redirect rules the cycle simulation models
+# ---------------------------------------------------------------------------
+# `redirect_cycle_simulation.py` proves the router's rules cannot deadlock,
+# but it mirrors them. The moment app_router.dart's redirect() and the mirror
+# disagree, the simulation is asserting something the app does not do, which
+# is a green light for a crash. These are the exact clauses it depends on.
+def check_router_matches_the_cycle_simulation() -> list[str]:
+    problems: list[str] = []
+    router = _strip_comments(_read(LIB / "routing" / "app_router.dart"))
+
+    # The simulation exempts approved accounts from the completeness gate. If
+    # the app stops doing that, an approved account with an incomplete profile
+    # is sent to /complete-profile and forwarded straight back out of it.
+    if "needsProfileCompletion" not in router:
+        problems.append(
+            "the profile-completeness gate no longer exists as "
+            "needsProfileCompletion; redirect_cycle_simulation.py models it")
+    if "!authState.isApproved" not in router:
+        problems.append(
+            "the completeness gate no longer exempts APPROVED accounts. That "
+            "exemption is what stops /complete-profile <-> dashboard looping "
+            "for an account whose profile predates kebele/street_road")
+
+    # "Approval resolved" must mean approved, not "not pending and not
+    # rejected": the looser form also matched SUSPENDED and INACTIVE, which
+    # are approval routes, and looped /suspended <-> dashboard.
+    # Compared with whitespace collapsed, because the condition spans lines.
+    flat = re.sub(r"\s+", " ", router)
+    if "isApprovalRoute && authState.isApproved" not in flat:
+        problems.append(
+            "the approval-resolved branch is no longer `isApprovalRoute && "
+            "authState.isApproved`. A looser condition (not pending, not "
+            "rejected) also matches SUSPENDED/INACTIVE and deadlocks them "
+            "against /suspended")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -2890,6 +2929,8 @@ CHECKS = [
      check_gallery_read_path_is_migrated),
     ("an OAuth account can complete its profile, and no account menu row is dead",
      check_profile_completion_and_taps_are_wired),
+    ("the router's redirect clauses still match the cycle simulation",
+     check_router_matches_the_cycle_simulation),
 ]
 
 

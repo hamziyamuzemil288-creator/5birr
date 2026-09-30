@@ -19,5 +19,12 @@ rc=$?
 python3 "$here/plpgsql_body_syntax.py" --recent 1
 rc2=$?
 
-[ $rc -eq 0 ] && [ $rc2 -eq 0 ]
+# 3. The router's redirect rules, searched for cycles by simulation.
+#    A redirect loop is a property of two branches in combination, so no
+#    source scan of either branch alone can find one -- which is exactly how
+#    `redirect loop detected` shipped to a device.
+python3 "$here/redirect_cycle_simulation.py"
+rc3=$?
+
+[ $rc -eq 0 ] && [ $rc2 -eq 0 ] && [ $rc3 -eq 0 ]
 exit $?

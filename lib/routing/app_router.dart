@@ -190,10 +190,29 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // the app, not by a self-service signup, and are not verified against
       // a national ID — gating them would lock the CEO out of their own
       // dashboard over a phone number they never had a reason to enter.
-      if (!authState.isAdmin &&
+      //
+      // APPROVED accounts are exempt too, and that exemption is the fix for a
+      // hard crash found on device:
+      //
+      //   / => /complete-profile => /complete-profile => /user => /user
+      //
+      // An account that is already APPROVED but predates kebele/street_road
+      // has an incomplete profile forever. It reaches the completion screen,
+      // the "approval resolved" branch below forwards it to its dashboard (it
+      // is approved, so it is neither pending nor rejected), the gate here
+      // sends it back, and the two repeat until go_router gives up with
+      // "redirect loop detected" and the app renders Page Not Found.
+      //
+      // An approved account has already been through verification once;
+      // re-gating it locks a working customer out of the app over a field
+      // they could not have known was added. It can still be corrected,
+      // voluntarily, from Edit Profile.
+      final needsProfileCompletion = !authState.isAdmin &&
           !authState.isStaffMember &&
-          !authState.profile!.isVerifiable &&
-          loc != '/complete-profile') {
+          !authState.isApproved &&
+          !authState.profile!.isVerifiable;
+
+      if (needsProfileCompletion && loc != '/complete-profile') {
         return '/complete-profile';
       }
 
@@ -236,9 +255,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // Approval resolved (e.g. admin approved while the user sat on the
       // pending screen and tapped REFRESH STATUS) — move to the dashboard
       // instead of dead-ending on the approval screen.
-      if (isApprovalRoute &&
-          !authState.isPendingApproval &&
-          !authState.isRejected) {
+      //
+      // The condition is "is APPROVED", not "is not pending and not
+      // rejected". The looser form also matched SUSPENDED and INACTIVE, and
+      // those are approval routes too: a suspended account sitting on
+      // /suspended was forwarded to its dashboard, the suspended gate above
+      // bounced it straight back, and the pair looped until go_router gave
+      // up. The revenue scheduler suspends providers on its own when a
+      // subscription fee cannot be paid, so that state is reached without
+      // anybody doing anything.
+      //
+      // `/complete-profile` rides the same rule and needs no special case
+      // here: a user who has finished completing their profile is either
+      // APPROVED or still PENDING, and neither combination loops.
+      if (isApprovalRoute && authState.isApproved) {
         return _getDashboardPath(authState);
       }
 

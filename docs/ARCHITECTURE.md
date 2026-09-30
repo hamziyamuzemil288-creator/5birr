@@ -658,6 +658,32 @@ RPC):
   because a check that inspects nothing and says "ok" is a green light for the
   failure it was written to prevent.
 
+  Two more, both found by simulation rather than by reading — and both were
+  **redirect loops**, the only failure class in this project that no
+  source-level check could see, because a loop is a property of two branches
+  *in combination* and each branch is individually correct:
+
+  * `/ => /complete-profile => /user => /complete-profile`. The completeness
+    gate sent any non-admin with an incomplete profile to the completion
+    screen; `/complete-profile` was an approval route, so the "approval
+    resolved" branch — which forwards anything not pending and not rejected
+    to its dashboard — sent them straight back out. Any **approved** account
+    predating `kebele`/`street_road` satisfied both at once, and go_router
+    gave up with Page Not Found.
+  * `/suspended => /provider => /suspended`, found by the same tool before
+    the first was even fixed. The looser condition also matched SUSPENDED and
+    INACTIVE, and the revenue scheduler creates that state on its own when a
+    subscription fee cannot be paid.
+
+  Both have the same root: "approval resolved" was written as *not pending and
+  not rejected* when it means *approved*. `redirect_cycle_simulation.py`
+  enumerates every (location, status, verifiability, role) combination and
+  follows the redirect to a fixed point — 1,440 of them, all settling. It is
+  the only check here that would have found either bug, and
+  `check_router_matches_the_cycle_simulation` keeps the Dart and the model
+  from drifting apart, since a simulation that has stopped mirroring the app
+  is a green light for a crash.
+
   And the first thing it found was a check that was wrong, not a bug: 0104's
   `assert_profile_completion_is_wired()` compared `pg_proc.proargnames`
   against `'full_name,phone,city,kebele,street_road'`, but the catalog
@@ -814,6 +840,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 
 | `0104` | the `provider_gallery` owner + public **read** policies, restated after the baseline; `complete_profile()` for OAuth accounts; `gallery_read_surface_report()` (a report, not an assertion) and `assert_provider_can_read_their_own_gallery()` / `assert_profile_completion_is_wired()` | **the gallery upload succeeds and the gallery is always empty.** `provider_gallery_owner_read` is defined only in `0014`/`0021`/`0022`, which the workflow marks applied without executing. The write path is `SECURITY DEFINER`, so it bypassed both the `20260927000050` revoke and any missing RLS — the upload worked, the row was written, and the screen's own `SELECT` returned zero rows. Every prior gallery report blamed a write, because every prior check inspected `storage.objects` and never the table the rows live in |
 | `0105` | corrects 0104's signature assertion, which compared `proargnames` to an unprefixed rendering and so failed on a correct function; now also proves `complete_profile()` writes only its caller's own row | a false red that would have trained everyone to ignore the assertion |
+| — | no migration: the two redirect loops were Dart-only. `tools/harness/redirect_cycle_simulation.py` now searches the router's rules for cycles | `GoException: redirect loop detected` — `/ => /complete-profile => /user => /complete-profile` |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
