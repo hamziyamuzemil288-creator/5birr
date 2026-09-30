@@ -60,6 +60,19 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
   LatLng? _destination;
   String? _destinationLabel;
 
+  /// "Bole, Addis Ababa" -- the area the rider is actually standing in.
+  ///
+  /// The map had no way to say this. It resolved the rider's position and
+  /// used it for the marker, the camera and the nearby-vehicle query, and
+  /// that was all -- so a rider who did not know the name of their own
+  /// kebele had nothing to tell a driver. Resolved from the GPS fix, shown
+  /// on the sheet, and never required: a failed lookup leaves it null.
+  String? _areaLabel;
+
+  /// The point [_areaLabel] was resolved for, so a position update does not
+  /// re-hit the geocoder on every metre travelled.
+  LatLng? _areaResolvedFor;
+
   // Driver mode.
   String? _providerId;
   bool _driverApproved = false;
@@ -110,6 +123,7 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     });
 
     await _loadChips();
+    await _resolveArea(_self);
     if (_isDriver) await _loadDriverIdentity();
     await _refresh();
     _startPolling();
@@ -134,15 +148,44 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     }
   }
 
+  /// Resolve the small area around [point], at most once per ~1 km of
+  /// travel.
+  ///
+  /// The distance gate matters: `watchPosition` fires every 25 m, and
+  /// reverse-geocoding on every one of those would hammer a public Nominatim
+  /// instance that allows one request per second and get the app
+  /// rate-limited for it. A kebele does not change while a rider crosses
+  /// one, so the work is repeated only when it could actually differ.
+  Future<void> _resolveArea(LatLng? point) async {
+    if (point == null) return;
+    final last = _areaResolvedFor;
+    if (last != null) {
+      final moved = const Distance().as(LengthUnit.Meter, last, point);
+      if (moved < 1000) return;
+    }
+    _areaResolvedFor = point;
+    try {
+      final rev = await GeocodingService.instance
+          .reverseGeocode(point.latitude, point.longitude);
+      if (!mounted) return;
+      if (rev == null || !rev.hasArea) return;
+      setState(() => _areaLabel = rev.areaLabel);
+    } catch (_) {
+      // Best-effort. The map works fine without the label.
+    }
+  }
+
   void _watchSelf() {
     _posSub = LocationService.instance.watchPosition(
       distanceFilter: 25,
       onData: (pos) {
         if (!mounted) return;
+        final here = LatLng(pos.latitude, pos.longitude);
         setState(() {
-          _self = LatLng(pos.latitude, pos.longitude);
+          _self = here;
           _accuracy = pos.accuracy;
         });
+        _resolveArea(here);
         // A driver's own position is what makes them discoverable, so it is
         // pushed on the same cadence the map reads everyone else's.
         final id = _providerId;
@@ -588,6 +631,9 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
           expanded: true,
         ),
       ],
+      // The rider's own area, when the geocoder could name it. Null
+      // otherwise -- see _areaPanel.
+      if (_areaPanel() case final panel?) panel,
       const SizedBox(height: 12),
       _chipRow(),
       const SizedBox(height: 12),
@@ -599,6 +645,61 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
         _nearbyList(),
       ],
     ];
+  }
+
+  /// "You are in <area>" -- the nearest small area to the rider, plus the
+  /// nearest ones as one-tap chips.
+  ///
+  /// Rendered only when a label actually resolved. A blank or "unknown"
+  /// area is worse than nothing: it tells the rider the app cannot see where
+  /// they are when in fact it simply has no name for it.
+  Widget? _areaPanel() {
+    if (_areaLabel == null) return null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openDestinationSearch(),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            color: AppTheme.primaryGreen.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.primaryGreen.withOpacity(0.22)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.my_location,
+                  size: 18, color: AppTheme.primaryGreenDark),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('You are in',
+                        style: TextStyle(
+                            fontSize: 11, color: AppTheme.textSecondary)),
+                    Text(
+                      _areaLabel!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.search,
+                  size: 18, color: AppTheme.primaryGreenDark),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   List<Widget> _driverSheet() {

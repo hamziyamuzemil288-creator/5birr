@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:geocoding/geocoding.dart' as platform;
 
@@ -40,6 +41,7 @@ class GeocodingService {
 
   static const _photonUrl = 'https://photon.komoot.io/api';
   static const _nominatimUrl = 'https://nominatim.openstreetmap.org';
+  static const _overpassUrl = 'https://overpass-api.de/api/interpreter';
   static const _minInterval = Duration(milliseconds: 1100);
   static const _httpTimeout = Duration(seconds: 8);
 
@@ -293,6 +295,166 @@ class GeocodingService {
   }
 
   // ------------------------------------------------------------------
+  // Nearby SMALL AREAS (kebele / sub-city / village) around a GPS point
+  // ------------------------------------------------------------------
+
+  /// Small named places near [at] -- kebele, sub-city, neighbourhood,
+  /// village, township -- the ones a person actually uses to tell a driver
+  /// where they are.
+  ///
+  /// ## Why this is a different service from [nearbyPlaces]
+  ///
+  /// [nearbyPlaces] uses Photon `/reverse`, and Photon indexes only
+  /// place-level features: it returns the city and large institutions
+  /// (a hospital, a university, a stadium). That is precisely the reported
+  /// symptom -- "it brings the nearest city and big institution but still
+  /// not the nearest areas / small locations". Asking Photon harder does not
+  /// help; the small areas are simply not in its index.
+  ///
+  /// Overpass is the same OpenStreetMap data queried structurally instead of
+  /// by name, so `place=neighbourhood|quarter|hamlet|village|suburb` and
+  /// `admin_level=9|10` (the admin levels that correspond to a kebele) DO
+  /// come back. Free, no key.
+  ///
+  /// Best-effort by construction: every failure path returns an empty list,
+  /// because this only feeds suggestion chips and a label. A rider with no
+  /// network still gets a priced ride from raw coordinates.
+  Future<List<PlaceResult>> nearbyAreas(
+    GeoPoint at, {
+    int radiusMeters = 4000,
+    int limit = 10,
+  }) async {
+    final cacheKey = 'area:${at.lat.toStringAsFixed(4)},'
+        '${at.lng.toStringAsFixed(4)}:$radiusMeters';
+    final cached = _cache[cacheKey];
+    if (cached is List<PlaceResult>) return cached;
+
+    // `out center` gives every node/way/relation a usable coordinate. The
+    // regex covers exactly the `place` values that mean "a small area" in
+    // OSM's taxonomy, plus the admin levels that are a kebele.
+    final query = [
+      '[out:json][timeout:20];',
+      '(',
+      // `\$` and not `$`: the regex end-anchor has to reach Overpass as a
+      // literal dollar. An unescaped `$` followed by `"` is an interpolation
+      // with no identifier, which is a compile error, not a string.
+      'node["place"~"^(neighbourhood|quarter|hamlet|village|suburb|'
+          'borough|locality|town)\$"](around:$radiusMeters,'
+          '${at.lat},${at.lng});',
+      'way["place"~"^(neighbourhood|quarter|hamlet|village|suburb|'
+          'borough|locality|town)\$"](around:$radiusMeters,'
+          '${at.lat},${at.lng});',
+      'relation["place"~"^(neighbourhood|quarter|hamlet|village|suburb|'
+          'borough|locality|town)\$"](around:$radiusMeters,'
+          '${at.lat},${at.lng});',
+      'way["admin_level"~"^(9|10)\$"](around:$radiusMeters,'
+          '${at.lat},${at.lng});',
+      'relation["admin_level"~"^(9|10)\$"](around:$radiusMeters,'
+          '${at.lat},${at.lng});',
+      ');',
+      'out center $limit;',
+    ].join(' ');
+
+    try {
+      await _throttle();
+      final client = HttpClient();
+      late final dynamic data;
+      try {
+        // Overpass reads the query from the REQUEST BODY on POST. A GET would
+        // need it percent-encoded into a URL, and this query is far too long
+        // for one to survive.
+        final request =
+            await client.postUrl(Uri.parse(_overpassUrl))
+                .timeout(_httpTimeout);
+        request.headers.set(HttpHeaders.userAgentHeader, 'aliob-app/1.0');
+        request.write(query);
+        final response = await request.close().timeout(_httpTimeout);
+        if (response.statusCode != 200) {
+          throw HttpException('overpass status ${response.statusCode}');
+        }
+        final body = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(_httpTimeout + const Duration(seconds: 10));
+        data = jsonDecode(body);
+      } finally {
+        client.close(force: true);
+      }
+
+      final elements = (data['elements'] as List? ?? const []);
+      final seen = <String>{};
+      final results = <PlaceResult>[];
+      for (final raw in elements) {
+        if (raw is! Map) continue;
+        final tags = (raw['tags'] as Map?) ?? const {};
+        final name = (tags['name'] ?? tags['name:en'])?.toString() ?? '';
+        if (name.isEmpty) continue;
+        // One kebele frequently appears as both a node and a relation under
+        // the same name; showing it twice makes the chip row look broken.
+        if (!seen.add(name.toLowerCase())) continue;
+
+        final lat = _coordOf(raw, 'lat');
+        final lng = _coordOf(raw, 'lon');
+        if (lat == null || lng == null) continue;
+        if (!isInEthiopia(lat, lng)) continue;
+
+        results.add(
+          PlaceResult(
+            label: name,
+            city: (tags['is_in'] ?? '').toString(),
+            lat: lat,
+            lng: lng,
+            countryCode: 'et',
+            kind: PlaceKind.area,
+            distanceMeters: _haversineMeters(at.lat, at.lng, lat, lng),
+          ),
+        );
+      }
+
+      // Nearest first: the point of the feature is the CLOSEST area, and
+      // Overpass returns rows in its own arbitrary order.
+      results.sort((a, b) =>
+          (a.distanceMeters ?? 1e9).compareTo(b.distanceMeters ?? 1e9));
+      final trimmed = results.take(limit).toList();
+      _cachePut(cacheKey, trimmed);
+      return trimmed;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Latitude of an Overpass element: nodes carry `lat`/`lon`, ways and
+  /// relations carry a `center` object instead. Returns null when neither is
+  /// present, so an element with no geometry is skipped rather than plotted
+  /// at (0, 0) in the Gulf of Guinea.
+  static double? _coordOf(Map raw, String key) {
+    final direct = raw[key];
+    if (direct is num) return direct.toDouble();
+    final center = raw['center'];
+    if (center is Map && center[key] is num) {
+      return (center[key] as num).toDouble();
+    }
+    return null;
+  }
+
+  /// Great-circle distance in metres, computed locally rather than through
+  /// `Geolocator.distanceBetween` so this service keeps no dependency on the
+  /// platform location plugin.
+  static double _haversineMeters(
+      double lat1, double lng1, double lat2, double lng2) {
+    const earthRadius = 6371000.0;
+    final dLat = _rad(lat2 - lat1);
+    final dLng = _rad(lng2 - lng1);
+    final a = math.pow(math.sin(dLat / 2), 2) +
+        math.cos(_rad(lat1)) *
+            math.cos(_rad(lat2)) *
+            math.pow(math.sin(dLng / 2), 2);
+    return 2 * earthRadius * math.asin(math.min(1.0, math.sqrt(a)));
+  }
+
+  static double _rad(double degrees) => degrees * math.pi / 180.0;
+
+  // ------------------------------------------------------------------
   // Reverse geocode: GPS -> address + city (rides/delivery)
   // ------------------------------------------------------------------
 
@@ -309,14 +471,49 @@ class GeocodingService {
         'format': 'json',
         'zoom': '17',
         'addressdetails': '1',
+        // Without this, `namedetails` is absent and the specific place name
+        // is unavailable. It costs nothing on the response and is the only
+        // way to name a landmark the point is actually inside.
+        'namedetails': '1',
       });
       final data = await _getJson(uri) as Map<String, dynamic>;
       final addr = (data['address'] as Map<String, dynamic>?) ?? {};
+      final named =
+          (data['namedetails'] as Map<String, dynamic>?) ?? const {};
+
+      final city = _firstString(addr, ['city', 'town', 'village', 'state']);
+
+      // Most-specific-first. OSM's own hierarchy, and the order matters: a
+      // kebele's `suburb` is the answer the rider wants, `city` is not, and
+      // the city is already reported separately as `city`.
+      //
+      // `town` and `village` are last because when the point really is in a
+      // town they ARE the area -- but they are also what Nominatim uses for
+      // the city in most of Ethiopia, so trying them first would fill `area`
+      // with the city name on every row. `_dedupe` drops the repeat.
+      final area = _dedupe(
+        _firstString(addr, [
+          'suburb',
+          'neighbourhood',
+          'city_district',
+          'quarter',
+          'residential',
+          'hamlet',
+          'borough',
+          'township',
+          'village',
+          'town',
+        ]),
+        city,
+      );
+
       final result = ReverseGeocode(
         address: (data['display_name'] as String?) ?? '',
-        city: (addr['city'] ?? addr['town'] ?? addr['village'] ??
-                addr['state'] ?? '')
-            .toString(),
+        city: city,
+        area: area,
+        district: _firstString(addr, ['county', 'state_district', 'region']),
+        road: _firstString(addr, ['road', 'pedestrian', 'footway']),
+        placeName: (named['name'] ?? '').toString(),
       );
       _cachePut(cacheKey, result);
       return result;
@@ -334,6 +531,11 @@ class GeocodingService {
                 .where((s) => s.isNotEmpty)
                 .join(', '),
             city: m.locality ?? m.administrativeArea ?? '',
+            // The platform geocoder DOES carry a sub-locality -- the same
+            // kebele-level unit -- and it was being dropped here too. It is
+            // the one source that works with no network to Nominatim.
+            area: (m.subLocality ?? '').trim(),
+            road: (m.thoroughfare ?? '').trim(),
           );
           _cachePut(cacheKey, result);
           return result;
@@ -341,6 +543,25 @@ class GeocodingService {
       } catch (_) {}
       return null;
     }
+  }
+
+  /// First non-empty string among [keys] in [map], or ''.
+  static String _firstString(Map<String, dynamic> map, List<String> keys) {
+    for (final key in keys) {
+      final value = map[key];
+      if (value == null) continue;
+      final text = value.toString().trim();
+      if (text.isNotEmpty) return text;
+    }
+    return '';
+  }
+
+  /// [value] unless it is the same as [other] or empty -- so `area` never
+  /// repeats the city back at the user as if it were new information.
+  static String _dedupe(String value, String other) {
+    if (value.isEmpty) return '';
+    if (other.isEmpty) return value;
+    return value.toLowerCase() == other.toLowerCase() ? '' : value;
   }
 
   /// Approximate city centers for search bias (sufficient for relevance).
@@ -356,7 +577,11 @@ class GeocodingService {
   };
 }
 
-/// A searchable place (city, street, landmark).
+/// What kind of thing a [PlaceResult] names. Used to group and label the
+/// chips under the ride map, so a kebele never reads like a hospital.
+enum PlaceKind { place, area }
+
+/// A searchable place (city, street, landmark, small area).
 class PlaceResult {
   const PlaceResult({
     required this.label,
@@ -364,12 +589,23 @@ class PlaceResult {
     required this.lat,
     required this.lng,
     this.countryCode,
+    this.kind = PlaceKind.place,
+    this.distanceMeters,
   });
 
   final String label;
   final String city;
   final double lat;
   final double lng;
+
+  /// [PlaceKind.area] for a kebele / sub-city / village from
+  /// [GeocodingService.nearbyAreas]; [PlaceKind.place] for a POI or a city.
+  final PlaceKind kind;
+
+  /// Straight-line distance from the query point, set only by
+  /// [GeocodingService.nearbyAreas]. Null elsewhere rather than 0, so "not
+  /// measured" never renders as "right here".
+  final double? distanceMeters;
 
   /// ISO-3166 alpha-2 code when the provider supplies one. Photon does,
   /// Nominatim only with `addressdetails=1`. Null means "unknown" — never
@@ -416,10 +652,61 @@ class PlaceResult {
   }
 }
 
-/// GPS -> address + city.
+/// GPS -> address, city, and the SMALL area the point sits in.
+///
+/// [area] is the field that was missing. Nominatim returns `suburb`,
+/// `neighbourhood`, `city_district`, `quarter` and `hamlet` in its address
+/// map -- for Addis Ababa these carry the kebele names -- but the service
+/// used to read only `city ?? town ?? village ?? state` and discard the
+/// rest. That is why the app could name the city and a big institution and
+/// nothing smaller: the small areas arrived over the wire and were thrown
+/// away before anyone could see them.
 class ReverseGeocode {
-  const ReverseGeocode({required this.address, required this.city});
+  const ReverseGeocode({
+    required this.address,
+    required this.city,
+    this.area = '',
+    this.district = '',
+    this.road = '',
+    this.placeName = '',
+  });
 
+  /// The full `display_name` from the provider -- unchanged, and still what
+  /// every existing caller shows as the address.
   final String address;
+
+  /// City / town / village. Unchanged.
   final String city;
+
+  /// The smallest named unit that contains the point: a kebele, sub-city,
+  /// neighbourhood, quarter, hamlet or village. Empty when the provider named
+  /// nothing below the city.
+  final String area;
+
+  /// County / sub-region / zone above the city. Often empty.
+  final String district;
+
+  /// Road / street name, when the provider has one.
+  final String road;
+
+  /// `namedetails.name` -- the specific named place, when the point is inside
+  /// one. Never used on its own as the label: a house number is not an area.
+  final String placeName;
+
+  /// The label to show a rider: the area first, then the city, then the road.
+  /// Empty only when the provider told us nothing at all.
+  String get areaLabel {
+    if (area.isNotEmpty && city.isNotEmpty && area != city) {
+      return '$area, $city';
+    }
+    if (area.isNotEmpty) return area;
+    if (city.isNotEmpty) return city;
+    if (road.isNotEmpty) return road;
+    return address;
+  }
+
+  /// True when we actually learned something below city level -- the
+  /// condition for telling the user "here is your area" rather than
+  /// "here is where you are".
+  bool get hasArea => area.isNotEmpty || road.isNotEmpty;
 }

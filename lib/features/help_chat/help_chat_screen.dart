@@ -39,10 +39,24 @@ class _HelpChatScreenState extends State<HelpChatScreen> {
   final List<_Msg> _messages = [
     const _Msg(
         'assistant',
-        'Hi! 👋 I\'m the Aliob assistant. I can help with registering, buying '
-        'and orders, escrow and payments, wallet recharges, fees, points, '
-        'and rides.\n\nWhat can I help you with today?',
-        options: ['How do I recharge my wallet?', 'I want to report an issue']),
+        'Hi! 👋 I\'m the Aliob assistant.\n\n'
+        'I can help you with:\n'
+        '• Signing up, verifying your ID, or an account that was turned down\n'
+        '• Prices — why a fare differs by vehicle type or by city, and what '
+        'the platform fee covers\n'
+        '• Finding a provider — browsing providers and seeing their photos\n'
+        '• Buying, orders, escrow and payments, wallet recharges, and points\n'
+        '• Booking a ride, and where your pickup point is\n'
+        '• Reporting a problem, or appealing a decision\n\n'
+        'Just describe what you need in your own words — you don\'t need to '
+        'pick a category first. If something needs a person, I\'ll take you '
+        'to the appeal form with your details attached.',
+        options: [
+          'Why is the price different for a bajaj?',
+          'How do I see a provider\'s photos?',
+          'How do I recharge my wallet?',
+          'I want to report an issue',
+        ]),
   ];
   bool _sending = false;
   final Set<String> _rated = {}; // chat_logs ids already given feedback

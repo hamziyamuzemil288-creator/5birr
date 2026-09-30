@@ -272,6 +272,121 @@ table owner and therefore is exempt from both RLS and
 `enforce_provider_write_gate` (which exempts `pg_trigger_depth() > 1`). Any
 future counter on a guarded table needs this.
 
+**A fee quoted to a human resolves exactly the way it is charged.** Migration
+107 made the commission, the ride fare and the subscription fee resolvable per
+category and per city. Each of the three client surfaces that *state* one of
+those numbers was still reading the flat global value while the wallet was
+debited with the per-category one — so the figure on screen and the figure
+charged diverged the moment an admin set an override. All three are now quoted
+through the same resolver the charge uses, and each keeps a fallback to the
+pre-107 call for a deployment that has not run the migration yet.
+
+Two things about that are worth stating because they are easy to get wrong
+again:
+
+  * The quote must run **after** the read that supplies the category and city.
+    The first version of this fix named the right function and passed every
+    other assertion, and was still wrong: the quote read two fields that were
+    populated a few lines later, so both were null and the RPC inherited the
+    global rate. Nothing in the code looked wrong.
+  * A fee that reads a *setting* rather than calling a *resolver* is the tell.
+    `system_settings.monthly_subscription_fee` is the default;
+    `fee_subscription(category, city)` is the truth. Same for
+    `platform_transaction_fee` versus `platform_transaction_fee_for`.
+
+`check_quoted_fees_resolve_like_the_charge` asserts both, and its falsifier
+plants each of the three surfaces, the ordering defect, and the missing
+fallback.
+
+**A provider may only work once verified, paid and funded.** Migration 0113.
+A provider posts a listing, adds a vehicle, claims a ride or accepts an order
+only when their identity document is **verified**, the one-time activation fee
+is paid, and the wallet can cover the platform fee. All four surfaces go
+through one predicate, `provider_can_fulfil()`, and the refusal names its
+reasons rather than saying no.
+
+Two defects sat behind that, and both were invisible:
+
+  * **"Documents satisfied" did not mean verified.** `provider_docs_satisfied()`
+    admits `MANUAL_REVIEW` — which is the state a document row is *born* in
+    (the column defaults to it and a BEFORE INSERT trigger forces it). So the
+    document half of the gate was satisfied by the act of uploading an ID,
+    before any human had looked at it. The old function is untouched, because
+    two assertions depend on it; the strict rule lives beside it as
+    `provider_documents_verified()`.
+  * **Three of the four surfaces had no gate at all.** `claim_ride` and
+    `transition_order_status` never consulted one, so a vehicle provider with
+    an unpaid activation fee and an unreviewed ID could take a rider's trip,
+    and accept an order — while the buyer-side checkout, which *did* check,
+    refused the same provider. The rule existed, was enforced in one place, and
+    was simply absent from the others.
+
+  The subscription needed no new check, and that is worth knowing: an unpaid
+  monthly fee already sets `provider_profiles.status = 'SUSPENDED'` via
+  `charge_due_subscriptions()`, which every one of these surfaces already
+  requires to be `APPROVED`. Adding a second subscription predicate would be a
+  third place for the rule to live and a third place for it to disagree.
+
+  The CEO's control over the subscription is therefore already end to end: set
+  the fee (per category and per city since 0107, plus the on/off switch), the
+  scheduler bills the wallet, a short balance suspends the provider, and a
+  recharge restores them. No deploy is involved in any of it.
+
+  **Read `provider_fulfilment_gate_report()` right after deploying.** Turning
+  "uploaded" into "verified" will stop any provider whose document is still
+  awaiting review, which is the rule that was asked for and is also a real
+  number of accounts. The report lists them with their reasons. If that is too
+  many to absorb at once, the CEO can set `enforce_verified_documents` to
+  false in Settings — no deploy, no migration. The other three blockers are
+  not behind that switch; they were the intended rule all along.
+
+**A notification is the only thing that makes a marketplace reactive.** The
+counterparty on an event has to be told by the event. Before migration 0114,
+three of the most important ones fired silently: a **provider** was never told
+an order arrived, **no driver** was ever told a ride was nearby, and a **rider**
+was never told their ride had been driver-assigned. `ORDER_RECEIVED` and
+`RIDE_CLAIMED` have been members of the `notification_type` enum since 0001
+and nothing had ever written them; fifteen of the enum's twenty-nine values
+are in that position, which is the clearest evidence in the repository that
+the enum was designed from the data model rather than from the flows.
+
+All three "worked". That is why they survived: the counterparty found out by
+polling, and polling raises nothing, logs nothing, and screenshots as a
+working screen. `check_provider_is_told_about_work` asserts the three.
+
+**A notification must never take down the thing it was describing.** Every
+insert on those paths goes through `notify_best_effort()`, whose
+function-level `EXCEPTION` clause logs and returns NULL — the same contract
+`notify_user_once()` has had since 0086. Making the notification load-bearing
+would mean a full notifications table takes down every purchase in the city,
+which is strictly worse than the silence being fixed. The driver fan-out is
+capped at the nearest 12 within 10km for the same reason: a busy city at peak
+time would otherwise write one row per driver in the country for one request,
+which is a denial of service against our own table.
+
+**A value that must EXIST is not the same as a value that PARSES.** Migration
+0107 wrote `insert_notification(..., 'RIDE_REQUESTED', ...)`; the enum spells it
+`RIDE_REQUEST`. `insert_notification`'s second parameter is typed
+`notification_type`, so the cast raised at RUN time and **every ride request in
+the product failed**. Nothing caught it: `pglast` parses an enum literal as an
+ordinary string and validates nothing about it, the plpgsql gate only checks
+that embedded statements parse, and the existing notification assertions
+compared against hand-typed needle lists. `check_notification_types_exist`
+reads the enum (folding in every `ADD VALUE`) and walks the arguments of every
+notification call **by position** — the type is the second argument, or the
+third for `notify_user_once`, and the first argument is routinely
+`(select user_id from provider_profiles ...)`, so a naive comma split reads
+the wrong thing. "Parses clean" was never evidence that a value exists.
+
+**A server refusal must arrive as a sentence, not a code.** `RAISE EXCEPTION
+'INSUFFICIENT_PERMISSION'` reaches the client as a **400** whose body is the
+raw code, not a 403 — so the authorisation branch of `friendlyError` never
+matched it and the user saw the generic "Something went wrong". A staff member
+who acted outside their assigned city was told, in effect, that the app had
+crashed. `ADMIN_ONLY` and `AUTH_REQUIRED` had the same problem, found by the
+same check. Asserted by
+`check_server_refusal_codes_reach_the_user`.
+
 **A reaction is a set, not a toggle.** `set_product_reaction(product, LIKE |
 DISLIKE | NONE)` states intent; it does not flip what is there.
 
@@ -296,6 +411,32 @@ verification forward and must produce a real code the moment the OTP is
 switched back on. `assert_otp_bypass_is_scoped()` fails if that ever changes —
 because a bypass that records a verification is invisible in review and its
 consequence is a security property quietly disappearing, not a crash.
+
+**A scope that is not read is not a scope.** `staff.category_scope` and
+`staff.city` (migrations 107–112) are the clearest example in the repo of a
+rule that was fully implemented on the server and completely invisible in the
+product. Both columns were writable from the CEO's terms editor, both were
+enforced by predicates, and neither appeared on a staff card — so a manager
+set a person to Hawassa, saw nothing confirming it, and worked whatever queue
+they opened. `admin_staff_roster()` now returns rank, city, obligations and
+movement counters, and `admin_staff_screen.dart` renders all four on the row
+itself. The city chip says **All cities** when unscoped, because a chip that is
+simply absent is indistinguishable from a chip whose city failed to load.
+
+The rule generalises: any future scope — region, vehicle type, language — must
+land in the same three places or not at all. The predicate (`staff_scope_*`),
+the card that shows the assignment, and the list that filters on it. Two of
+three is a column.
+
+**A restated function must be a superset of the one it replaces.** Four
+migrations in this session re-issued `admin_registration_history`,
+`staff_task_feed`, `verify_payment_proof` and the five provider lifecycle
+actions to add a city guard. Each was copied from the newest definition of that
+function — not from the migration that happened to mention it first — because
+the stale copy is how `approve_provider` lost its welcome notification once
+already. `tools/harness/restated_body_diff.py` now proves it mechanically: a
+restated body must contain every non-comment line of its predecessor, in order,
+and may add only the approved guard block.
 
 ### 4.x A money notification never blocks the money
 
@@ -707,6 +848,82 @@ RPC):
   stands — a check is only real once it has been seen to go red, and a
   reproduction has to be checked before it is believed.
 
+  ## Six checks that were wrong before they were ever run
+
+  The rule above is only half of it. A check written to be correct is still
+  wrong until the version *before* the fix is fed to it. Session 107–112 added
+  four checks and two harnesses, and falsifying them found **six defects in
+  the checks themselves** — none of which were bugs in the product, and all of
+  which would have shipped a green light over a red build:
+
+  * the sidebar-guard regex counted the `Widget _menuCard(...)` *declaration* as
+    a guarded call site, so a card with no `if` around it still passed;
+  * the "fee columns must be nullable" check matched `^\s*col\s+numeric`, which
+    stopped at the word `numeric` and therefore never saw the `NOT NULL` two
+    tokens later;
+  * the staff check tested `"/admin/staff" in dashboard`, which `/admin/staff-assignment`
+    satisfies — the wrong card was passing for the right one;
+  * that check then counted **its own assertion functions** as evidence of
+    enforcement, because their bodies contain the predicate name inside a
+    `LIKE` pattern that appears *after* a `WHERE`;
+  * the roster check read `s['city']` off the raw `staff` row and called that
+    reading the roster, so a client that fetched `admin_staff_roster()` and
+    discarded it passed every assertion;
+  * and the assertion-pinning check tested "does the guard name appear in the
+    body", which stays true when the test that actually uses it is deleted —
+    because the same function counts occurrences for the *feed* half.
+
+  Each was found by planting the original defect, and each fix is now pinned
+  by a case in `tools/harness/falsify_*.py`. The last one is the reason
+  `assert_staff_city_scope_covers_the_task_feed` is required to contain a
+  `position('staff_scope_allows_city' in v_proof)` call specifically, rather
+  than merely the word.
+
+  One of the six was a check that punished an honest **refactor**: renaming
+  the roster map turned it red, because the check searched for the literal
+  substring `roster` in the accessor name. It now discovers the accessor from
+  what it does — the function that returns the declared map — so a rename
+  passes and a real removal still fails. A check that fails on good work gets
+  disabled, and a disabled check catches nothing.
+
+  ## A check that had never run, and three fees that quietly diverged
+
+  Two findings from the 0107–0112 session, both invisible to every check that
+  existed at the time.
+
+  **An assertion in an unreachable branch.** The quick-action check carried a
+  rule — "the gallery pill must interpolate the provider id, or it shows
+  whichever provider happens to be first" — sitting inside an
+  `if not QuickActionPill(` block that an earlier `continue` had already made
+  unreachable. It had never executed once. It was found while rewriting the
+  same check for a different reason, and its first appearance in a falsifier
+  (case D) is what proved the rewrite actually reconnected it.
+
+  **Three fees quoted one way and charged another.** 0107 made the commission,
+  the ride fare and the subscription fee per-category and per-city. The
+  checkout quoted `platform_transaction_fee(amount)` — the global rate — while
+  `deduct_transaction_fee()` charged `platform_transaction_fee_for()` with the
+  provider's category and city. The ride screen called the five-argument
+  `calculate_fare_estimate()`, which hardcodes `p_city` to NULL, while
+  `create_ride_request()` charges against the rider's `profiles.city`. The
+  subscription screen stated `system_settings.monthly_subscription_fee` while
+  `deduct_subscription_fee()` charges `fee_subscription(category, city)`.
+
+  The checkout one was hidden by a comment that read:
+
+  > Display only — the charge itself is made server-side by
+  > `deduct_transaction_fee()`, which calls that same function, so this figure
+  > cannot drift from what the provider is actually charged.
+
+  Every part of that was true when written and false after 0107. It is the
+  clearest argument in the repo for dating comments that make a claim about
+  another file: the claim outlived the fact, and a reviewer reading it would
+  have skipped the call entirely.
+
+  The pattern across all three: a screen that states a number sourced from a
+  **setting**, while the server charges it from a **resolver**. Settings are
+  defaults; resolvers are truth. That distinction is now an assertion.
+
   ## The admin "Delete user" button that could never work
 
   Reported as "the delete button does nothing", in both the admin and the CEO
@@ -835,6 +1052,17 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | Every bucket the app uploads to has at least one write and one read policy, counted only from policies naming that bucket | `assert_client_buckets_have_write_and_read_policies()` (migration 102) |
 | A provider can read their own wallet and insert + read their own recharge requests, with RLS on | `assert_owner_can_read_and_write_their_money()` (migration 102) |
 | A provider can set a shop photo, the bucket takes it, and the public view still reads | `assert_provider_photo_surface_is_wired()` (migration 106), reported by `provider_photo_surface_report()` |
+| The registration queue separates staff from persons, and still does with a city applied | `assert_registration_history_separates_staff()` (107/108), `assert_staff_separation_survives_city_scope()` (110) |
+| A staff city stops something on the five provider lifecycle actions, not just the queue | `assert_admin_rpc_service_role_access()` (111) — it now pins `staff_scope_allows_city` and `my_staff_scope_summary()` |
+| The staff work queue carries as many city scopes as category scopes, and money verification is city-scoped too | `assert_staff_city_scope_covers_the_task_feed()` (112) — it counts both, and searches `verify_payment_proof`'s body for the guard |
+| Every provider lifecycle action that carries the category guard carries the city guard | `check_staff_management_is_reachable()` + `restated_body_diff.py` (suppresses a restatement from a stale copy) |
+| A per-category / per-city fee inherits correctly, and a client cannot write the table | `assert_category_fees_are_wired()` (107), reported by `category_fee_surface_report()` |  | A staff member's rank, city, obligations and movement are on the screen, not only in the table | `check_staff_roster_is_wired()` — it fails if the roster is fetched and discarded, and passes on a rename |
+| A provider may only work once verified, paid and funded — on all four surfaces | `assert_provider_fulfilment_gate_is_wired()` (0113), plus `check_provider_fulfilment_gate_is_wired()`; blast radius from `provider_fulfilment_gate_report()` |
+| Every notification type written actually exists in the enum | `check_notification_types_exist()` — the bug that made every ride request fail, which no parser can see |
+| The other side of an order or a ride is told, not left to poll | `assert_counterparties_are_notified()` (0114) + `check_provider_is_told_about_work()` |
+| Every fee shown to a human is resolved the way it is charged, and degrades safely on a pre-107 deployment | `check_quoted_fees_resolve_like_the_charge()` — covers checkout, ride fare and subscription, including the ordering defect |
+| A staff member blocked by a scope rule is told it is a scope rule, not a crash | `check_server_refusal_codes_reach_the_user()` — `INSUFFICIENT_PERMISSION`, `ADMIN_ONLY`, `AUTH_REQUIRED` must sit in a matcher list, not merely appear in the file |
+| Every role's shortcut pill is labelled, tappable, and points at a real route | `check_quick_action_shortcuts_are_wired()` — a second legitimate pill passes; an unlabelled or hand-rolled one does not |
 | The CEO delete is CEO-gated, the service-role-only cascade is unchanged, and the wrapper calls it | `assert_ceo_delete_is_wired()` (migration 100) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
@@ -917,6 +1145,62 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0104` | the `provider_gallery` owner + public **read** policies, restated after the baseline; `complete_profile()` for OAuth accounts; `gallery_read_surface_report()` (a report, not an assertion) and `assert_provider_can_read_their_own_gallery()` / `assert_profile_completion_is_wired()` | **the gallery upload succeeds and the gallery is always empty.** `provider_gallery_owner_read` is defined only in `0014`/`0021`/`0022`, which the workflow marks applied without executing. The write path is `SECURITY DEFINER`, so it bypassed both the `20260927000050` revoke and any missing RLS — the upload worked, the row was written, and the screen's own `SELECT` returned zero rows. Every prior gallery report blamed a write, because every prior check inspected `storage.objects` and never the table the rows live in |
 | `0105` | corrects 0104's signature assertion, which compared `proargnames` to an unprefixed rendering and so failed on a correct function; now also proves `complete_profile()` writes only its caller's own row | a false red that would have trained everyone to ignore the assertion |
 | `0106` | `provider_profiles.photo_storage_path` (nullable), the public `provider-photos` bucket with four owner-scoped/public `storage.objects` policies, and `public_provider_profiles` rebuilt inside one `DO` block as a verbatim copy of `20260924000006`'s column list **plus** that one column; plus `provider_photo_surface_report()` and `assert_provider_photo_surface_is_wired()` | **every provider's public page is a flat gradient and the business profile screen has no way to change that** — `provider_profiles` had no photo column, no bucket existed, and the only photo-bearing table in the schema (`provider_stores.logo_storage_path`) is declared only in pre-baseline `0013`–`0022d`, which the workflow marks applied without executing, and which no file in `lib/` references |
+| `0107` | `category_fee_settings` (every money column nullable, NULL = inherit, `UNIQUE(category_id, city)`), the `category_fee()` resolver, the `fee_*` scalar getters, `deduct_transaction_fee` / `deduct_subscription_fee` / `create_ride_request` restated against it, and `admin_category_fee_catalogue()` / `admin_save_category_fee()` | **every provider is charged the same fee.** One global per-km rate meant a bajaj and a 40-tonne truck cost the platform the same to dispatch, and the only way to change it was a migration. Worse, the table is *not* on the `20260927000050` client-write allowlist, so it is a second independent lock — the fee editor writes only through the RPC |
+| `0108` | `admin_registration_history` restated so `staff.user_id` ∪ `user_roles.ADMIN` are excluded from the USER branch and get their own STAFF category; signature and `RETURNS TABLE` unchanged | **the registration list is a mix of customers and staff**, and "18 pending" silently includes people who work here. The fix is a CTE, not a new column, precisely so the RPC's contract with the client does not change |
+| `0109` | `staff_city_scope()` + `staff_scope_allows_city()` (empty array = unrestricted, mirroring `staff_category_scope`), `admin_staff_roster()`, `staff_activity_feed()`, `staff_city_scope_report()` | **a staff member's city is decorative.** `staff.city` was writable from the CEO's terms editor and enforced nowhere — worse than absent, because the manager who set it believes the queue below is scoped |
+| `0110` | `admin_registration_history` restated with the city guard on all three branches | 0108 separates staff from persons, and 0109 introduces a city — but without this the queue is still global, so a Hawassa manager sees an Addis Ababa registration |
+| `0111` | the five provider lifecycle actions restated (four from `00026`, `approve_provider` from **`00087`**, which has the welcome notification) with the city guard as a peer of the category guard | **a scope that filters a list but not its buttons is half a scope.** The queue is filtered, and the manager can still approve a provider in another city by id. `approve_provider` is deliberately NOT copied from `00026`: doing so is exactly how the welcome notification was lost once |
+| `0112` | `staff_task_feed` and `verify_payment_proof` restated with the city guard; `provider_profiles_staff_registration_read` and `orders_staff_reports_read` re-issued with the city added | **the work queue and the money are the two surfaces the scope most obviously has to cover**, and neither did. The support-ticket and appeal branches are deliberately left unguarded because they are uncategorised — guarding an axis a row has no value for would hide the row entirely |
+| `0113` | the provider **fulfilment gate**: `provider_documents_verified()`, `provider_fulfilment_blockers()` (returns *why*, not just yes/no), `provider_can_fulfil()`; `provider_can_publish`, `claim_ride` and `transition_order_status` all routed through it; `provider_fulfilment_gate_report()`; the `enforce_verified_documents` setting; `assert_provider_fulfilment_gate_is_wired()` | **a provider with an unreviewed ID and an unpaid activation fee could take a rider's trip and accept an order.** The document half of the gate was satisfied by *uploading* a document, because the status a document is born in is one the old predicate accepted; and `claim_ride` / `transition_order_status` never consulted the gate at all, while the buyer-side checkout — which did — refused the same provider |
+| `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
+
+**A static check cannot find a Dart compile error.** 39 checks, 12 falsifiers
+and four gates all passed while the app did not compile. The gap was structural,
+not an oversight: `tools/harness/static_checks.py` reads Dart as *text*, so
+every check in it is a regex over source. Nothing in it can know that `"…$"`
+inside a string literal is an interpolation with no identifier, that GoTrue
+exports an `AuthState` that collides with the app's, or that
+`DropdownMenu.onChanged` hands you a `String?` when your handler declared a
+`String`. Dart code that reads correctly and is *wrong* is exactly what a regex
+approves of.
+
+The escape is not a better regex — it is the compiler. Flutter stable is
+downloadable with no account:
+
+```
+curl -sL -o f.tar.xz <base_url>/flutter_linux_<v>-stable.tar.xz
+tar -xJf f.tar.xz -C /tmp/flutter_sdk
+export PATH=/tmp/flutter_sdk/flutter/bin:$PATH
+flutter pub get && flutter analyze --no-fatal-infos --no-fatal-warnings
+```
+
+Run on first use, that reported **7 errors** in code this harness had called
+green, across three of the session's own files:
+
+| Error | Why no check could see it |
+|---|---|
+| 5x `Expected an identifier` in `geocoding_service.dart` | the Overpass regexes end in `…\|town)$"`. A bare `$` before `"` is an interpolation opener, so a string that reads as regex data is a syntax error. It needs `\$` to reach Overpass as an anchor |
+| `ambiguous_import` in `admin_dashboard.dart` | GoTrue and `auth_provider.dart` both export `AuthState`. Only one has `.profile`, and only the compiler knows which name resolves to which |
+| `argument_type_not_assignable` in `category_fee_settings_screen.dart` | `_selectCity(String)` against `ValueChanged<String?>`. The sibling `_selectCategory(String?)` was already correct, so the file looked internally consistent |
+
+After the three fixes: **0 errors, 230 tests passing.** `flutter analyze` is
+now the strongest gate in the project and it should be run *first*, before any
+harness, because everything else in this section assumes the Dart compiles.
+`flutter build bundle` additionally needs the Android SDK and cannot run in a
+bare sandbox; `analyze` plus `test` is the achievable floor.
+
+**Two of the falsifier's cases were green for the wrong reason, and one of the
+check's own rules was backwards.** `REVOKE … FROM PUBLIC` withdraws the
+*implicit* default grant and nothing else — it does not revoke a grant made to a
+named role, which is why `GRANT … TO authenticated` four lines earlier was being
+erased and `fee_switch_state` and `list_staff_jobs` were both reported
+unreachable. And the scan ran over raw SQL, so `00083`'s line-14 `--` comment —
+which *documents* the revoke it wants — was counted as the statement itself.
+Both are now modelled correctly, with `falsify_rpc_grants.py` cases F/F'/F''
+pinning them. The falsifier's own case C was wrong twice before it was right:
+first it appended `authenticated` to a revoke the loop re-grants two lines
+later, then it deleted one of the two overload grants and the other still
+carried the privilege.
 | — | no migration: the two redirect loops were Dart-only. `tools/harness/redirect_cycle_simulation.py` now searches the router's rules for cycles | `GoException: redirect loop detected` — `/ => /complete-profile => /user => /complete-profile` |
 
 **0080 before any build that ships the liveness client.** The client inserts
@@ -1009,7 +1293,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (76 tests). If it is red, the failure message names
+1. Connectivity CI green (80 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,

@@ -10,6 +10,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/map_tile_layer.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/geocoding_service.dart';
+import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/location_prompt.dart';
 import '../../core/services/ride_service.dart';
@@ -81,6 +82,12 @@ class _State extends State<UserRideRequestScreen>
   LatLng? _pendingCenter;
   // Known/registered places near the latest GPS fix, shown as chips.
   List<PlaceResult> _nearbyPois = const [];
+  // Small areas (kebele / sub-city / village) near the fix, from Overpass.
+  // Separate list from _nearbyPois because they are a different KIND of
+  // answer and are labelled differently in the chip row.
+  List<PlaceResult> _nearbyAreas = const [];
+  // The resolved area name for the GPS pickup, shown under the field.
+  String? _pickupAreaLabel;
   // Last successful GPS fix, kept as search bias even after a manual pickup.
   Position? _lastFix;
 
@@ -154,7 +161,12 @@ class _State extends State<UserRideRequestScreen>
     });
     try {
       final res = await Supabase.instance.client.rpc(
-        'calculate_fare_estimate',
+        // NOT the five-argument calculate_fare_estimate(): that wrapper was
+        // kept for older clients and hardcodes p_city to NULL, so it cannot
+        // quote a city-specific fare at all. calculate_fare_estimate_at() is
+        // the city-aware entry point, granted to `authenticated` (not anon) —
+        // this screen is behind RequireAuth, so that is the right grant.
+        'calculate_fare_estimate_at',
         params: {
           'p_pickup_lat': p.latitude,
           'p_pickup_lng': p.longitude,
@@ -162,6 +174,20 @@ class _State extends State<UserRideRequestScreen>
           'p_dest_lng': d.longitude,
           if (_selectedVehicleCategory != null)
             'p_vehicle_category_id': _selectedVehicleCategory,
+          // The rider's OWN city, which is what create_ride_request() charges
+          // against (`SELECT city FROM public.profiles WHERE id = p_user_id`).
+          //
+          // This was missing, so the estimate resolved p_city as NULL and
+          // inherited the global per-km rate while the charge used the
+          // city-specific one — the rider was quoted one fare and charged
+          // another as soon as an admin set a city rate. Note it is
+          // `savedCity` and NOT `activeCity`: activeCity is the travel city
+          // when someone is browsing elsewhere, and quoting that would drift
+          // in the opposite direction. The server normalises the value
+          // (`lower(btrim(...))` inside category_fee), so it is passed raw.
+          if (CityService.instance.savedCity != null &&
+              CityService.instance.savedCity!.trim().isNotEmpty)
+            'p_city': CityService.instance.savedCity!.trim(),
         },
       );
       // A newer request superseded this one — discard.
@@ -173,13 +199,54 @@ class _State extends State<UserRideRequestScreen>
         });
       }
     } catch (_) {
-      if (_fareRequestKey != key) return;
-      if (mounted) {
-        setState(() {
-          _fareLoading = false;
-          _fareError = 'Fare unavailable';
-        });
+      // A deployment that has not run 0107 has no calculate_fare_estimate_at
+      // at all, and the city-aware quote would show "Fare unavailable" on
+      // EVERY ride — a worse outcome than quoting the global rate, which is
+      // the only rate such a deployment has. So fall back, exactly as the
+      // checkout does for the commission.
+      final fellBack = await _quoteGlobalFare(p, d);
+      if (!fellBack) {
+        if (_fareRequestKey != key) return;
+        if (mounted) {
+          setState(() {
+            _fareLoading = false;
+            _fareError = 'Fare unavailable';
+          });
+        }
       }
+    }
+  }
+
+  /// The pre-0107 quote: global rate, no city, no category override.
+  ///
+  /// Only reached when the city-aware entry point is missing. Returns whether
+  /// a figure was actually obtained, so the caller can tell "fell back and
+  /// have a number" from "fell back and failed too".
+  Future<bool> _quoteGlobalFare(LatLng p, LatLng d) async {
+    final key = (p.latitude, p.longitude, d.latitude, d.longitude,
+        _selectedVehicleCategory);
+    try {
+      final res = await Supabase.instance.client.rpc(
+        'calculate_fare_estimate',
+        params: {
+          'p_pickup_lat': p.latitude,
+          'p_pickup_lng': p.longitude,
+          'p_dest_lat': d.latitude,
+          'p_dest_lng': d.longitude,
+          if (_selectedVehicleCategory != null)
+            'p_vehicle_category_id': _selectedVehicleCategory,
+        },
+      );
+      if (_fareRequestKey != key) return true;
+      if (!mounted) return true;
+      setState(() {
+        _fareEstimate = (res as num?)?.toDouble();
+        _fareLoading = false;
+        _fareError = null;
+      });
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -258,10 +325,42 @@ class _State extends State<UserRideRequestScreen>
       _lastFix = position;
       _pickupManual = null; // GPS re-take clears any manual override
     });
+    // Immediate, so the field never looks empty while the lookup runs. The
+    // real area name replaces it a moment later if one is found.
     _pickupCtrl.text = 'Current Location';
     _moveCamera(LatLng(position.latitude, position.longitude));
+    _labelPickupArea(position);
     _loadNearbyPois(position);
     _refreshFare();
+  }
+
+  /// Replace "Current Location" with the area the GPS point actually sits in
+  /// -- the kebele / sub-city / neighbourhood name.
+  ///
+  /// This lookup was never called on the GPS path at all, so the field said
+  /// "Current Location" forever and the rider could not tell a driver which
+  /// area they were in. It is best-effort: if the geocoder is unreachable,
+  /// slow, or names nothing below city level, the previous text simply stays.
+  /// A failed area lookup must never cost someone a ride.
+  Future<void> _labelPickupArea(Position p) async {
+    try {
+      final rev = await GeocodingService.instance
+          .reverseGeocode(p.latitude, p.longitude);
+      if (!mounted) return;
+      if (rev == null || !rev.hasArea) return;
+      final label = rev.areaLabel;
+      if (label.isEmpty) return;
+
+      // Guard against a stale answer overwriting a newer choice: if the user
+      // picked a manual pickup while this was in flight, their choice wins.
+      if (_pickupManual != null) return;
+      _suppressPickupSearch = true;
+      _pickupCtrl.text = label;
+      _suppressPickupSearch = false;
+      setState(() => _pickupAreaLabel = label);
+    } catch (_) {
+      // Keep "Current Location"; coordinates are still exact.
+    }
   }
 
   /// Camera move that is safe at any time: applies immediately once the map
@@ -275,10 +374,28 @@ class _State extends State<UserRideRequestScreen>
     }
   }
 
-  /// Known/registered places around the GPS fix (best-effort chips).
+  /// Known/registered places around the GPS fix (best-effort chips), plus
+  /// the SMALL AREAS the rider actually lives in.
+  ///
+  /// The two are fetched separately and on purpose. Photon (behind
+  /// [GeocodingService.nearbyPlaces]) only indexes cities and large
+  /// institutions, so it was the sole source here and the chips could only
+  /// ever offer "the nearest city and big institution". Overpass (behind
+  /// [GeocodingService.nearbyAreas]) is what returns kebeles and
+  /// sub-cities. Areas are shown FIRST and labelled, because a kebele is the
+  /// more useful answer for a pickup than a hospital.
+  ///
+  /// Neither call blocks the other: the chips update as each arrives, so a
+  /// slow Overpass cannot hold up the POI chips.
   Future<void> _loadNearbyPois(Position p) async {
-    final pois = await GeocodingService.instance
-        .nearbyPlaces(GeoPoint(p.latitude, p.longitude));
+    final at = GeoPoint(p.latitude, p.longitude);
+    final service = GeocodingService.instance;
+
+    final areas = await service.nearbyAreas(at);
+    if (!mounted) return;
+    if (areas.isNotEmpty) setState(() => _nearbyAreas = areas);
+
+    final pois = await service.nearbyPlaces(at);
     if (!mounted) return;
     setState(() => _nearbyPois = pois);
   }
@@ -692,6 +809,58 @@ class _State extends State<UserRideRequestScreen>
                     ),
                   ),
                   // Known/registered places near the GPS fix (Task 13).
+                  // Areas come first: a kebele is the answer a rider can
+                  // give a driver, and this row is the only place one was
+                  // ever going to appear.
+                  if (_nearbyAreas.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Icon(Icons.grid_view_outlined,
+                            size: 14, color: AppTheme.primaryGreenDark),
+                        const SizedBox(width: 5),
+                        Text('Nearby areas',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: 40,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _nearbyAreas.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (context, i) {
+                          final area = _nearbyAreas[i];
+                          final metres = area.distanceMeters;
+                          return ActionChip(
+                            avatar: const Icon(Icons.location_on_outlined,
+                                size: 16, color: AppTheme.primaryGreen),
+                            label: Text(
+                              metres == null
+                                  ? area.label
+                                  : '${area.label} · '
+                                      '${(metres / 1000).toStringAsFixed(1)} km',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            backgroundColor:
+                                AppTheme.primaryGreen.withOpacity(0.10),
+                            side: BorderSide(
+                                color:
+                                    AppTheme.primaryGreen.withOpacity(0.35)),
+                            labelStyle: const TextStyle(
+                                fontSize: 12, color: AppTheme.textPrimary),
+                            onPressed: () => _selectPickupSuggestion(area),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                   if (_nearbyPois.isNotEmpty) ...[
                     const SizedBox(height: 10),
                     SizedBox(
@@ -735,6 +904,27 @@ class _State extends State<UserRideRequestScreen>
                     hint: 'Type an address, or use current location',
                   ),
                   const SizedBox(height: 4),
+                  if (_pickupAreaLabel != null)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, top: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.my_location,
+                              size: 13, color: AppTheme.primaryGreenDark),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              'You appear to be in $_pickupAreaLabel',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   Row(
                     children: [
                       TextButton.icon(

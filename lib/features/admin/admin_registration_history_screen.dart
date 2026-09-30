@@ -27,6 +27,18 @@ class _State extends State<AdminRegistrationHistoryScreen> {
   String? _channelFilter; // 'SELF' | 'SALES' | 'OTHER'
   // Confirmation filter: null = all.
   String? _confirmFilter; // 'SYSTEM' | 'STAFF' | 'PENDING' | 'REJECTED'
+
+  // Which KIND of person to show: null = everyone.
+  //
+  // This is the "registered persons in their category" control. Before it,
+  // the only two axes were Channel (how they signed up) and Confirmation
+  // (who approved them), so a buyer, a bajaj driver, a hotel and a staff
+  // account were all one undifferentiated list -- and because the SQL did
+  // not exclude staff from the USER branch, a staff account appeared in it
+  // as an ordinary self-registered buyer. Migration
+  // 20260927000108_registration_history_separates_staff.sql fixes the data;
+  // this is the control that lets an admin actually ask for one group.
+  String? _categoryFilter; // 'BUYER' | 'VEHICLE_PROVIDER' | 'SERVICE_PROVIDER' | 'STAFF'
   // Sales-person filter (the person whose code was used at signup).
   String? _referrerStaffId;
   // Free-text search across name / contact / referrer / confirming staff ID.
@@ -71,7 +83,10 @@ class _State extends State<AdminRegistrationHistoryScreen> {
       final rows = await Supabase.instance.client.rpc(
         'admin_registration_history',
         params: {
-          'p_channel': _channelFilter,
+          // The category filter is sent as p_channel because that is the
+          // parameter the server accepts category values on; sending both
+          // would be ambiguous and the server would have to guess.
+          'p_channel': _categoryFilter ?? _channelFilter,
           'p_confirmation': _confirmFilter,
           'p_staff_id': _referrerStaffId,
           if (_startDate != null) 'p_start': _startDate!.toIso8601String(),
@@ -116,8 +131,28 @@ class _State extends State<AdminRegistrationHistoryScreen> {
       _endDate = null;
       _channelFilter = null;
       _confirmFilter = null;
+      _categoryFilter = null;
       _referrerStaffId = null;
       _search = '';
+    });
+    _load();
+  }
+
+  /// Picking a category clears the channel filter and vice versa: both travel
+  /// on the same server parameter, so leaving both set would send one and
+  /// silently drop the other.
+  void _setCategory(String? value) {
+    setState(() {
+      _categoryFilter = value;
+      if (value != null) _channelFilter = null;
+    });
+    _load();
+  }
+
+  void _setChannel(String? value) {
+    setState(() {
+      _channelFilter = value;
+      if (value != null) _categoryFilter = null;
     });
     _load();
   }
@@ -133,6 +168,9 @@ class _State extends State<AdminRegistrationHistoryScreen> {
         r['referrer_name'],
         r['confirmed_by_staff_code'],
         r['confirmed_by_name'],
+        // Searching "staff" must find the staff rows. The category is part of
+        // what a person is searching for, not just what they are looking at.
+        _typeLabel((r['record_type'] ?? '').toString()),
       ].whereType<String>().join(' ').toLowerCase();
       return haystack.contains(q);
     }).toList();
@@ -172,6 +210,31 @@ class _State extends State<AdminRegistrationHistoryScreen> {
       title: 'Registration History',
     );
   }
+
+  /// Human label for `record_type`. 'USER' reads as "Buyer" on purpose: the
+  /// raw enum name is the thing that made staff accounts indistinguishable
+  /// from customers in the first place.
+  static String _typeLabel(String type) => switch (type) {
+        'USER' => 'Buyer',
+        'VEHICLE_PROVIDER' => 'Vehicle provider',
+        'SERVICE_PROVIDER' => 'Service provider',
+        'STAFF' => 'Staff / admin',
+        _ => type.replaceAll('_', ' '),
+      };
+
+  static Color _typeColor(String type) => switch (type) {
+        'USER' => AppTheme.info,
+        'STAFF' => AppTheme.gold,
+        _ => AppTheme.primaryGreen,
+      };
+
+  static IconData _typeIcon(String type) => switch (type) {
+        'USER' => Icons.person,
+        'STAFF' => Icons.badge_outlined,
+        'VEHICLE_PROVIDER' => Icons.directions_car,
+        'SERVICE_PROVIDER' => Icons.storefront,
+        _ => Icons.person,
+      };
 
   static String _channelLabel(String? c) {
     switch (c) {
@@ -255,37 +318,62 @@ class _State extends State<AdminRegistrationHistoryScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                // Channel categorization.
-                SizedBox(
-                  height: 34,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
+                // WHO they are -- the category axis. First, because it is the
+                // question an admin actually asks ("show me the providers",
+                // "show me the staff"), and because before migration 0108 a
+                // staff account was filed under the buyer branch.
+                //
+                // Row inside a horizontal SingleChildScrollView rather than a
+                // fixed-height box: the chip row sizes itself to the chips,
+                // so it cannot overflow at any system text scale. The old
+                // SizedBox(height: 34) form did, on the same pattern that
+                // produced the admin "bottom overflow" stripes elsewhere.
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      _chip('All channels', _channelFilter == null, () {
-                        setState(() => _channelFilter = null);
-                        _load();
-                      }),
-                      _chip('Self-registered', _channelFilter == 'SELF', () {
-                        setState(() => _channelFilter = 'SELF');
-                        _load();
-                      }),
-                      _chip('Sales-registered', _channelFilter == 'SALES', () {
-                        setState(() => _channelFilter = 'SALES');
-                        _load();
-                      }),
-                      _chip('Other', _channelFilter == 'OTHER', () {
-                        setState(() => _channelFilter = 'OTHER');
-                        _load();
-                      }),
+                      _chip('Everyone', _categoryFilter == null && _channelFilter == null,
+                          () => _setCategory(null)),
+                      _chip('Buyers', _categoryFilter == 'BUYER',
+                          () => _setCategory('BUYER')),
+                      _chip('Vehicle providers', _categoryFilter == 'VEHICLE_PROVIDER',
+                          () => _setCategory('VEHICLE_PROVIDER')),
+                      _chip('Service providers', _categoryFilter == 'SERVICE_PROVIDER',
+                          () => _setCategory('SERVICE_PROVIDER')),
+                      _chip('Staff & admins', _categoryFilter == 'STAFF',
+                          () => _setCategory('STAFF')),
                     ],
                   ),
                 ),
                 const SizedBox(height: 6),
-                // Confirmation categorization.
-                SizedBox(
-                  height: 34,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
+                // HOW they signed up -- the original channel axis.
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      _chip('All channels',
+                          _channelFilter == null && _categoryFilter == null,
+                          () => _setChannel(null)),
+                      _chip('Self-registered', _channelFilter == 'SELF',
+                          () => _setChannel('SELF')),
+                      _chip('Sales-registered', _channelFilter == 'SALES',
+                          () => _setChannel('SALES')),
+                      _chip('Other', _channelFilter == 'OTHER',
+                          () => _setChannel('OTHER')),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 6),
+                // Confirmation categorization. "By staff" here means
+                // "approved by a staff member", which is a DIFFERENT thing
+                // from the "Staff & admins" category chip above -- hence the
+                // wording on both sides.
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       _chip('Any status', _confirmFilter == null, () {
                         setState(() => _confirmFilter = null);
@@ -359,9 +447,26 @@ class _State extends State<AdminRegistrationHistoryScreen> {
               children: [
                 _statBadge('Total', items.length, AppTheme.teal),
                 const SizedBox(width: 8),
-                _statBadge('Sales', items.where((r) => r['channel'] == 'SALES').length, AppTheme.primaryGreen),
+                _statBadge('Buyers',
+                    items.where((r) => r['record_type'] == 'USER').length,
+                    AppTheme.info),
                 const SizedBox(width: 8),
-                _statBadge('Pending', items.where((r) => r['confirmation'] == 'PENDING').length, AppTheme.warning),
+                _statBadge(
+                    'Providers',
+                    items
+                        .where((r) =>
+                            r['record_type'] == 'VEHICLE_PROVIDER' ||
+                            r['record_type'] == 'SERVICE_PROVIDER')
+                        .length,
+                    AppTheme.primaryGreen),
+                const SizedBox(width: 8),
+                _statBadge('Staff',
+                    items.where((r) => r['record_type'] == 'STAFF').length,
+                    AppTheme.gold),
+                const SizedBox(width: 8),
+                _statBadge('Pending',
+                    items.where((r) => r['confirmation'] == 'PENDING').length,
+                    AppTheme.warning),
               ],
             ),
           ),
@@ -465,14 +570,12 @@ class _State extends State<AdminRegistrationHistoryScreen> {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: type == 'USER'
-                    ? AppTheme.info.withOpacity(0.1)
-                    : AppTheme.primaryGreen.withOpacity(0.1),
+                color: _typeColor(type).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
-                type == 'USER' ? Icons.person : Icons.storefront,
-                color: type == 'USER' ? AppTheme.info : AppTheme.primaryGreen,
+                _typeIcon(type),
+                color: _typeColor(type),
                 size: 20,
               ),
             ),
@@ -487,7 +590,7 @@ class _State extends State<AdminRegistrationHistoryScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${type.replaceAll('_', ' ')} · ${item['contact'] ?? ''}',
+                    '${_typeLabel(type)} · ${item['contact'] ?? ''}',
                     style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
                   ),
                   const SizedBox(height: 4),

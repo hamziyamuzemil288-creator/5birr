@@ -88,6 +88,34 @@ class _State extends State<ProviderSubscriptionScreen> {
       // blocks any write, so this is a read-only lookup.
       num fee = 0;
       num grace = 3;
+      // The MONTHLY SUBSCRIPTION is resolvable per category and per city
+      // since 0107, and `deduct_subscription_fee()` charges
+      // `fee_subscription(category, city)`. Reading the flat
+      // `monthly_subscription_fee` setting here is therefore the same drift
+      // the checkout had: a provider whose category or city carries an
+      // override is shown the global number and charged the other one. The
+      // amount is the single most important figure on this screen, so it is
+      // quoted through the same resolver the charge uses.
+      //
+      // It is a read, granted to `authenticated` and revoked from `anon`, and
+      // it takes the provider's OWN category and city — the same context
+      // `provider_fee_context()` gives `deduct_subscription_fee()`.
+      try {
+        final prov2 = await client
+            .from('public_provider_profiles')
+            .select('category_id, city')
+            .eq('id', providerId)
+            .maybeSingle();
+        final resolved = await client.rpc('fee_subscription', params: {
+          'p_category_id': prov2?['category_id']?.toString(),
+          'p_city': prov2?['city'],
+        });
+        final v = (resolved as num?)?.toDouble();
+        if (v != null) fee = v;
+      } catch (_) {
+        // A deployment without 0107, or a failed read: fall through to the
+        // flat setting below, which is exactly what that deployment charges.
+      }
       try {
         final settings = await client
             .from('system_settings')
@@ -101,7 +129,10 @@ class _State extends State<ProviderSubscriptionScreen> {
               ? raw
               : num.tryParse(raw?.toString() ?? '') ?? 0;
           if (row['key'] == 'monthly_subscription_fee') {
-            fee = parsed;
+            // Only used when the per-category resolve above did not run or
+            // did not answer. Overwriting it unconditionally would undo the
+            // whole point.
+            if (fee == 0) fee = parsed;
           } else if (row['key'] == 'subscription_grace_period_days') {
             grace = parsed;
           }

@@ -60,6 +60,18 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
   List<Map<String, dynamic>> _staff = [];
   List<Map<String, dynamic>> _categories = [];
 
+  /// `admin_staff_roster()` keyed by staff id: the rank, the assigned CITY,
+  /// the granted obligations and the movement counters that the `staff` table
+  /// read above cannot supply.
+  ///
+  /// Kept as a lookup rather than a second list on purpose. The card list is
+  /// already built from `_staff`; joining in place would mean two sources of
+  /// truth for "who is on the roster", and they can disagree -- the RPC is
+  /// server-authoritative and the direct read is what the RLS policy allows.
+  /// This is a per-row ENRICHMENT, so a missing roster degrades the card
+  /// instead of blanking the screen.
+  final Map<String, Map<String, dynamic>> _roster = {};
+
   /// The assignable jobs, read from `staff_jobs`. Empty until the first load
   /// lands, which is the only time the hard-coded fallback is used.
   List<Map<String, dynamic>> _jobCatalogue = [];
@@ -157,6 +169,23 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
         }
       }
       final rows = await client.from('staff').select().order('created_at');
+      // The roster RPC is a SEPARATE read with its own failure handling, for
+      // the same reason as the job list below. It is the only source of a
+      // staff member's city and granted obligations, but the directory must
+      // still render if it is unavailable -- losing the screen entirely
+      // because an enrichment RPC is down would be a far worse regression
+      // than a card without a city chip.
+      Map<String, Map<String, dynamic>> roster = {};
+      try {
+        final rosterRows = await client.rpc('admin_staff_roster');
+        for (final r in (rosterRows as List)) {
+          final row = Map<String, dynamic>.from(r as Map);
+          final id = row['staff_id']?.toString();
+          if (id != null && id.isNotEmpty) roster[id] = row;
+        }
+      } catch (_) {
+        // Cards fall back to the fields the `staff` read already gave us.
+      }
       // The job list is a SEPARATE read with its own failure handling: if it
       // fails, the directory must still render and the editor must still open
       // with the fallback list, rather than one unavailable table blanking the
@@ -205,6 +234,9 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
       setState(() {
         _staff = staff;
         _categories = cats;
+        _roster
+          ..clear()
+          ..addAll(roster);
         _loading = false;
       });
     } catch (e) {
@@ -221,6 +253,98 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     final branch = (s['branch'] as String?) ?? 'ADMIN';
     if (s['is_super_admin'] == true) return 'Super Admin';
     return branch == 'ME' ? 'Owner team' : 'Admin team';
+  }
+
+  Map<String, dynamic> _rosterFor(Map<String, dynamic> s) =>
+      _roster[s['id']?.toString() ?? ''] ?? const {};
+
+  /// The person's RANK: their job title. Read from the roster first because
+  /// `staff.job_role` is only written by the CEO's terms editor, and falls
+  /// back to the legacy permission list so a card is never blank on that line.
+  String _rankLabel(Map<String, dynamic> s) {
+    final r = _rosterFor(s);
+    final role = ((r['job_role'] as String?) ?? (s['job_role'] as String?) ?? '')
+        .trim();
+    if (role.isNotEmpty) return role;
+    final branch = _branchLabel(s);
+    if (branch == 'Admin team' || branch == 'Owner team') return 'Sub-admin';
+    return branch;
+  }
+
+  /// The assigned CITY, or an explicit "every city" when the person is
+  /// unscoped. Showing the difference matters: an admin with no city assigned
+  /// sees the whole country, and a row that silently omits the chip is
+  /// indistinguishable from a row whose city failed to load.
+  String? _cityLabel(Map<String, dynamic> s) {
+    final r = _rosterFor(s);
+    final city = ((r['city'] as String?) ?? (s['city'] as String?) ?? '').trim();
+    return city.isEmpty ? null : city;
+  }
+
+  /// Granted obligations, as display labels resolved through the job
+  /// catalogue so the card says "Sales & transactions" and not
+  /// "sales_transactions". Unknown keys fall back to a prettified form
+  /// rather than being dropped -- a new job the catalogue has not caught up
+  /// with must still be visible.
+  List<String> _obligationLabels(Map<String, dynamic> s) {
+    final r = _rosterFor(s);
+    final keys = ((r['obligations'] as List?) ?? const <dynamic>[])
+        .map((e) => e.toString())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final source = keys.isNotEmpty
+        ? keys
+        : (((r['legacy_permissions'] as List?) ?? const <dynamic>[])
+            .map((e) => e.toString())
+            .where((e) => e.isNotEmpty)
+            .toList());
+    return source.map(_obligationLabel).toList();
+  }
+
+  String _obligationLabel(String key) {
+    final known = _jobCatalogue
+        .where((j) => j['key'] == key)
+        .map((j) => (j['label'] as String?)?.trim())
+        .whereType<String>()
+        .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+    if (known.isNotEmpty) return known;
+    return _permissionOptions[key] ??
+        key
+            .split('_')
+            .where((w) => w.isNotEmpty)
+            .map((w) => w[0].toUpperCase() + w.substring(1))
+            .join(' ');
+  }
+
+  /// The movement counters: tasks completed, open warnings, and when this
+  /// person was last seen doing something. Rendered as one dense line -- the
+  /// CEO's question is "are they working", not "give me their biography".
+  String? _movementLabel(Map<String, dynamic> s) {
+    final r = _rosterFor(s);
+    if (r.isEmpty) return null;
+    final done = (r['completed_tasks'] as num?)?.toInt() ?? 0;
+    final open = (r['open_warnings'] as num?)?.toInt() ?? 0;
+    final last = (r['last_activity_at'] as String?) ?? '';
+    final parts = <String>['$done done'];
+    if (open > 0) parts.add('$open open warning${open == 1 ? '' : 's'}');
+    final when = _relativeTime(last);
+    if (when != null) parts.add(when);
+    return parts.join(' · ');
+  }
+
+  /// Coarse relative time. Deliberately not a date: "3d ago" answers "is this
+  /// person alive" without inventing precision, and a null for a missing or
+  /// unparseable value keeps the line honest instead of printing "never".
+  String? _relativeTime(String iso) {
+    if (iso.isEmpty) return null;
+    final at = DateTime.tryParse(iso);
+    if (at == null) return null;
+    final d = DateTime.now().difference(at.toLocal());
+    if (d.isNegative || d.inMinutes < 1) return 'active now';
+    if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+    if (d.inHours < 24) return '${d.inHours}h ago';
+    if (d.inDays < 30) return '${d.inDays}d ago';
+    return '${d.inDays ~/ 30}mo ago';
   }
 
   IconData _branchIcon(Map<String, dynamic> s) {
@@ -1192,6 +1316,114 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
     );
   }
 
+  /// This staff member's MOVEMENT history, read from `staff_activity_feed`.
+  ///
+  /// Separate from Performance on purpose. Performance answers "how many did
+  /// they finish"; this answers "what have they been doing", which is the
+  /// question a manager has about someone who looks idle, and the question an
+  /// auditor has about a warning. Both existed as columns nobody could read.
+  Future<void> _showMovement(Map<String, dynamic> staff) async {
+    List<Map<String, dynamic>> entries;
+    try {
+      final rows = await Supabase.instance.client.rpc(
+        'staff_activity_feed',
+        params: {'p_staff_id': staff['id'], 'p_limit': 60},
+      );
+      entries = (rows as List)
+          .map((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              friendlyError(e, context: 'Could not load the movement log'))));
+      return;
+    }
+    if (!mounted) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${staff['name']} — movement'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          // A scrollable, not a fixed column: this list is unbounded and a
+          // Column of N children is the RenderFlex overflow again.
+          child: entries.isEmpty
+              ? const Center(
+                  child: Text('No recorded movement yet',
+                      style: TextStyle(color: AppTheme.textMuted)))
+              : ListView.separated(
+                  itemCount: entries.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final e = entries[i];
+                    final when =
+                        _relativeTime((e['created_at'] as String?) ?? '') ??
+                            'unknown time';
+                    final who = (e['actor_name'] as String?)?.trim();
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(_movementIcon(
+                          (e['kind'] as String?) ?? (e['action'] as String?) ?? ''),
+                          color: AppTheme.textMuted,
+                          size: 18),
+                      title: Text(
+                        ((e['action'] as String?) ?? (e['kind'] as String?) ?? '')
+                            .replaceAll('_', ' '),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        [when, if (who != null && who.isNotEmpty) 'by $who']
+                            .join(' · '),
+                        style: const TextStyle(
+                            fontSize: 11, color: AppTheme.textMuted),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  /// Icon for a movement row. Unknown kinds get a neutral dot rather than a
+  /// missing-glyph box, because the log table is written by many code paths
+  /// and a new kind must not render as a tofu character.
+  IconData _movementIcon(String kind, {Color? color, double size = 24}) {
+    final k = kind.toLowerCase();
+    if (k.contains('login') || k.contains('signin') || k.contains('sign_in')) {
+      return Icons.login_outlined;
+    }
+    if (k.contains('logout') || k.contains('sign_out')) {
+      return Icons.logout_outlined;
+    }
+    if (k.contains('creat') || k.contains('add')) {
+      return Icons.person_add_alt_outlined;
+    }
+    if (k.contains('updat') || k.contains('edit') || k.contains('assign')) {
+      return Icons.edit_outlined;
+    }
+    if (k.contains('delet') || k.contains('remov') || k.contains('revok')) {
+      return Icons.delete_outline;
+    }
+    if (k.contains('warn')) return Icons.warning_amber_rounded;
+    if (k.contains('approv') || k.contains('verif')) {
+      return Icons.verified_outlined;
+    }
+    if (k.contains('pay') || k.contains('money')) {
+      return Icons.payments_outlined;
+    }
+    return Icons.circle_outlined;
+  }
+
   /// CEO-only confirmation for removing ONE task from a staff queue. The
   /// server (staff_cancel_task) re-checks the caller; the dialog exists so
   /// the click can carry a reason onto the audit record.
@@ -1340,9 +1572,6 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                         itemCount: _staff.length,
                         itemBuilder: (_, i) {
                           final s = _staff[i];
-                          final perms = ((s['permissions'] as List?) ?? [])
-                              .map((e) => e.toString())
-                              .toList();
                           final cats =
                               ((s['assigned_categories'] as List?) ?? [])
                                   .map((e) => e.toString())
@@ -1354,6 +1583,12 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   .join(', '))
                               .where((n) => n.isNotEmpty)
                               .join(', ');
+                          final city = _cityLabel(s);
+                          final obligations = _obligationLabels(s);
+                          final movement = _movementLabel(s);
+                          final openWarnings =
+                              (_rosterFor(s)['open_warnings'] as num?)?.toInt() ??
+                                  0;
                           return Card(
                             margin: const EdgeInsets.only(bottom: 10),
                             child: ListTile(
@@ -1376,18 +1611,58 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(_branchLabel(s),
+                                  // Rank and branch on one line, so "who outranks
+                                  // whom" is readable without opening anyone.
+                                  Text('${_branchLabel(s)}'
+                                      '  ·  ${_rankLabel(s)}',
                                       style: const TextStyle(
                                           fontSize: 11,
                                           fontWeight: FontWeight.w700,
                                           color: AppTheme.teal)),
+                                  // The city SCOPE. Absent chip means unscoped
+                                  // (every city) and is labelled as such rather
+                                  // than left blank, because a blank chip and a
+                                  // chip that failed to load look identical.
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.place_outlined,
+                                          size: 12, color: AppTheme.textMuted),
+                                      const SizedBox(width: 2),
+                                      Expanded(
+                                        child: Text(
+                                          city ?? 'All cities',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: city == null
+                                                ? AppTheme.textMuted
+                                                : null,
+                                          ),
+                                        ),
+                                      ),
+                                      if (openWarnings > 0)
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                                Icons.warning_amber_rounded,
+                                                size: 12,
+                                                color: AppTheme.error),
+                                            const SizedBox(width: 2),
+                                            Text('$openWarnings',
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: AppTheme.error)),
+                                          ],
+                                        ),
+                                    ],
+                                  ),
                                   Text(
-                                    perms.isEmpty
+                                    obligations.isEmpty
                                         ? 'No permissions'
-                                        : perms
-                                            .map((p) =>
-                                                _permissionOptions[p] ?? p)
-                                            .join(', '),
+                                        : obligations.join(', '),
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -1396,14 +1671,24 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                         maxLines: 2,
                                         overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(fontSize: 11)),
+                                  if (movement != null)
+                                    Text(movement,
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: AppTheme.textMuted)),
                                 ],
                               ),
-                              isThreeLine: true,
+                              // No isThreeLine: the subtitle is a variable
+                              // number of lines (rank, city, obligations,
+                              // categories, movement), and pinning the tile to
+                              // three lines is what produced the RenderFlex
+                              // overflow this screen already had once.
                               trailing: PopupMenuButton<String>(
                                 onSelected: (v) {
                                   if (v == 'edit') _openEditor(s);
                                   if (v == 'perf') _showPerformance(s);
                                   if (v == 'tasks') _showTasks(s);
+                                  if (v == 'movement') _showMovement(s);
                                   if (v == 'referrals') _showReferralCodes(s);
                                   if (v == 'revoke') _revoke(s);
                                   if (v == 'delete') _deletePermanently(s);
@@ -1414,6 +1699,15 @@ class _AdminStaffScreenState extends ConsumerState<AdminStaffScreen> {
                                   const PopupMenuItem(
                                       value: 'perf',
                                       child: Text('Performance')),
+                                  // The MOVEMENT history. The counters on the
+                                  // card say "3 done, 2h ago"; this answers
+                                  // "doing WHAT", which is the question a
+                                  // manager actually has about an absent or
+                                  // under-performing member.
+                                  if (_isCeo || _isSuperAdmin)
+                                    const PopupMenuItem(
+                                        value: 'movement',
+                                        child: Text('Movement log')),
                                   // The CEO's cross-staff console: read any
                                   // staff member's CURRENT queue through the
                                   // same RPC the staff workspace uses, and

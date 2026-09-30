@@ -122,7 +122,7 @@ class _FeeSwitch {
 /// `fee_group` values `admin_fee_catalogue()` returns.
 ///
 /// All four are enforced server-side since migration 73: the switch is read by
-/// `platform_transaction_fee()`, `deduct_subscription_fee()`,
+/// `platform_transaction_fee_for()`, `deduct_subscription_fee()`,
 /// `charge_due_subscriptions()`, `approve_wallet_recharge()` and
 /// `calculate_fare_estimate()` respectively, and
 /// `assert_fee_switches_are_wired()` fails Connectivity CI if any of those
@@ -146,6 +146,21 @@ const Map<String, _FeeSwitch> _switchByGroup = {
 /// a number that lives somewhere else — the commission shown is the number
 /// `platform_transaction_fee()` returns, which is the number the wallet is
 /// debited by.
+///
+/// ## This screen sets the DEFAULTS, not the whole picture
+///
+/// Since migration 107 a charge can also carry a per-category or per-city
+/// override, edited on **Category & City Fees** (reachable from the admin
+/// sidebar). A blank override means "inherit the value on this screen"; a set
+/// one wins. So a commission changed here still applies to every category and
+/// city that has not overridden it, and stops applying the moment one does.
+///
+/// This is the source of a real bug, and the reason it is written down. The
+/// checkout screen quoted `platform_transaction_fee()` — the global rate —
+/// while the wallet was debited by `platform_transaction_fee_for()` with the
+/// provider's own category and city. The comment on that screen asserted the
+/// two "could not drift", which is exactly why the drift survived review.
+/// Both now quote through the same per-category path.
 ///
 /// Each charge also has an ON/OFF switch on its card. Both halves write
 /// `system_settings` through the same `admin_update_setting()` call — the

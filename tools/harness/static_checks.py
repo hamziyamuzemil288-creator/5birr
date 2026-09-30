@@ -2781,34 +2781,68 @@ def check_quick_action_shortcuts_are_wired() -> list[str]:
             # merely somewhere in the file. A file-level search is satisfied
             # by the tab entry that the pill duplicates -- so a pill pointed at
             # the wrong route reads green. Falsification caught exactly that.
+            #
+            # NOTE the model here is "the role's shortcut exists", NOT "every
+            # pill on the screen is that shortcut". The user home screen now
+            # carries two -- "Book a ride" and the provider-gallery entry --
+            # and the previous version demanded that EVERY pill be labelled
+            # "Book a ride", which punishes a screen for having a second,
+            # legitimate shortcut. A check that fails on good work gets
+            # disabled, so the assertion is narrowed to what it was for:
+            # the role's own pill must exist and point where it should, and
+            # every other pill must still resolve to a declared route.
+            blocks = []
             for m in re.finditer(r"QuickActionPill\(", src):
                 # From this call to the next one (or a generous cap).
                 nxt = src.find("QuickActionPill(", m.end())
-                block = src[m.start():nxt if nxt != -1 else m.start() + 600]
-                if label not in block:
-                    problems.append(
-                        "%s: a QuickActionPill is not labelled %r"
-                        % (filename, label))
-                if target not in block:
-                    problems.append(
-                        "%s: the %s pill does not push %s (found %r in it)"
-                        % (filename, role, target,
-                           re.findall(r"context\.push\('([^']*)'\)", block)))
-            if not re.search(r"QuickActionPill\(", src):
+                blocks.append(src[m.start():nxt if nxt != -1
+                                       else m.start() + 600])
+
+            canonical = [b for b in blocks
+                         if label in b and target in b]
+            if not canonical:
                 problems.append(
-                    "%s (%s) offers no QuickActionPill shortcut"
-                    % (filename, role))
-                # A gallery shortcut needs a provider id in the path; a literal
-                # would match a route but show the wrong provider's photos.
-                if target.endswith("/") and not re.search(
-                        re.escape(target) + r"\$\{", block):
+                    "%s (%s): no QuickActionPill is labelled %r AND pushes %s. "
+                    "Found pills labelled/pushing: %r"
+                    % (filename, role, label, target,
+                       [(re.findall(r"label:\s*'([^']*)'", b),
+                         re.findall(r"context\.(?:push|go)\('([^']*)'\)", b))
+                        for b in blocks]))
+
+            # A gallery shortcut needs a provider id in the path; a literal
+            # would match a route but show the wrong provider's photos.
+            #
+            # This assertion used to sit inside an `if not QuickActionPill(`
+            # branch that the earlier `continue` above had already made
+            # unreachable, so it had never run once. It is now evaluated
+            # against the pill that actually carries the gallery target.
+            if target.endswith("/"):
+                for b in canonical:
+                    if not re.search(re.escape(target) + r"\$\{", b):
+                        problems.append(
+                            "%s: the gallery pill pushes %s without "
+                            "interpolating the provider id, so it would show "
+                            "whichever provider happened to be first"
+                            % (filename, target))
+
+            # Every other pill on the screen must at least be LABELLED and have
+            # a tap target. A route is not required here: a pill may hand off
+            # to a local method (the gallery entry opens a sheet), and a
+            # template-literal path like `/provider/gallery/${p['id']}` cannot
+            # be matched by a simple `push\('([^']*)'\)` anyway -- the
+            # interpolation contains quotes. Route resolution for DIRECT pushes
+            # is check_routes_resolve's job; asserting it here produced two
+            # false positives on correct code.
+            for b in blocks:
+                labels = re.findall(r"label:\s*'([^']*)'", b)
+                if not labels or not labels[0].strip():
                     problems.append(
-                        "%s: the gallery pill does not interpolate the provider "
-                        "id into the path" % filename)
-            if not re.search(r"QuickActionPill\(", src):
-                problems.append(
-                    "%s (%s) offers no QuickActionPill shortcut"
-                    % (filename, role))
+                        "%s: a QuickActionPill has no label, so it renders as "
+                        "an unlabelled green box" % filename)
+                if "onTap" not in b:
+                    problems.append(
+                        "%s: a QuickActionPill has no onTap, so it is a dead "
+                        "shortcut" % filename)
             if re.search(r"if\s*\(\s*(false|0|null)\s*\)", src, re.IGNORECASE):
                 problems.append(
                     "%s contains a constant-false guard, which disables a tile "
@@ -3013,6 +3047,1517 @@ def check_router_matches_the_cycle_simulation() -> list[str]:
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
+def check_admin_sidebar_cards_are_guarded() -> list[str]:
+    """Every admin sidebar card must carry its OWN `if` permission guard.
+
+    In a Dart list literal, `[if (c) a, b]` gives the `if` only the element
+    `a`; `b` becomes an unconditional sibling. Writing two cards under one
+    `if` by indentation therefore compiles, runs, and silently un-gates the
+    second one. That is exactly what happened to "Fees & Pricing": it was
+    written as a second argument to the System Settings `if`, so the admin
+    gate covered System Settings only and every staff member was shown a
+    money screen they cannot use.
+
+    The check walks backwards from each card call, matching parentheses, and
+    requires the enclosing `if` to actually enclose THAT call. A dangling
+    comma between the `if (...)` and the card is the whole failure mode, so
+    "is there an `if` somewhere earlier in the file" is far too weak a test.
+    """
+    problems: list[str] = []
+    checked = 0
+
+    for path in dart_sources():
+        if "admin" not in path.name:
+            continue
+        src = _strip_comments(_read(path))
+
+        for m in re.finditer(r"\b_menuCard\(", src):
+            # Skip the widget's own DECLARATION (`Widget _menuCard(...)`).
+            # Keyed on the return type, not on a name, so renaming the method
+            # makes the declaration a false positive again -- loudly, which is
+            # the right way to fail.
+            if src[:m.start()].rstrip().endswith("Widget"):
+                continue
+
+            # Walk backwards over whitespace only. A comma here is the bug.
+            i = m.start() - 1
+            while i >= 0 and src[i].isspace():
+                i -= 1
+            if i < 0:
+                problems.append(
+                    "%s: a _menuCard( call has nothing before it at all."
+                    % path.name)
+                continue
+
+            # Comments are already gone, but the guard may itself sit behind
+            # one; strip nothing else and match the paren back to its `if`.
+            if src[i] != ")":
+                problems.append(
+                    "%s: the _menuCard( at offset %d is not directly "
+                    "preceded by an `if (...)` guard (found %r instead). In a "
+                    "list literal a card written after another card's `if` "
+                    "becomes an unconditional element."
+                    % (path.name, m.start(), src[i]))
+                continue
+
+            depth = 0
+            open_at = -1
+            while i >= 0:
+                if src[i] == ")":
+                    depth += 1
+                elif src[i] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        open_at = i
+                        break
+                i -= 1
+
+            if open_at < 0:
+                problems.append(
+                    "%s: unbalanced parentheses before the _menuCard( at "
+                    "offset %d." % (path.name, m.start()))
+                continue
+
+            head = src[:open_at].rstrip()
+            if not head.endswith("if"):
+                problems.append(
+                    "%s: the _menuCard( at offset %d is wrapped in "
+                    "(...) but that is not an `if` guard -- it looks like a "
+                    "dangling card that will render for everyone."
+                    % (path.name, m.start()))
+                continue
+            checked += 1
+
+    if checked == 0:
+        return ["no guarded _menuCard( call found in any admin dashboard -- "
+                "did the sidebar move or get renamed?"]
+    return problems
+
+
+def check_nearest_area_is_wired() -> list[str]:
+    """The GPS "where" path must resolve the SMALL area, not just the city.
+
+    The reported symptom was that the where button named the nearest city and
+    the nearest big institution and nothing smaller -- no kebele, no sub-city,
+    no nearest-area name. Three separate things had to be true, and none of
+    them was true:
+
+      1. the geocoder read only `city ?? town ?? village ?? state` out of
+         Nominatim's address map and discarded `suburb` / `neighbourhood` /
+         `city_district` -- the small-area keys -- which were arriving over
+         the wire the whole time;
+      2. `nearbyPlaces` is backed by Photon /reverse, which only indexes
+         place-level features, so it structurally cannot return a kebele;
+      3. the ride screen set the pickup field to the literal string
+         'Current Location' on every GPS fix and never reverse-geocoded at
+         all.
+
+    Fixing one and not the others leaves the same user-visible bug, and none
+    of the three is a compile error -- so this check asserts all three.
+    """
+    problems: list[str] = []
+
+    geo = _strip_comments(_read(LIB / "core" / "services"
+                                / "geocoding_service.dart"))
+    if not geo:
+        return ["lib/core/services/geocoding_service.dart is missing"]
+
+    # 1. ReverseGeocode actually carries an area, and it is populated from
+    #    the address map rather than left at its default.
+    if "class ReverseGeocode" not in geo:
+        problems.append("ReverseGeocode no longer exists in geocoding_service")
+    else:
+        if not re.search(r"\bString\s+area\b", geo):
+            problems.append(
+                "ReverseGeocode has no `area` field, so the small-area name "
+                "has nowhere to live and the city-only behaviour is back")
+        if "hasArea" not in geo:
+            problems.append(
+                "ReverseGeocode has no hasArea getter, so no screen can tell "
+                "'we named an area' from 'the provider told us nothing'")
+
+    body = _dart_body(geo, "reverseGeocode")
+    if not body:
+        problems.append(
+            "could not extract the Dart body of reverseGeocode() from "
+            "geocoding_service.dart -- the check cannot verify it reads the "
+            "small-area address keys")
+    else:
+        for key in ("suburb", "neighbourhood"):
+            if key not in body:
+                problems.append(
+                    "reverseGeocode() no longer reads the '%s' address key. "
+                    "Those are the kebele / sub-city names; without them the "
+                    "nearest-area name can never resolve." % key)
+        if "namedetails" not in body:
+            problems.append(
+                "the Nominatim /reverse call no longer asks for namedetails, "
+                "so the specific place name is unavailable")
+
+    # 2. A source that is not a name index can supply small areas.
+    if "nearbyAreas(" not in geo:
+        problems.append(
+            "GeocodingService has no nearbyAreas(). Photon (the only nearby "
+            "source) indexes cities and large institutions only, so small "
+            "areas need a structural query -- Overpass -- to appear at all.")
+    if "_overpassUrl" not in geo:
+        problems.append(
+            "the Overpass endpoint constant is gone; nearbyAreas() has no "
+            "data source without it")
+
+    # 3. The GPS pickup path resolves and shows the area. A hardcoded
+    #    'Current Location' with no lookup nearby is the original bug.
+    ride = _strip_comments(_read(LIB / "features" / "user"
+                                 / "user_ride_request_screen.dart"))
+    if not ride:
+        return problems + ["lib/features/user/user_ride_request_screen.dart "
+                           "is missing"]
+    if "reverseGeocode" not in ride:
+        problems.append(
+            "user_ride_request_screen.dart never calls reverseGeocode, so "
+            "the GPS pickup field cannot show a nearest-area name")
+    if "nearbyAreas" not in ride:
+        problems.append(
+            "user_ride_request_screen.dart never calls nearbyAreas(), so the "
+            "small areas are fetched but never offered to the rider")
+    if "_pickupAreaLabel" not in ride:
+        problems.append(
+            "user_ride_request_screen.dart has no _pickupAreaLabel, so the "
+            "resolved area is stored and never rendered")
+
+    # ...and at least one surface must show the rider where they are.
+    if not any("_areaLabel" in _strip_comments(_read(p))
+               for p in dart_sources()
+               if "live_map" in p.name or "ride" in p.name):
+        problems.append(
+            "no map or ride surface renders the resolved area label, so the "
+            "lookup runs and its answer is discarded")
+
+    return problems
+
+
+def _dart_body(src: str, name: str) -> str:
+    """The `{ ... }` body of the first Dart method/function called `name`.
+
+    `function_body` above is the SQL extractor -- it looks for
+    `FUNCTION public.<name>(`, so it returns nothing for a Dart method. This
+    is the Dart equivalent: find the call/declaration, skip its parameter
+    list, then brace-match. Used by checks that assert what a Dart body reads
+    or calls, which is most of what a client can break silently.
+
+    Returns "" when the method is absent, so callers must treat "" as
+    "could not inspect" rather than "empty body" -- otherwise a deleted
+    method and an empty one look identical.
+    """
+    m = re.search(r"\b%s\s*\(" % re.escape(name), src)
+    if not m:
+        return ""
+    i = m.end() - 1
+    depth = 0
+    # Skip the parameter list.
+    while i < len(src):
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+            if depth == 0:
+                i += 1
+                break
+        i += 1
+    # Skip to the opening brace of the body.
+    while i < len(src) and src[i] != "{":
+        if src[i] == ";":
+            return ""  # an abstract/declared method, or a call site
+        i += 1
+    if i >= len(src):
+        return ""
+    start = i
+    depth = 0
+    while i < len(src):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+        i += 1
+    return ""
+
+
+def check_category_fees_are_wired() -> list[str]:
+    """Per-category / per-city fees must be reachable end to end.
+
+    Four separate things have to hold, and none of them is a compile error:
+
+      1. every money column is NULLABLE, and NULL means inherit. A NOT NULL
+         column (or a default of 0) would make an empty table mean "every fee
+         is zero" instead of "every fee is today's global rate" -- which is
+         the difference between a harmless new table and the platform giving
+         away rides.
+      2. the three money paths actually consult the resolver. Rewriting the
+         table without rewiring deduct_subscription_fee would leave the admin
+         editing a number nothing charges.
+      3. the admin screen, its route and its sidebar card all exist. A schema
+         with no door is the exact defect that `categories.metadata` per_km
+         already has.
+      4. the screen never pre-fills a draft from the EFFECTIVE number. The
+         catalogue reports resolved numbers, and seeding the text fields with
+         them would save them as hard overrides on the first unrelated edit,
+         silently freezing the platform default forever.
+    """
+    problems: list[str] = []
+
+    path = None
+    for candidate in migration_files():
+        if "category_fee_settings" in _read(candidate):
+            path = candidate
+    if path is None:
+        return ["no migration creates category_fee_settings -- per-category "
+                "and per-city fees have no storage"]
+
+    sql = _read(path)
+    body = _strip_comments(sql)
+
+    # 1. nullable, and NULL really means inherit.
+    #
+    # The match must run to END OF LINE, not stop at the word `numeric`:
+    # `^\s*col\s+numeric` captures only up to `numeric`, so a `NOT NULL`
+    # after it is invisible and this loop can never fire. That is a check
+    # that reports green forever -- the exact failure the falsifier exists
+    # to catch, and it caught this one.
+    for token in ("commission_percent", "subscription_fee", "ride_per_km",
+                  "commission_min", "activation_fee", "ride_base_fare",
+                  "ride_minimum_fare"):
+        m = re.search(r"^[ \t]*%s[ \t]+numeric[^\n]*" % re.escape(token),
+                      body, re.M)
+        if m and re.search(r"\bNOT\s+NULL\b", m.group(0)):
+            problems.append(
+                "%s: %s is NOT NULL (%s) -- an empty table would no longer "
+                "mean \"inherit the global rate\""
+                % (path.name, token, m.group(0).strip()))
+
+    if "coalesce(f." not in body and "COALESCE(f." not in body.upper():
+        problems.append(
+            "%s: no resolver falls back from the override to the global "
+            "setting; an empty table would break pricing instead of "
+            "preserving it" % path.name)
+
+    # 2. the money paths read the resolver
+    for fn, needle, why in (
+        ("deduct_subscription_fee", "fee_subscription",
+         "a per-category subscription rate would be silently ignored"),
+        ("deduct_transaction_fee", "platform_transaction_fee_for",
+         "a per-category commission would be silently ignored"),
+        ("calculate_fare_estimate_at", "fee_ride_per_km",
+         "a per-category or per-city fare would be silently ignored"),
+    ):
+        target, defn = last_migration_defining(fn)
+        if target is None:
+            problems.append("no migration defines public.%s()" % fn)
+            continue
+        fbody = function_body(defn, fn)
+        if needle not in fbody:
+            problems.append(
+                "%s: %s() no longer reads %s -- %s"
+                % (target.name, fn, needle, why))
+
+    # 3. there is a door
+    screen = LIB / "features" / "admin" / "category_fee_settings_screen.dart"
+    if not screen.is_file():
+        problems.append(
+            "lib/features/admin/category_fee_settings_screen.dart is missing "
+            "-- the per-category rates have no editor, which is the defect "
+            "categories.metadata per_km already suffers from")
+    else:
+        router = _read(LIB / "routing" / "app_router.dart")
+        if "'/admin/fees/categories'" not in router:
+            problems.append(
+                "app_router.dart has no /admin/fees/categories route, so the "
+                "category fee screen cannot be reached")
+        dash = _strip_comments(_read(LIB / "features" / "admin"
+                                     / "admin_dashboard.dart"))
+        if "/admin/fees/categories" not in dash:
+            problems.append(
+                "admin_dashboard.dart has no sidebar card for "
+                "/admin/fees/categories -- the screen exists with no way in")
+
+    # 4. the inheritance trap, and the field-to-RPC contract
+    if screen.is_file():
+        s = _strip_comments(_read(screen))
+        if "'admin_save_category_fee'" not in s:
+            problems.append(
+                "category_fee_settings_screen.dart never calls "
+                "admin_save_category_fee -- the form cannot save")
+        if "'admin_clear_category_fee'" not in s:
+            problems.append(
+                "category_fee_settings_screen.dart has no way back to the "
+                "platform default (admin_clear_category_fee)")
+
+        # Every declared field list must be part of what the save call sends.
+        # A field list that is rendered but not sent is a control that looks
+        # live and silently discards what the admin typed.
+        params = set(re.findall(r"param:\s*'(p_[a-z_]+)'", s))
+        if not params:
+            problems.append(
+                "category_fee_settings_screen.dart declares no _FeeField "
+                "params -- the field list is empty or was renamed")
+
+        save_call = s[s.find("'admin_save_category_fee'"):]
+        save_call = save_call[:save_call.find("});")] if "});" in save_call else save_call
+        for group in ("_rideFields", "_bookingFields", "_commissionFields",
+                      "_productFields"):
+            if group not in save_call:
+                problems.append(
+                    "category_fee_settings_screen.dart renders %s but the "
+                    "admin_save_category_fee call does not include it -- every "
+                    "input in that group is discarded on save" % group)
+
+        # Seeding a draft from the row would freeze the platform default.
+        # Checked structurally rather than by lookahead: a negative lookahead
+        # after `\?\?\s*` is defeated by backtracking the `\s*` to zero, so it
+        # matches nothing and reports nothing forever.
+        seeds = re.findall(r"TextEditingController\(text:\s*([^)]*)\)", s)
+        if not seeds:
+            problems.append(
+                "category_fee_settings_screen.dart builds no "
+                "TextEditingController -- the fee form has no inputs")
+        for seed in seeds:
+            if re.search(r"effective|\brow\b|column", seed):
+                problems.append(
+                    "category_fee_settings_screen.dart seeds a fee input from "
+                    "%r. Seeding it with the EFFECTIVE number means the first "
+                    "save writes the platform default back as a hard override "
+                    "and it can never move again. Show effective values as "
+                    "hints under the field instead." % seed.strip())
+            elif not re.fullmatch(r"_drafts\[[^\]]+\]\s*\?\?\s*''", seed.strip()):
+                problems.append(
+                    "category_fee_settings_screen.dart seeds a fee input from "
+                    "%r rather than from its own empty draft -- a prefilled "
+                    "field cannot express 'inherit the platform default'."
+                    % seed.strip())
+
+    return problems
+
+
+PROVIDER_ACTIONS = (
+    "approve_provider",
+    "reject_provider",
+    "request_correction_provider",
+    "suspend_provider",
+    "unsuspend_provider",
+)
+
+# Surfaces where a staff member's city scope must bite, and where the ONLY
+# thing standing between "scope enforced" and "scope decorative" is the guard
+# line itself. `verify_payment_proof` moves money and `staff_task_feed` is the
+# queue the guard is judged by: if a restatement of either is ever taken from a
+# stale copy, the city scope silently stops applying to the largest surface in
+# the product while every test that reads a *list* still passes.
+CITY_SCOPED_MONEY_AND_FEED = (
+    "verify_payment_proof",
+    "staff_task_feed",
+)
+
+# The assertion that pins the two above. Naming the guard here is what makes
+# the pin survive a future restatement.
+CITY_SCOPE_FEED_ASSERTION = "assert_staff_city_scope_covers_the_task_feed"
+
+
+def check_staff_management_is_reachable() -> list[str]:
+    """Creating and supervising staff must stay in the admin sidebar.
+
+    Staff creation is the capability this repo most regrets losing, and it
+    lives in a sidebar list rather than a route: a route can be dead and
+    nothing notices, because nothing navigates to it. A card can be deleted
+    and the ONLY symptom is that staff creation has quietly vanished from the
+    product. So both halves are asserted -- the card exists AND it points at a
+    route that resolves.
+    """
+    problems: list[str] = []
+
+    dash = _strip_comments(_read(LIB / "features" / "admin"
+                                 / "admin_dashboard.dart"))
+    if not dash:
+        return ["lib/features/admin/admin_dashboard.dart is missing"]
+
+    # The three cards that together are "create and control staff".
+    required = {
+        "/admin/staff": "Staff / Sub-admins (create, edit, revoke staff)",
+        "/admin/staff-assignment": "Staff Assignment (roles, city, warnings, "
+                                   "deletion)",
+        "/admin/roles/permissions": "Role Permissions (per-staff section access)",
+    }
+
+    for route, what in sorted(required.items()):
+        # Match the QUOTED route, not the bare substring. `/admin/staff` is a
+        # prefix of `/admin/staff-assignment`, so a bare substring test is
+        # satisfied by the wrong card -- which is precisely what the
+        # falsifier caught this doing.
+        if ("'%s'" % route) not in dash:
+            problems.append(
+                "the admin sidebar no longer links to %s (%s). Staff creation "
+                "and supervision are reachable ONLY from these cards -- there "
+                "is no other entry point to fall back to." % (route, what))
+
+    # ...and each one must still be a declared route, not just a string.
+    router = _read(LIB / "routing" / "app_router.dart")
+    for route in sorted(required):
+        if ("path: '%s'" % route) not in router:
+            problems.append(
+                "the sidebar links to %s but app_router.dart declares no such "
+                "route -- the card is a dead end" % route)
+
+    # The city scope must exist server-side, and something must enforce it.
+    # A predicate that nothing calls is a predicate that constrains nothing,
+    # which is the defect the staff-city migration exists to close.
+    #
+    # NOTE on scanning comment-stripped SQL: `last_migration_defining` is NOT
+    # used here. Its regex matches `FUNCTION public.<name>(`, which also
+    # matches the COMMENT ON / REVOKE ON / GRANT EXECUTE lines -- so renaming
+    # the function in its CREATE still leaves three "definitions" behind and
+    # the existence check passes on a function that no longer exists.
+    defined = False
+    for candidate in migration_files():
+        if re.search(
+                r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+"
+                r"public\.staff_scope_allows_city\s*\(",
+                _strip_comments(_read(candidate)), re.IGNORECASE):
+            defined = True
+            break
+
+    if not defined:
+        problems.append(
+            "no migration DEFINES public.staff_scope_allows_city() -- a staff "
+            "member's assigned city is recorded but enforces nothing")
+    else:
+        # Count functions whose body actually TESTS the qualified predicate in
+        # a WHERE clause.
+        #
+        # Three things are excluded, and each exclusion was found by the
+        # falsifier catching this check passing on broken input:
+        #   * the predicate's own definition -- it is the definition, not a use;
+        #   * the report / assertion functions -- their bodies contain the
+        #     string `staff_scope_allows_city(` inside a LIKE pattern AFTER a
+        #     WHERE, so a naive scan counts the very functions that REPORT
+        #     enforcement as evidence that it is enforced;
+        #   * the bare unqualified name -- a real call is qualified
+        #     `public.staff_scope_allows_city(`.
+        enforced = 0
+        for candidate in migration_files():
+            src = _strip_comments(_read(candidate))
+            for m in FN_DEFINITION.finditer(src):
+                name = m.group(1)
+                if name in ("staff_scope_allows_city", "staff_city_scope",
+                            "staff_city_scope_report"):
+                    continue
+                if name.startswith("assert_") or name.endswith("_are_wired"):
+                    continue
+                fbody = function_body(src, name)
+                if re.search(r"WHERE[^;]*public\.staff_scope_allows_city\(",
+                             fbody, re.DOTALL):
+                    enforced += 1
+        if enforced == 0:
+            problems.append(
+                "staff_scope_allows_city() is defined but no function tests it "
+                "in a WHERE clause -- the city scope is decorative. The staff "
+                "city column, the roster and the drill-down all display it "
+                "while it stops nothing.")
+
+        # Every provider LIFECYCLE ACTION must carry it, not just one. A scope
+        # that filters a list and does not filter its buttons is half a scope:
+        # a manager who cannot see an Addis Ababa provider in the queue could
+        # still approve one by id.
+        guarded, missing = 0, []
+        for fn in PROVIDER_ACTIONS:
+            target, _ = last_migration_defining(fn)
+            if target is None:
+                missing.append("%s (undefined)" % fn)
+                continue
+            fbody = function_body(_read(target), fn)
+            if re.search(r"staff_scope_allows_city\(", fbody):
+                guarded += 1
+            else:
+                missing.append(fn)
+        if missing:
+            problems.append(
+                "%d of the %d provider lifecycle actions do not enforce the "
+                "staff city scope: %s. Each already carries the category "
+                "scope; the city scope must be a peer of it, not a "
+                "substitute for it."
+                % (len(missing), len(PROVIDER_ACTIONS), ", ".join(missing)))
+
+        # The two money/queue surfaces must carry the guard too, and each must
+        # carry it in its OWN body. Counting "the guard exists somewhere" is
+        # the failure mode: the five provider actions alone satisfy that, so a
+        # restatement of the task feed copied from a pre-city-scope migration
+        # would pass while the largest queue in the product ignores the scope.
+        unguarded: list[str] = []
+        for fn in CITY_SCOPED_MONEY_AND_FEED:
+            target, _ = last_migration_defining(fn)
+            if target is None:
+                unguarded.append("%s (undefined)" % fn)
+                continue
+            fbody = function_body(_read(target), fn)
+            if not re.search(r"staff_scope_allows_city\(", fbody):
+                unguarded.append(fn)
+        if unguarded:
+            problems.append(
+                "these staff-facing surfaces no longer enforce the city scope: "
+                "%s. staff_task_feed is the queue the scope is judged by and "
+                "verify_payment_proof moves money; a scope that filters the "
+                "registration queue but not the task feed is half a scope."
+                % ", ".join(unguarded))
+
+        # The assertion pinning the feed must itself name the guard, or a
+        # future restatement of staff_task_feed passes CI.
+        target, _ = last_migration_defining(CITY_SCOPE_FEED_ASSERTION)
+        if target is None:
+            problems.append(
+                "no migration DEFINES %s() -- nothing pins the city guard "
+                "inside staff_task_feed, so restating that function from a "
+                "stale copy would pass every check" % CITY_SCOPE_FEED_ASSERTION)
+        else:
+            abody = function_body(_read(target), CITY_SCOPE_FEED_ASSERTION)
+            # Two weaker tests both survive deleting the pin, and the
+            # falsifier caught each of them in turn:
+            #   * "is the name anywhere in the body" -- the feed side counts
+            #     occurrences with string_to_array, so the name survives;
+            #   * "is v_proof mentioned" -- it is still fetched and NULL-checked
+            #     even after the test on it is deleted.
+            # What actually pins the guard is the assertion SEARCHING the
+            # proof body FOR the guard, so that is what is required: the name
+            # and `in v_proof` in one position()/strpos() call.
+            if not re.search(
+                    r"(?:position|strpos)\s*\(\s*'staff_scope_allows_city'"
+                    r"[^)]*\bin\s+v_proof", abody, re.IGNORECASE | re.DOTALL):
+                problems.append(
+                    "%s: %s no longer searches verify_payment_proof's body for "
+                    "staff_scope_allows_city. staff_task_feed and "
+                    "verify_payment_proof are re-emitted wholesale whenever "
+                    "their task types change, and an assertion that no longer "
+                    "inspects the proof body passes on a guard that quietly "
+                    "dropped it." % (target.name, CITY_SCOPE_FEED_ASSERTION))
+
+        # And the assertion that pins the guard must itself require it, or a
+        # future restatement of these five from a stale copy would pass CI --
+        # which is precisely how the category layer was lost once (00020).
+        target, _ = last_migration_defining(
+            "assert_admin_rpc_service_role_access")
+        if target is not None:
+            abody = function_body(_read(target),
+                                  "assert_admin_rpc_service_role_access")
+            if "staff_scope_allows_city" not in abody:
+                problems.append(
+                    "%s: assert_admin_rpc_service_role_access no longer pins "
+                    "staff_scope_allows_city. The five provider actions are "
+                    "re-emitted wholesale whenever their behaviour changes, "
+                    "and an assertion that does not name the new condition "
+                    "passes on a body that quietly dropped it."
+                    % target.name)
+
+    return problems
+
+
+def _dart_without_comments(text: str) -> str:
+    """Strip Dart line and block comments.
+
+    A name inside a comment is not a call site. Three separate checks in this
+    file have been fooled by exactly that, so the rule is applied here once
+    rather than remembered per check.
+    """
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
+def check_staff_roster_is_wired() -> list[str]:
+    """A staff member's rank, city and obligations must be READABLE.
+
+    The `staff` table has carried a city and a job role for a long time, and
+    both were written by the CEO's terms editor -- and read by nothing. A
+    manager could set a person to Hawassa and then act on every Hawassa queue
+    without ever being shown that fact. So the city axis was decorative: the
+    column existed, the screen showed nothing, and the guards added this
+    session had no visible surface to belong to.
+
+    This asserts the roster RPCs are not merely DEFINED. A migration that
+    creates admin_staff_roster() and a client that never calls it is the exact
+    shape of the original defect, with a new table bolted on.
+
+    Three ways a naive version of this check passes on the broken build, all
+    found by the falsifier and all handled below:
+
+      * the field is read off the raw `staff` row instead of the roster, which
+        is a different (older) source and is what the screen already did;
+      * the roster is fetched into a local and then dropped on the floor;
+      * the RPC name survives in a comment, so a "is the string present" test
+        is satisfied by prose describing a call that never happens.
+    """
+    problems: list[str] = []
+
+    screen = _read(LIB / "features" / "admin" / "admin_staff_screen.dart")
+    if not screen:
+        return ["lib/features/admin/admin_staff_screen.dart is missing"]
+    code = _dart_without_comments(screen)
+
+    for rpc, why in (
+        ("admin_staff_roster",
+         "rank, city, obligations and the movement counters"),
+        ("staff_activity_feed",
+         "the movement history behind those counters"),
+    ):
+        # Must be an actual rpc('name') call site, not merely a string.
+        if not re.search(r"rpc\(\s*['\"]%s['\"]" % re.escape(rpc), code,
+                         re.DOTALL):
+            problems.append(
+                "the client never calls %s(), so %s are recorded in the "
+                "database and shown to nobody" % (rpc, why))
+
+    # The roster must be STORED, not just fetched: a result assigned and
+    # discarded is the same defect wearing a different hat. The map's own name
+    # is discovered from its declaration rather than hard-coded, so renaming
+    # the variable is not a regression.
+    decl = re.search(
+        r"Map<String,\s*Map<String,\s*dynamic>>\s+(\w+)\s*=\s*\{\}", code)
+    roster_map = decl.group(1) if decl else None
+    if roster_map is None:
+        problems.append(
+            "admin_staff_screen.dart holds no per-staff-id roster map, so the "
+            "roster rows cannot be joined onto the staff cards at all")
+    elif not re.search(r"%s\b[^;]{0,200}?addAll\(" % re.escape(roster_map), code):
+        problems.append(
+            "the roster map `%s` is declared but never populated: the RPC "
+            "result is fetched and then discarded, which is the original "
+            "defect with an extra network call in front of it"
+            % roster_map)
+
+    # Each fact must be read from a map that CAME FROM THE ROSTER, not from
+    # the raw `staff` row. Locally the pattern is
+    #     final r = <accessor>(s);   r['city']
+    # The accessor is the function that returns the declared roster map, found
+    # by what it does rather than by what it is named: a rename of either the
+    # map or the accessor is a refactor, and a check that punishes an honest
+    # rename is a check that gets disabled. The fallback `s['city']` on the
+    # raw staff row cannot satisfy this.
+    roster_vars: set[str] = set()
+    if roster_map:
+        accessor = re.search(
+            r"(\w+)\s*\([^)]*\)\s*=>\s*(?:\w+\s*=>\s*)?%s\s*\[" % re.escape(roster_map),
+            code)
+        if accessor:
+            roster_vars = set(re.findall(
+                r"(\w+)\s*=\s*%s\s*\(" % re.escape(accessor.group(1)), code))
+    for field, label in (
+        ("city", "the assigned city"),
+        ("job_role", "the rank"),
+        ("obligations", "the granted obligations"),
+    ):
+        read = any(
+            re.search(r"\b%s\s*\[\s*['\"]%s['\"]" % (re.escape(v), field), code)
+            for v in roster_vars
+        )
+        if not read:
+            problems.append(
+                "admin_staff_screen.dart never reads `%s` off the roster, so %s "
+                "is not shown on any staff row. A fallback to the raw `staff` "
+                "column does not count: that is the pre-roster source, and it "
+                "is what was already unread." % (field, label))
+
+    return problems
+
+
+def check_quoted_fees_resolve_like_the_charge() -> list[str]:
+    """A fee QUOTED to a human must be resolved the way it is CHARGED.
+
+    Migration 107 made the platform commission resolvable per category and per
+    city. The charge goes through `deduct_transaction_fee()`, which calls
+    `platform_transaction_fee_for(amount, provider.category, provider.city,
+    is_product)`. The checkout screen quoted `platform_transaction_fee(amount)`
+    — the global rate — and a comment there claimed the two "could not drift".
+
+    They did drift, and nothing caught it: the code parsed, the route
+    resolved, every check was green, and the only symptom was a provider whose
+    displayed commission was a different number from the one debited from
+    their wallet the moment an admin set a category or city override.
+
+    So this asserts the two agree, structurally.
+    """
+    problems: list[str] = []
+
+    checkout = _read(LIB / "features" / "user" / "user_checkout_screen.dart")
+    if not checkout:
+        return ["lib/features/user/user_checkout_screen.dart is missing"]
+
+    code = _dart_without_comments(checkout)
+
+    if "platform_transaction_fee_for" not in code:
+        problems.append(
+            "the checkout quotes the commission through the one-argument "
+            "platform_transaction_fee(), which resolves the GLOBAL rate, while "
+            "the wallet is debited by platform_transaction_fee_for() with the "
+            "provider's category and city. Any category or city override makes "
+            "the displayed figure differ from the charge.")
+
+    # The flag matters as much as the arguments: the charge passes
+    # `p_order_id IS NOT NULL`, so a quote that sends false quotes the wrong
+    # rate class for an order.
+    if "p_is_product" not in code:
+        problems.append(
+            "the checkout's commission quote does not pass p_is_product, so it "
+            "resolves the wrong rate class — deduct_transaction_fee() passes "
+            "`p_order_id IS NOT NULL` for an order")
+
+    # ORDERING. This is the bug that was in the first fix: the quote read
+    # _feeCity / _feeCategoryId, which are populated by a provider read that
+    # ran afterwards. Both were null, the RPC inherited the global rate, and
+    # the call looked correct in review. Ordering is the whole fix, so it is
+    # the part that has to be asserted.
+    load = re.search(r"Future<void> _load\(\)\s*async\s*\{(.*?)\n  \}",
+                     code, re.DOTALL)
+    if load is None:
+        problems.append("could not find _load() in user_checkout_screen.dart")
+    else:
+        body = load.group(1)
+        quote_at = body.find("platform_transaction_fee_for")
+        if quote_at != -1:
+            before = body[:quote_at]
+            if "_refreshProviderReadiness()" not in before:
+                problems.append(
+                    "the checkout quotes the commission BEFORE the provider "
+                    "read that populates _feeCategoryId and _feeCity, so the "
+                    "quote silently falls back to the global rate — the exact "
+                    "drift this check exists to prevent")
+
+    # The server half: the charge must actually pass a category and a city.
+    target, _ = last_migration_defining("deduct_transaction_fee")
+    if target is None:
+        problems.append("no migration defines deduct_transaction_fee()")
+    else:
+        fbody = function_body(_read(target), "deduct_transaction_fee")
+        if "platform_transaction_fee_for" not in fbody:
+            problems.append(
+                "%s: deduct_transaction_fee() no longer charges through "
+                "platform_transaction_fee_for(), so the per-category and "
+                "per-city commission is not being applied at all"
+                % target.name)
+
+    # The RIDE fare has the identical defect and got it separately: the client
+    # called the five-argument calculate_fare_estimate(), which hardcodes
+    # p_city to NULL, while create_ride_request() charges against the rider's
+    # profiles.city. Same drift, second surface, found the same way.
+    ride = _read(LIB / "features" / "user" / "user_ride_request_screen.dart")
+    if not ride:
+        problems.append("lib/features/user/user_ride_request_screen.dart is missing")
+    else:
+        rcode = _dart_without_comments(ride)
+        if "calculate_fare_estimate_at" not in rcode:
+            problems.append(
+                "the ride request quotes the fare through the five-argument "
+                "calculate_fare_estimate(), which hardcodes p_city to NULL, "
+                "while create_ride_request() charges against the rider's "
+                "profiles.city — so a city-specific per-km rate is charged but "
+                "never quoted")
+        elif "p_city" not in rcode:
+            problems.append(
+                "the ride request calls the city-aware fare function but never "
+                "passes p_city, so it resolves exactly as the old wrapper did")
+
+        # A deployment that has not run 0107 has neither new entry point. A
+        # hard failure would mean "Fare unavailable" on every ride, so the
+        # fallback is part of the contract, not a nicety.
+        #
+        # The method must be DEFINED *and CALLED. An earlier version of this
+        # assertion accepted either the old RPC name or the presence of the
+        # helper's name, which meant deleting the call site while leaving the
+        # (now unreferenced) method and its comments passed -- the falsifier
+        # caught exactly that. Two occurrences is the definition plus a call.
+        if len(re.findall(r"_quoteGlobalFare\s*\(", rcode)) < 2:
+            problems.append(
+                "the ride request defines no fallback to the pre-0107 fare "
+                "quote, so a deployment without migration 107 shows 'Fare "
+                "unavailable' on every ride instead of the global rate")
+
+    # The SUBSCRIPTION, third surface and the same defect. This one matters
+    # more than the other two: the amount IS the screen. A provider opened
+    # Subscription precisely to find out what they are about to be charged.
+    sub = _read(LIB / "features" / "provider" / "provider_subscription_screen.dart")
+    if not sub:
+        problems.append(
+            "lib/features/provider/provider_subscription_screen.dart is missing")
+    else:
+        subcode = _dart_without_comments(sub)
+        if "fee_subscription" not in subcode:
+            problems.append(
+                "the provider subscription screen states the monthly fee from "
+                "the flat monthly_subscription_fee setting, while "
+                "deduct_subscription_fee() charges fee_subscription(category, "
+                "city) — so a per-category or per-city rate is charged but the "
+                "provider is shown the global one. This is the screen whose "
+                "entire job is to state the amount.")
+        # The flat setting must not overwrite the resolved one.
+        if re.search(
+                r"'monthly_subscription_fee'\s*\)\s*\{\s*(?://[^\n]*\n\s*)*"
+                r"fee\s*=\s*parsed", subcode):
+            problems.append(
+                "the subscription screen overwrites the per-category fee with "
+                "the flat setting, which undoes the per-category quote")
+
+    return problems
+
+
+def check_server_refusal_codes_reach_the_user() -> list[str]:
+    """A server refusal must arrive as a SENTENCE, not as a code.
+
+    Postgres refusals reach the client as `RAISE EXCEPTION 'SOME_CODE'`, and
+    PostgREST returns that as a **400** whose body is the raw code. That is not
+    a 403, so the authorisation branch of `friendlyError` never matched it and
+    the user saw the generic "Something went wrong. Please try again." —
+    which is indistinguishable from a crash and, for a staff member who acted
+    outside their assigned city, actively misleading: nothing about it says
+    "this is a scope rule, not a fault".
+
+    Not every code needs a global sentence — most are translated at their call
+    site, where the code knows what the user was trying to do. The ones
+    asserted here are the app's OWN generic refusals, which are raised from
+    many different functions and therefore have no single call site to
+    translate them.
+    """
+    problems: list[str] = []
+
+    err = _read(LIB / "core" / "utils" / "friendly_error.dart")
+    if not err:
+        return ["lib/core/utils/friendly_error.dart is missing"]
+    code = _dart_without_comments(err).lower()
+
+    # The code must appear inside a MATCHER LIST — `_any(lower, [ ... ])` —
+    # not merely somewhere in the file. A plain "is the string present" test
+    # is satisfied twice over: by prose about the refusal, and by the ternary
+    # that picks WHICH sentence to show once it has matched. The falsifier
+    # caught the second one: deleting the matcher entry left the ternary, and
+    # the refusal silently stopped being recognised while the check stayed
+    # green.
+    needles: set[str] = set()
+    for m in re.finditer(r"_any\(\s*lower\s*,\s*\[(.*?)\]\s*\)", code,
+                         re.DOTALL):
+        # Skip a call that SELECTS the sentence rather than matching the
+        # error: `message = _any(lower, ['x']) ? ... : ...` is a downstream
+        # consequence of a match, and counting it as a matcher is what let
+        # case A of the falsifier stay green.
+        before = code[max(0, m.start() - 24):m.start()]
+        if "message =" in before:
+            continue
+        needles |= set(re.findall(r"'([^']*)'", m.group(1)))
+
+    # Raised across many functions; the caller cannot infer the reason.
+    for refusal, why in (
+        ("insufficient_permission",
+         "the staff city / category / role guards, which migrations 110-112 "
+         "put on the five provider lifecycle actions, the task feed and "
+         "payment verification"),
+        ("admin_only",
+         "the admin-only gates spread across the staff and role RPCs"),
+        ("auth_required",
+         "every SECURITY DEFINER function that refuses an anonymous caller"),
+    ):
+        if refusal not in needles:
+            problems.append(
+                "friendly_error.dart does not recognise %s, so a refusal "
+                "raised by %s reaches the user as a raw code or as the "
+                "generic fallback sentence"
+                % (refusal.upper(), why))
+
+    return problems
+
+
+def check_provider_fulfilment_gate_is_wired() -> list[str]:
+    """A provider may only work once verified, paid and funded.
+
+    The product rule is: documents verified, activation fee paid, wallet able
+    to cover the platform fee — before posting a product, adding a vehicle,
+    claiming a ride or accepting an order.
+
+    Two defects hid behind it, and both are invisible to a reviewer:
+
+      * `provider_docs_satisfied()` accepts MANUAL_REVIEW, which is what a
+        document row is BORN as (the column defaults to it and a BEFORE
+        INSERT trigger forces it). So the document half of the gate was
+        satisfied by uploading an ID, before any human had looked at it.
+      * `claim_ride` and `transition_order_status` never consulted the gate at
+        all. A vehicle provider with an unpaid activation fee and an
+        unreviewed ID could take a rider's trip, and accept an order, while
+        the buyer-side checkout — which did check — refused the same provider.
+
+    So all four surfaces are asserted, and the strict predicate is asserted to
+    be strict.
+    """
+    problems: list[str] = []
+
+    gate_mig = None
+    for candidate in migration_files():
+        if re.search(r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+"
+                     r"public\.provider_fulfilment_blockers\s*\(",
+                     _strip_comments(_read(candidate)), re.IGNORECASE):
+            gate_mig = candidate
+            break
+    if gate_mig is None:
+        problems.append(
+            "no migration defines provider_fulfilment_blockers() -- there is "
+            "no single place that can say WHY a provider may not work, so no "
+            "refusal can name its own reason")
+    else:
+        body = function_body(_read(gate_mig), "provider_fulfilment_blockers")
+        for token, why in (
+            ("registration_fee_paid",
+             "the one-time activation fee is never charged into the gate"),
+            ("DOCUMENTS_UNVERIFIED",
+             "an unreviewed document does not stop anyone"),
+            ("ACTIVATION_FEE_UNPAID",
+             "an unpaid activation fee produces no reason"),
+            ("WALLET_EMPTY",
+             "an empty wallet is not a blocker, so the platform fee fails "
+             "later, at the moment a buyer is waiting"),
+        ):
+            if token not in body:
+                problems.append(
+                    "provider_fulfilment_blockers() never mentions %s, so %s"
+                    % (token, why))
+
+    # Every surface that hands out work must consult it.
+    for fn, what in (
+        ("claim_ride", "a provider can take a rider's trip"),
+        ("transition_order_status", "a provider can accept an order"),
+        ("provider_can_publish", "a provider can post a listing"),
+    ):
+        target, _ = last_migration_defining(fn)
+        if target is None:
+            problems.append("%s is undefined" % fn)
+            continue
+        fbody = function_body(_read(target), fn)
+        # provider_can_publish delegates rather than naming the predicate
+        # directly, so either counts.
+        if not re.search(r"fulfilment_blockers|can_fulfil", fbody):
+            problems.append(
+                "%s: %s does not consult the fulfilment gate (%s)"
+                % (target.name, fn, what))
+
+    # Naming the predicate is not enough: it also has to be REACHABLE. An
+    # earlier version of this check was satisfied by `IF false THEN ...
+    # provider_fulfilment_blockers(...) END IF`, which is the guard written
+    # but disabled — the falsifier caught it. So the actor test the guard is
+    # conditioned on is asserted too.
+    target, _ = last_migration_defining("transition_order_status")
+    if target is not None:
+        fbody = function_body(_read(target), "transition_order_status")
+        if "fulfilment_blockers" in fbody:
+            # The CONDITION of the guard, not the mere presence of the
+            # variable. `v_actor_is_provider` is assigned near the top of the
+            # function regardless, so a body-wide search is satisfied by an
+            # `IF false THEN ... gate ... END IF` — the guard written and then
+            # switched off, which is what the falsifier plants.
+            at = fbody.find("fulfilment_blockers")
+            conds = re.findall(r"\bIF\s+(.*?)\s+THEN",
+                               fbody[:at], re.DOTALL | re.IGNORECASE)
+            cond = conds[-1] if conds else ""
+            if "v_actor_is_provider" not in cond:
+                problems.append(
+                    "%s: transition_order_status calls the fulfilment gate from "
+                    "a condition that does not test whether the actor is the "
+                    "provider (found %r), so the guard does not distinguish a "
+                    "provider from an admin — and if that condition is ever "
+                    "constant-false the gate is simply off"
+                    % (target.name, cond.strip()[:80]))
+
+    # The strict predicate must be strict. A substring test for MANUAL_REVIEW
+    # cannot distinguish "accepts it" from "excludes it", so this looks for
+    # the shape that actually admits it: MANUAL_REVIEW inside the IN list.
+    target, _ = last_migration_defining("provider_documents_verified")
+    if target is None:
+        problems.append(
+            "no migration defines provider_documents_verified() -- the gate "
+            "has no way to tell a VERIFIED document from an uploaded one")
+    else:
+        dbody = function_body(_read(target), "provider_documents_verified")
+        # The STATUS list, not the first `IN (...)` in the body. The body also
+        # has `document_type IN ('NATIONAL_ID', ...)`, and matching that one
+        # is how this check passed while MANUAL_REVIEW was admitted — the
+        # falsifier caught it, and a document-type list is not a status list.
+        admitted = re.search(
+            r"verification_status[^;]*?IN\s*\(([^)]*)\)", dbody, re.IGNORECASE)
+        if admitted is None:
+            problems.append(
+                "provider_documents_verified() admits no statuses at all, so "
+                "nobody can ever satisfy the document half of the gate")
+        elif "MANUAL_REVIEW" in admitted.group(1).upper():
+            problems.append(
+                "provider_documents_verified() still admits MANUAL_REVIEW, so "
+                "\"verified\" still means \"uploaded\" -- the default state of "
+                "a document row, and the whole original defect")
+
+    # The client has to be able to explain the refusal, or the provider is
+    # told only that they may not.
+    #
+    # Asserted against the MATCHER LISTS, not the whole file. The string also
+    # appears in `_fulfilmentReasons`'s own regex, so a plain presence test is
+    # satisfied by the parser that is supposed to consume it — the falsifier
+    # caught exactly that.
+    err = _read(LIB / "core" / "utils" / "friendly_error.dart")
+    if err:
+        ecode = _dart_without_comments(err).lower()
+        needles: set[str] = set()
+        for m2 in re.finditer(r"_any\(\s*lower\s*,\s*\[(.*?)\]\s*\)", ecode,
+                              re.DOTALL):
+            before = ecode[max(0, m2.start() - 24):m2.start()]
+            if "message =" in before:
+                continue
+            needles |= set(re.findall(r"'([^']*)'", m2.group(1)))
+        if "provider_not_fulfilment_ready" not in needles:
+            problems.append(
+                "friendly_error.dart does not recognise PROVIDER_NOT_"
+                "FULFILMENT_READY in any matcher list, so a provider blocked by "
+                "the gate is told only that something went wrong, with no "
+                "indication of which of the four requirements they have not met")
+
+    return problems
+
+
+def check_notification_types_exist() -> list[str]:
+    """Every notification type WRITTEN must be a member of the enum.
+
+    `insert_notification(p_user_id uuid, p_type notification_type, ...)`
+    types its second parameter as the enum, so writing a value that is not a
+    member raises `invalid input value for enum notification_type` at RUN
+    time — inside the function that was doing something else useful, so the
+    whole call fails and the user sees the wrong error entirely.
+
+    This is not hypothetical. Migration 0107 wrote 'RIDE_REQUESTED' where the
+    enum spells it 'RIDE_REQUEST'. Every ride request in the product would
+    have failed on deploy, and **no check caught it**: pglast parses an enum
+    literal as an ordinary string and validates nothing about it, the plpgsql
+    gate only checks that embedded statements parse, and every existing
+    assertion either did not look or compared against a hand-typed list that
+    had the same spelling mistake in it.
+
+    "Parses clean" was never evidence that a value exists. It is now.
+    """
+    problems: list[str] = []
+
+    # The enum, as the latest migration leaves it. ADD VALUE statements are
+    # folded in; a value that is only added and never used is harmless, and one
+    # that is used but never added is the bug.
+    members: set[str] = set()
+    for path in migration_files():
+        src = _read(path)
+        for m in re.finditer(
+                r"CREATE\s+TYPE\s+(?:public\.)?notification_type\s+AS\s+ENUM\s*\((.*?)\)",
+                _strip_comments(src), re.IGNORECASE | re.DOTALL):
+            for v in re.findall(r"'([^']+)'", m.group(1)):
+                members.add(v)
+        for m in re.finditer(
+                r"ALTER\s+TYPE\s+(?:public\.)?notification_type\s+"
+                r"ADD\s+VALUE(?:\s+IF\s+NOT\s+EXISTS)?\s+'([^']+)'",
+                _strip_comments(src), re.IGNORECASE):
+            members.add(m.group(1))
+
+    if not members:
+        return ["no migration defines the notification_type enum, so this "
+                "check cannot tell a real type from an invented one"]
+
+    # Everything written: a literal in the TYPE POSITION of a notification
+    # call. The position matters, and a naive "first all-caps literal after
+    # the call" regex cannot find it: the first argument is frequently
+    # `(select user_id from provider_profiles where id = p_provider_id)`,
+    # which contains no comma at the top level but does contain parens, and a
+    # lazy match happily runs past the end of the statement and picks up
+    # something from a GRANT. So the arguments are split on TOP-LEVEL commas
+    # with a paren-depth walk, and the type is read by position:
+    #
+    #   insert_notification(user_id, TYPE, ...)      -> arg 1
+    #   notify_user(user_id, TYPE, ...)              -> arg 1
+    #   notify_user_once(key, user_id, TYPE, ...)    -> arg 2
+    write_sites: dict[str, set[str]] = {}
+
+    def literal_type(arg: str) -> str | None:
+        """The enum value if this argument is a bare quoted literal."""
+        m = re.fullmatch(r"'([A-Za-z_][A-Za-z_.]*)'", arg.strip())
+        return m.group(1) if m else None
+
+    # Kept for the docstring's benefit and for anyone reading the case
+    # history; the extraction below uses the shared helpers so that this
+    # check and the counterparty check can never disagree about which calls
+    # count as notification writes.
+
+    call = _NOTIFY_CALL
+    for path in migration_files():
+        src = _strip_comments(_read(path))
+        for m in call.finditer(src):
+            name = m.group(0).split("(")[0].strip().lower()
+            args = _split_call_args(src, m.end() - 1)
+            if not args:
+                continue
+            idx = 2 if name.endswith("_once") else 1
+            if len(args) <= idx:
+                continue
+            lit = re.fullmatch(r"'([A-Za-z_][A-Za-z_.]*)'", args[idx].strip())
+            val = lit.group(1) if lit else None
+            # A variable or a computed value cannot be checked here; those are
+            # the ones a type mismatch would hide behind.
+            if val and val.upper() not in members:
+                write_sites.setdefault(val, set()).add(path.name)
+
+    for val, files in sorted(write_sites.items()):
+        problems.append(
+            "notification type %r is written in %s but is not a member of the "
+            "notification_type enum. insert_notification() types that column, "
+            "so the write raises `invalid input value for enum "
+            "notification_type` at RUN time and takes the surrounding "
+            "operation down with it."
+            % (val, ", ".join(sorted(set(files)))))
+
+    return problems
+
+
+def check_provider_is_told_about_work() -> list[str]:
+    """The other side of a marketplace event must be told, not left to poll.
+
+    A notification is the only thing that makes a marketplace reactive. A
+    provider who is not told an order arrived finds out by opening the orders
+    screen; a driver who is not told a ride is nearby finds out by the same
+    polling. Both work, and both are the reason a marketplace feels dead.
+
+    The rule asserted here: for the events where the platform knows who the
+    counterparty is, at least one code path notifies them. The buyer-side
+    event is already covered elsewhere; this is the provider side.
+    """
+    problems: list[str] = []
+
+    # Asserted on the notification TYPE, not on the helper that writes it.
+    # Naming a type is the actual requirement — a helper can be renamed or
+    # wrapped and the provider is still told — whereas naming a function makes
+    # the check fail on a refactor and pass on a wrong target.
+    for fn, event, who in (
+        ("create_order_secure", "ORDER_RECEIVED",
+         "a provider is never told an order arrived"),
+        ("create_ride_request", "RIDE_REQUEST",
+         "no driver is ever told a ride is available near them"),
+        ("claim_ride", "RIDE_CLAIMED",
+         "a rider is never told their ride has a driver"),
+    ):
+        target, _ = last_migration_defining(fn)
+        if target is None:
+            problems.append("%s is undefined" % fn)
+            continue
+        body = function_body(_read(target), fn)
+
+        if fn == "create_ride_request":
+            # This one is special: the rider IS notified here already, so the
+            # presence of RIDE_REQUEST proves nothing. What has to be proven is
+            # that a DRIVER is addressed, which means a fan-out over
+            # find_nearby_drivers.
+            #
+            # Resolved through the helper that now owns the fan-out, rather
+            # than by naming the helper: the requirement is that a driver is
+            # told, not which function does the telling. A check that hard-codes
+            # the helper's name fails the day it is renamed and keeps passing
+            # if the fan-out inside it is emptied.
+            # CALLED, not merely mentioned. A substring test is satisfied by
+            # `find_nearby_drivers_disabled(`, which is what the falsifier
+            # plants: the fan-out gone, the reference left behind.
+            near = re.compile(r"\bfind_nearby_drivers\s*\(", re.IGNORECASE)
+            reaches_drivers = bool(near.search(body))
+            if not reaches_drivers:
+                for name in set(re.findall(r"\b(?:public\.)?(notify_\w+)\s*\(",
+                                           body)):
+                    htarget, _ = last_migration_defining(name)
+                    if htarget is None:
+                        continue
+                    if near.search(function_body(_read(htarget), name)):
+                        reaches_drivers = True
+                        break
+            if not reaches_drivers:
+                problems.append(
+                    "%s: create_ride_request() notifies the rider but nothing "
+                    "it calls fans out over find_nearby_drivers, so %s"
+                    % (target.name, who))
+        elif event not in _notification_types_written(body):
+            problems.append(
+                "%s: %s writes no %s notification (found %s), so %s"
+                % (target.name, fn, event,
+                   ", ".join(sorted(_notification_types_written(body))) or "none",
+                   who))
+
+    return problems
+
+
+def _split_call_args(text: str, open_paren: int) -> list[str]:
+    """Args of the call whose '(' is at `open_paren`, split on top-level commas.
+
+    Walks with a paren depth counter and ignores commas inside string literals,
+    because the first argument to a notification call is routinely
+    `(select user_id from provider_profiles where id = p_provider_id)` and a
+    lazy comma split would read whatever is inside it.
+    """
+    depth = 0
+    args: list[str] = []
+    cur: list[str] = []
+    i = open_paren
+    in_str = False
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            cur.append(ch)
+            if ch == "'":
+                in_str = False
+            i += 1
+            continue
+        if ch == "'":
+            in_str = True
+            cur.append(ch)
+        elif ch == "(":
+            depth += 1
+            if depth == 1:
+                i += 1
+                continue
+            cur.append(ch)
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(cur).strip())
+                return args
+            cur.append(ch)
+        elif ch == "," and depth == 1:
+            args.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    return args
+
+
+_NOTIFY_CALL = re.compile(
+    r"\b(?:insert_notification|notify_user|notify_user_once|notify_best_effort)\s*\(",
+    re.IGNORECASE)
+
+
+def _notification_types_written(body: str) -> set[str]:
+    """The enum literals actually handed to a notification writer in `body`.
+
+    Deliberately positional rather than a substring search. A substring search
+    for 'RIDE_CLAIMED' is satisfied by `claim_ride`'s own audit_logs row, which
+    has the same word in it for an unrelated reason -- the falsifier found that
+    by deleting the notification and watching the check stay green.
+    """
+    out: set[str] = set()
+    for m in _NOTIFY_CALL.finditer(body):
+        name = m.group(0).split("(")[0].strip().lower()
+        args = _split_call_args(body, m.end() - 1)
+        idx = 2 if name.endswith("_once") else 1
+        if len(args) <= idx:
+            continue
+        lit = re.fullmatch(r"'([A-Za-z_][A-Za-z_.]*)'", args[idx].strip())
+        if lit:
+            out.add(lit.group(1))
+    return out
+
+
+def check_client_rpcs_are_executable() -> list[str]:
+    """Every RPC the app calls must be executable by the role that calls it.
+
+    PostgREST hides a function the caller has no EXECUTE on behind PGRST202
+    "could not find the function in the schema cache". That reads exactly like
+    a migration that never applied, so the natural response is to re-run the
+    deploy -- which changes nothing, because the function is there and the
+    privilege is not.
+
+    This is not theoretical in this repo. Two separate instances:
+
+      * migration 0113 granted its assertion to `authenticated` only, while
+        Connectivity CI runs its read-only assertions as **anon**. That would
+        have failed as PGRST202 on the first live run;
+      * `calculate_fare_estimate_at()` is granted to `authenticated` and
+        revoked from `anon` deliberately, because it exposes a fare. Any new
+        caller has to know which side of that line it is on.
+
+    So the assertion is per-role, and it is derived from where the call is
+    made rather than from a hand-kept list of RPC names.
+
+    KNOWN LIMIT: privileges are tracked per NAME, not per signature. An
+    overloaded function (`fee_subscription(uuid, text)` and
+    `fee_subscription(uuid, text, boolean)` are both granted) is reported
+    reachable if ANY overload is. PostgREST hides a revoked overload behind
+    the same PGRST202 for a caller whose argument shape selects it. Reading
+    each call's parameter names to resolve the exact overload is a larger job
+    than the risk warrants today; it is recorded rather than hidden.
+    """
+    problems: list[str] = []
+
+    # Postgres grants EXECUTE ON FUNCTION to PUBLIC by default, so a function
+    # with no GRANT and no REVOKE IS callable by everyone. The first version of
+    # this check assumed the opposite -- "no GRANT found" meant "not
+    # executable" -- and reported fourteen working functions, which is how a
+    # check gets ignored. The rule is therefore about REVOKEs, not GRANTs:
+    # a function is unreachable only if something took the privilege away.
+    granted: dict[str, set[str]] = {}
+    revoked: dict[str, set[str]] = {}
+    dynamic_fee: set[str] = set()
+    # Ordered privilege operations per function, because SQL applies them in
+    # order and the LAST one wins. A GRANT followed by a REVOKE of the same role
+    # ends revoked; reading only the union of grants reported the earlier state
+    # and the falsifier caught it. Positions are offset per file so they stay
+    # globally ordered across the migration history.
+    ops: dict[str, list[tuple[int, str, set[str]]]] = {}
+    dyn_ops: list[tuple[int, str, set[str]]] = []
+    base = 0
+
+    def record(key: str | None, pos: int, kind: str, roles: set[str]) -> None:
+        if key is None:
+            dyn_ops.append((pos, kind, roles))
+        else:
+            ops.setdefault(key, []).append((pos, kind, roles))
+
+    def _blank(text: str, lo: int, hi: int) -> None:
+        for k in range(lo, hi):
+            text[k] = " "
+
+    def _statements_only(src: str) -> str:
+        """Blank comments and string literals, PRESERVING LENGTH.
+
+        Length matters: the ordering below compares offsets across files, so
+        a shortener would silently reorder grants and revokes.
+
+        This is not a hypothetical hazard. Migration 00083 documents the very
+        revoke it wants on line 14, inside a `--` comment. Read literally that
+        comment revoked `list_staff_jobs` from `public` five migrations after
+        00036 had granted it to `authenticated` -- reported as a live PGRST202
+        waiting to happen, for a line that is documentation.
+        """
+        out = list(src)
+        i, n = 0, len(src)
+        while i < n:
+            c = src[i]
+            if c == "'":
+                j = i + 1
+                while j < n:
+                    if src[j] == "'":
+                        if j + 1 < n and src[j + 1] == "'":
+                            j += 2
+                            continue
+                        j += 1
+                        break
+                    j += 1
+                _blank(out, i, min(j, n))
+                i = j
+            elif src.startswith("--", i):
+                j = src.find("\n", i)
+                _blank(out, i, n if j < 0 else j)
+                i = n if j < 0 else j
+            elif src.startswith("/*", i):
+                j = src.find("*/", i + 2)
+                _blank(out, i, n if j < 0 else j + 2)
+                i = n if j < 0 else j + 2
+            else:
+                i += 1
+        return "".join(out)
+
+    def _comments_gone(src: str) -> str:
+        return re.sub(r"/\*.+?\*/|--+[^\n]*",
+                      lambda m: " " * len(m.group(0)), src, flags=re.DOTALL)
+
+    for path in migration_files():
+        src = _read(path)
+        # Comments and string literals blanked for the literal statements;
+        # comments only blanked for the format() scan, which lives INSIDE a
+        # string literal. Same offsets either way.
+        sql = _statements_only(src)
+        live = _comments_gone(src)
+        for m in re.finditer(
+                r"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+(?:public\.)?(\w+)\s*\([^)]*\)"
+                r"\s*TO\s+([^;]+);", sql, re.IGNORECASE):
+            granted.setdefault(m.group(1).lower(), set()).update(
+                r.strip().lower() for r in m.group(2).split(","))
+            record(m.group(1).lower(), base + m.start(), "grant",
+                   {r.strip().lower() for r in m.group(2).split(",")})
+        for m in re.finditer(
+                r"REVOKE\s+(?:ALL|EXECUTE)?\s*ON\s+FUNCTION\s+(?:public\.)?(\w+)"
+                r"\s*\([^)]*\)\s*FROM\s+([^;]+);", sql, re.IGNORECASE):
+            revoked.setdefault(m.group(1).lower(), set()).update(
+                r.strip().lower() for r in m.group(2).split(","))
+            record(m.group(1).lower(), base + m.start(), "revoke",
+                   {r.strip().lower() for r in m.group(2).split(",")})
+        # The 0107 DO-block loop builds its GRANT/REVOKE with format('%I'), so
+        # the literal statements never appear. The role lists DO appear, inside
+        # the format string, and are read from there.
+        for m in re.finditer(
+                r"format\(\s*'(GRANT\s+EXECUTE|REVOKE\s+ALL) ON FUNCTION "                r"public\.%I\([^)]*\)\s*(?:TO|FROM)\s*([^']+)'",
+                live,
+                re.IGNORECASE):
+            record(None, base + m.start(),
+                   "grant" if m.group(1).lower().startswith("grant") else "revoke",
+                   {r.strip().lower() for r in m.group(2).split(",")})
+        for m in re.finditer(r"'(fee_[a-z_]+)'", src):
+            dynamic_fee.add(m.group(1).lower())
+        base += len(src) + 1
+
+    def _reachable(entries: list[tuple[int, str, set[str]]], role: str) -> bool:
+        """Final state for `role` after the statements, in order.
+
+        PUBLIC is a SEPARATE grant, not a superset. Every function starts
+        executable by PUBLIC; `REVOKE ... FROM PUBLIC` withdraws that default
+        and nothing else. Folding PUBLIC into every role -- which the first
+        version did -- meant a `REVOKE FROM public` four lines after a
+        `GRANT TO authenticated` erased the grant, and reported working
+        functions as unreachable. The named-role grant wins if it exists.
+        """
+        named: bool | None = None
+        public: bool | None = None
+        for _pos, kind, roles in sorted(entries, key=lambda e: e[0]):
+            if role in roles:
+                named = (kind == "grant")
+            if "public" in roles:
+                public = (kind == "grant")
+        if named is not None:
+            return named
+        return True if public is None else public
+
+    def executable(name: str, role: str) -> bool:
+        n = name.lower()
+        if n in dynamic_fee:
+            return _reachable(dyn_ops, role)
+        return _reachable(ops.get(n, []), role)
+
+    # --- RPCs the signed-in app calls ------------------------------------
+    for name in literal_calls(r"rpc\(\s*'([a-z_0-9]+)'"):
+        if not executable(name, "authenticated"):
+            problems.append(
+                "the app calls %s(), but no migration GRANTs EXECUTE to "
+                "`authenticated`. PostgREST answers PGRST202 'could not find "
+                "the function in the schema cache', which reads like a missing "
+                "migration and sends the next person to re-run the deploy."
+                % name)
+
+    # --- assertions the anon-role connectivity suite calls ----------------
+    #
+    # Scanned directly rather than through literal_calls(), which only walks
+    # lib/ -- the suite lives in tools/integration_test/.
+    suite = ROOT / "tools" / "integration_test" / "connectivity_test.dart"
+    if suite.exists():
+        ssrc = _read(suite)
+        for m in re.finditer(r"ok\(\s*'([a-z_0-9]+)'", ssrc):
+            if not executable(m.group(1), "anon"):
+                problems.append(
+                    "the connectivity suite calls %s() as ANON, but something "
+                    "REVOKEs it from anon or PUBLIC with no GRANT back. It will "
+                    "fail as PGRST202 'could not find the function in the "
+                    "schema cache', which reads like a missing migration."
+                    % m.group(1))
+        for m in re.finditer(r"rpcTextDiagnosed\(\s*'([a-z_0-9]+)'", ssrc):
+            if not executable(m.group(1), "anon"):
+                problems.append(
+                    "the connectivity suite calls %s() as ANON, but something "
+                    "REVOKEs it from anon or PUBLIC with no GRANT back. It "
+                    "will fail as PGRST202." % m.group(1))
+
+    return problems
+
+
 CHECKS = [
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
@@ -3074,6 +4619,28 @@ CHECKS = [
      check_profile_completion_and_taps_are_wired),
     ("the router's redirect clauses still match the cycle simulation",
      check_router_matches_the_cycle_simulation),
+    ("every admin sidebar card carries its own permission guard",
+     check_admin_sidebar_cards_are_guarded),
+    ("the GPS where-path resolves the nearest AREA, not just the city",
+     check_nearest_area_is_wired),
+    ("per-category and per-city fees are reachable from the admin sidebar",
+     check_category_fees_are_wired),
+    ("staff creation stays in the sidebar, and a staff city stops something",
+     check_staff_management_is_reachable),
+    ("a staff member's rank, city and obligations are readable, not just stored",
+     check_staff_roster_is_wired),
+    ("a fee quoted to a human resolves exactly the way it is charged",
+     check_quoted_fees_resolve_like_the_charge),
+    ("a server refusal code reaches the user as a sentence",
+     check_server_refusal_codes_reach_the_user),
+    ("a provider may only work once verified, paid and funded",
+     check_provider_fulfilment_gate_is_wired),
+    ("every notification type written actually exists in the enum",
+     check_notification_types_exist),
+    ("the other side of an order or a ride is told, not left to poll",
+     check_provider_is_told_about_work),
+    ("every RPC the app calls is executable by the role that calls it",
+     check_client_rpcs_are_executable),
 ]
 
 

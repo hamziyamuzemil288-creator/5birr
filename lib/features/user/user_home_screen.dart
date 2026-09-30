@@ -12,6 +12,7 @@ import '../../core/resilience/safe_call.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/async_view.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/product_card.dart';
@@ -62,6 +63,16 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   List<AppCategory> _children = const [];
   List<Product> _products = const [];
   Map<String, dynamic>? _activeRide;
+
+  /// Approved providers, for the gallery section. Read from
+  /// `public_provider_profiles`, which already filters to `APPROVED` and is
+  /// granted to anon + authenticated, so this needs no RLS change and no
+  /// migration.
+  ///
+  /// Best-effort: an empty list renders no section at all rather than an
+  /// error, because the feed is still fully usable without it.
+  List<Map<String, dynamic>> _galleryProviders = const [];
+
   bool _loading = true;
   String? _error;
 
@@ -96,6 +107,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         _children = data['children'] as List<AppCategory>;
         _products = data['products'] as List<Product>;
         _activeRide = data['activeRide'] as Map<String, dynamic>?;
+        _galleryProviders = data['providers'] as List<Map<String, dynamic>>;
         _loading = false;
         _error = null;
         // Who liked what. A grid of cards must cost one query, not one per
@@ -179,12 +191,43 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       activeRide = null;
     }
 
+    // 5. Approved providers for the gallery section, best-effort for the same
+    //    reason as the ride banner. Bounded (12) because this is a rail, not
+    //    a directory — the full list is behind the "All providers" pill.
+    List<Map<String, dynamic>> providers = const [];
+    try {
+      final provData = await client
+          .from('public_provider_profiles')
+          .select('id, business_name, photo_storage_path, city, provider_type')
+          .eq('is_active', true)
+          .order('created_at', ascending: false)
+          .limit(12);
+      providers = List<Map<String, dynamic>>.from(provData as List);
+    } catch (_) {
+      // No gallery section. The feed below it is unaffected.
+    }
+
     return {
       'categories': categories,
       'children': children,
       'products': _toProducts(prodData as List),
       'activeRide': activeRide,
+      'providers': providers,
     };
+  }
+
+  /// How many photos the feed already holds for each provider, counted from
+  /// `_products` rather than queried. The products query above embeds
+  /// `product_images(*)`, so this number is free, and it is the number the
+  /// customer actually cares about: "how much of this provider can I see".
+  Map<String, int> get _photoCountsByProvider {
+    final counts = <String, int>{};
+    for (final p in _products) {
+      final n = p.images.length;
+      if (n == 0) continue;
+      counts[p.providerId] = (counts[p.providerId] ?? 0) + n;
+    }
+    return counts;
   }
 
   /// Tell the like service what this feed holds, in one batched read.
@@ -324,6 +367,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             // grid, so the GPS/map-picker flow is one tap from the top of the
             // feed on every tab rather than only via Profile -> Live map.
             SliverToBoxAdapter(child: _rideQuickAction()),
+            SliverToBoxAdapter(child: _gallerySection()),
             SliverToBoxAdapter(child: _subTabRail(tabCategories)),
             SliverToBoxAdapter(child: _categoryGrid(tabCategories)),
             if (_activeRide != null && _tab == HomeTab.vehicles)
@@ -434,6 +478,281 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       onTap: () => context.push('/user/ride-request'),
     );
   }
+
+  // ------------------------------------------------------- provider gallery
+
+  /// Every approved provider's gallery, on the same screen a customer books
+  /// a ride from.
+  ///
+  /// It used to live only in the SERVICE provider's own dashboard, as a
+  /// "My Gallery" pill at the top — a provider editing their own photos. A
+  /// customer browsing this screen had no equivalent: the only way to see a
+  /// provider's photos was to open one product card, then the provider page,
+  /// then scroll. So the people who choose a provider could not browse
+  /// providers, while the people being chosen could.
+  ///
+  /// The styling is deliberately the same pill, not a second look: the entry
+  /// point is [QuickActionPill] — the one definition of this pattern, already
+  /// used by every dashboard — and the tiles reuse its brand green and its
+  /// white w700 label. The tiles round to 16 rather than 20 on purpose: a pill
+  /// is an action and a photo card is content, and giving the card the pill's
+  /// exact geometry is how a screen stops being able to tell the reader which
+  /// one is a button. A gallery section that looked like a different product
+  /// would be the third button style this repo keeps paying for.
+  Widget _gallerySection() {
+    if (_galleryProviders.isEmpty) return const SizedBox.shrink();
+    final counts = _photoCountsByProvider;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        QuickActionPill(
+          icon: Icons.photo_library_outlined,
+          label: 'All providers',
+          onTap: _openAllProviders,
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 168,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _galleryProviders.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (_, i) {
+              final p = _galleryProviders[i];
+              return _galleryTile(
+                id: (p['id'] ?? '') as String,
+                name: ((p['business_name'] as String?) ?? '').trim(),
+                city: ((p['city'] as String?) ?? '').trim(),
+                photoPath: p['photo_storage_path'] as String?,
+                photoCount: counts[(p['id'] ?? '') as String] ?? 0,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _galleryTile({
+    required String id,
+    required String name,
+    required String city,
+    required String? photoPath,
+    required int photoCount,
+  }) {
+    // An id is the only thing the route needs; a row without one would push a
+    // path matching no route at all, so it is dropped rather than rendered
+    // as a tile that does nothing when tapped.
+    if (id.isEmpty) return const SizedBox.shrink();
+    final url = (photoPath == null || photoPath.isEmpty)
+        ? null
+        : Supabase.instance.client.storage
+            .from('provider-photos')
+            .getPublicUrl(photoPath);
+    final subtitle = photoCount > 0
+        ? '$photoCount photo${photoCount == 1 ? '' : 's'}'
+        : (city.isEmpty ? 'No photos yet' : city);
+
+    return SizedBox(
+      width: 152,
+      child: Material(
+        color: AppTheme.primaryGreen,
+        // 16, not the pill's 20. A pill is an ACTION and a photo card is
+        // CONTENT; giving the card the pill's exact geometry is how a screen
+        // ends up unable to tell the reader which one is a button. The brand
+        // green, the white w700 label and the entry-point pill above are what
+        // make this read as the same section, and `QuickActionPill` stays the
+        // single definition of the action shape.
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => context.push('/user/provider/$id'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: url == null
+                    ? const _GalleryPlaceholder()
+                    : Image.network(
+                        url,
+                        fit: BoxFit.cover,
+                        // A public bucket on a provider's own photo: a missing
+                        // file must fall back to the placeholder rather than
+                        // painting Flutter's red error box into the rail.
+                        errorBuilder: (_, __, ___) => const _GalleryPlaceholder(),
+                      ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name.isEmpty ? 'Unnamed provider' : name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.78),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The full directory behind the pill. A modal sheet rather than a new
+  /// route: the list is read-only navigation to a screen that already exists
+  /// (`/user/provider/:id`), and adding a route for it would put another
+  /// entry point to break.
+  /// The full provider directory behind the pill.
+  ///
+  /// Opened FIRST and loaded inside it. Awaiting the query before showing the
+  /// sheet left the button dead for the length of the request with no
+  /// feedback at all, and made the sheet's own loading branch unreachable.
+  ///
+  /// `isScrollControlled: true` is required, not cosmetic: without it the
+  /// bottom sheet is clamped to a fraction of the screen and a
+  /// DraggableScrollableSheet inside it has almost no height to work with.
+  Future<void> _openAllProviders() async {
+    if (!mounted) return;
+    final client = Supabase.instance.client;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        // The future is created once, when the sheet is built. Retry pops the
+        // sheet and opens a new one, so it gets a fresh query -- which is why
+        // there is no StatefulBuilder here to rebuild: a retry that reuses the
+        // same Future would immediately re-show the same error.
+        final future = client
+            .from('public_provider_profiles')
+            .select('id, business_name, photo_storage_path, city, provider_type')
+            .eq('is_active', true)
+            .order('business_name')
+            .limit(200);
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.7,
+          builder: (_, controller) {
+            return FutureBuilder<List<Map<String, dynamic>>>(
+                  future: future,
+                  builder: (ctx, snap) {
+                    if (snap.connectionState != ConnectionState.done) {
+                      return const Center(
+                          child: CircularProgressIndicator());
+                    }
+                    if (snap.hasError) {
+                      return _ErrorBlock(
+                        message: friendlyError(snap.error as Object,
+                            context: 'Could not load providers'),
+                        // Pop before retrying: re-calling this without popping
+                        // stacks a second sheet on the first, and the user is
+                        // left tapping a list they cannot get rid of.
+                        onRetry: () {
+                          Navigator.pop(sheetContext);
+                          _openAllProviders();
+                        },
+                      );
+                    }
+                    final rows = snap.data ?? const <Map<String, dynamic>>[];
+                    if (rows.isEmpty) {
+                      return _ErrorBlock(
+                        message: 'No providers are available yet.',
+                        onRetry: _noopRetry,
+                      );
+                    }
+                    final counts = _photoCountsByProvider;
+                    return ListView.builder(
+                      controller: controller,
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+                      itemCount: rows.length + 1,
+                      itemBuilder: (_, i) {
+                        if (i == 0) {
+                          return const Padding(
+                            padding: EdgeInsets.only(bottom: 12),
+                            child: Text('All providers',
+                                style: TextStyle(
+                                    fontSize: 17, fontWeight: FontWeight.w800)),
+                          );
+                        }
+                        final row = rows[i - 1];
+                        final id = (row['id'] ?? '') as String;
+                        if (id.isEmpty) return const SizedBox.shrink();
+                        final path = row['photo_storage_path'] as String?;
+                        final name =
+                            ((row['business_name'] as String?) ?? '').trim();
+                        final city = ((row['city'] as String?) ?? '').trim();
+                        final count = counts[id] ?? 0;
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: AppTheme.primaryGreen,
+                            backgroundImage: (path == null || path.isEmpty)
+                                ? null
+                                : NetworkImage(client.storage
+                                    .from('provider-photos')
+                                    .getPublicUrl(path)),
+                            child: (path == null || path.isEmpty)
+                                ? Text(
+                                    name.isEmpty
+                                        ? '?'
+                                        : name.substring(0, 1).toUpperCase(),
+                                    style:
+                                        const TextStyle(color: Colors.white),
+                                  )
+                                : null,
+                          ),
+                          title: Text(name.isEmpty ? 'Unnamed provider' : name),
+                          subtitle: Text(count > 0
+                              ? '$count photo${count == 1 ? '' : 's'}'
+                              : (city.isEmpty
+                                  ? 'No photos yet'
+                                  : city)),
+                          onTap: () {
+                            // sheetContext, not the State's context: the sheet
+                            // is being popped, and using its context afterwards
+                            // is the use-after-pop this codebase's own
+                            // memory-safety check is about.
+                            Navigator.pop(sheetContext);
+                            context.push('/user/provider/$id');
+                          },
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+        );
+      },
+    );
+  }
+
+  /// A no-op retry for a genuinely empty list. There is nothing to reload
+  /// into, and re-running the query would just show the same emptiness.
+  static void _noopRetry() {}
 
   // ------------------------------------------------------------- tab rail
 
@@ -884,6 +1203,31 @@ class _SubTabChip extends StatelessWidget {
             color: selected ? AppTheme.textPrimary : AppTheme.textMuted,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The tile face for a provider with no cover photo, or one whose photo 404s.
+///
+/// A provider with no photo is the NORMAL case, not an edge case — a brand new
+/// approved business has none, and an approved gallery section that renders
+/// those as broken-image boxes looks broken rather than empty. So the fallback
+/// is the tile's own brand green with a photo glyph: the row still reads as a
+/// provider, it still taps through, and the absence of a photo is honest
+/// rather than noisy.
+class _GalleryPlaceholder extends StatelessWidget {
+  const _GalleryPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTheme.primaryGreenDark,
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.photo_library_outlined,
+        color: Colors.white.withOpacity(0.55),
+        size: 28,
       ),
     );
   }

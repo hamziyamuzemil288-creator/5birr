@@ -173,11 +173,19 @@ class _AdminSupportTicketsScreenState extends State<AdminSupportTicketsScreen> {
       appBar: AppBar(title: const Text('Support Tickets')),
       body: Column(
         children: [
-          SizedBox(
-            height: 48,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          // A horizontal SingleChildScrollView holding a Row, NOT a
+          // SizedBox(height: 48) holding a ListView. The fixed-height form
+          // sized the box to exactly the chip's default height plus its
+          // padding, so the Row overflowed by a few pixels the moment the
+          // system text scale went above 1.0 — the "bottom overflow" yellow
+          // stripes. A Row inside a horizontal scroll view gets unbounded
+          // WIDTH but its own intrinsic HEIGHT, so it cannot overflow at any
+          // text scale, on any platform, for as long as these chips exist.
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 for (final s in _statuses)
                   Padding(

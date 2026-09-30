@@ -231,6 +231,81 @@ The assistant cannot give you a time. A person reviews it. If it has been
 sitting for a while, say so in the chat and it will be flagged to the team
 rather than left to wait.
 
+## Prices, fees and charges
+
+**Why is the fare different for a bajaj than for a big truck?**
+
+Because they cost the platform different amounts to dispatch. Aliob charges
+per category, not one flat rate: a three-wheeler, a car, a minibus and a heavy
+truck each have their own per-kilometre rate, base fare and minimum fare. You
+are shown the rate that applies to the vehicle you are actually booking, so
+the number you see is the number you pay.
+
+**Why is the price different in one city than another?**
+
+Fees can also be set per city. A ride in one city may carry a different rate
+from a ride in another, so the fee follows the city the trip actually starts
+in. If you travel to another city, the price is recalculated for that city
+rather than carrying the first city's rate with you.
+
+**Can I see a provider's fees before I order?**
+
+Yes. Open the provider's page and you will see their price range, and the
+products or services they have listed with their own prices. Any delivery,
+service or booking charge is shown before you confirm, so the total you see
+at checkout is the total you pay.
+
+**What is the difference between the platform fee and the provider's price?**
+
+The provider's price is what they set for their own work. The platform fee is
+the service charge Aliob adds on top to cover running the marketplace, keeping
+payments safe, and supporting the order. Both are shown as separate lines
+before you pay — you are never charged a combined figure you did not see.
+
+**What are points, and what are they for?**
+
+Points are earned as you use the platform and show your standing on the
+loyalty ladder. Your rank badge is on your home screen. Points are a sign of
+status and activity — they do not currently change prices or unlock paid
+features, so earning them is never a condition of getting the service you
+paid for.
+
+## Browsing providers, photos and galleries
+
+**How do I see what a provider actually looks like?**
+
+Every approved provider has a photo gallery. On the home screen, scroll to
+**All providers** to browse them side by side, or tap **Photos** on a
+provider's own page to see everything they have shown. Providers with photos
+show how many they have added, so you can tell at a glance who has shown
+their work.
+
+**I am a provider — how do I add my photos?**
+
+Open your business dashboard and tap **My Gallery** at the top of the screen.
+You can add photos, arrange their order, and remove any you no longer want.
+Photos you add are visible to customers on your provider page immediately.
+
+**The provider has no photo — should I avoid them?**
+
+No. A photo is not required to be approved, and a new business often has not
+added one yet. Look at their rating, their listings and their reviews, which
+are the better guide anyway.
+
+**Can I book a ride from the same screen where I browse providers?**
+
+Yes. The home screen has **Book a ride** at the top, next to **All
+providers**. Choose which vehicle you want, confirm the pickup area, and the
+request goes out to nearby drivers.
+
+**Why does the app ask for my exact area, not just the city?**
+
+To place your pickup accurately. Knowing the city alone is not precise enough
+to send a driver to the right street, so the app also works out your kebele or
+sub-city and shows it on the pickup field before you confirm. You can edit the
+pickup point on the map yourself if it is not right. If your location is off,
+turn on location services and try again — you can always set it manually.
+
 ## Payments and recharges
 
 **I sent a recharge and my wallet still shows the old balance.**

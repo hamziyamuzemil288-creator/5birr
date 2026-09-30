@@ -60,7 +60,100 @@ class _State extends State<AdminUserManagementScreen> {
     }
   }
 
-  Future<void> _approve(String userId) async {
+  /// The documents on a user row, as the embedded select returns them.
+  List<Map<String, dynamic>> _docsOf(Map<String, dynamic> user) =>
+      ((user['user_documents'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((d) => Map<String, dynamic>.from(d))
+          .toList();
+
+  /// The ID document, preferring a real identity document over OTHER.
+  Map<String, dynamic>? _idDoc(Map<String, dynamic> user) {
+    final docs = _docsOf(user);
+    const identity = {
+      'NATIONAL_ID',
+      'DRIVING_LICENSE_ID',
+      'PASSPORT',
+      'OTHER',
+    };
+    for (final wanted in identity) {
+      for (final d in docs) {
+        if (d['document_type'] == wanted) return d;
+      }
+    }
+    return docs.isEmpty ? null : docs.first;
+  }
+
+  /// Why this approval is worth a second look, or null if nothing is.
+  ///
+  /// `approve_user()` deliberately does not consult `user_documents`: the
+  /// account decision and the document verdict are two separate tracks, and
+  /// nothing warned the approver that they had diverged. The audit found an
+  /// admin could approve an account whose ID had been flagged
+  /// SUSPECTED_FRAUD, or whose document nobody had ever opened, with no
+  /// indication on screen at all.
+  ///
+  /// This is computed from the documents the query ALREADY embeds, so the
+  /// warning cannot drift from what is on screen and no extra round trip is
+  /// added to a list screen.
+  String? _approvalWarning(Map<String, dynamic> user) {
+    final doc = _idDoc(user);
+    if (doc == null) {
+      return 'No ID document has been uploaded for this account.';
+    }
+    final status = (doc['verification_status'] ?? '').toString();
+    switch (status) {
+      case 'SUSPECTED_FRAUD':
+        return 'The ID document was FLAGGED as suspected fraud. '
+            'Approving this account approves a flagged identity.';
+      case 'REJECTED':
+        return 'The ID document was already REJECTED by an administrator.';
+      case 'VERIFIED':
+      case 'AUTO_APPROVED':
+        return null; // checked; nothing to warn about
+      default:
+        return 'The ID document has not been reviewed by anyone yet '
+            '(${status.isEmpty ? 'no verdict' : status}).';
+    }
+  }
+
+  Future<void> _approve(String userId, {Map<String, dynamic>? user}) async {
+    // Ask first, but only when there is something to say. An unreviewed
+    // document is a reason to look, not a reason to block.
+    final warning = user == null ? null : _approvalWarning(user);
+    if (warning != null) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Approve with an unreviewed ID?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(warning,
+                  style: const TextStyle(fontSize: 13, height: 1.4)),
+              const SizedBox(height: 12),
+              Text('Name: ${user?['full_name'] ?? 'Unknown'}',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.warning),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Approve anyway'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
+    }
+
     try {
       await Supabase.instance.client.rpc('approve_user', params: {
         'p_user_id': userId,
@@ -258,6 +351,32 @@ class _State extends State<AdminUserManagementScreen> {
                                     const SizedBox(height: 6),
                                     _PointsLine(
                                         userId: u['id'] as String),
+                                    // The document verdict, on the row. The
+                                    // ID could be flagged fraud and the card
+                                    // said nothing about it.
+                                    if (_docBadge(u) case final badge?) ...[
+                                      const SizedBox(height: 6),
+                                      Row(
+                                        children: [
+                                          Icon(badge.icon,
+                                              size: 14, color: badge.color),
+                                          const SizedBox(width: 5),
+                                          Expanded(
+                                            child: Text(
+                                              badge.label,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontSize: 11.5,
+                                                height: 1.3,
+                                                color: badge.color,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
                                     if (u['national_id'] != null &&
                                         (u['national_id'] as String)
                                             .isNotEmpty)
@@ -288,8 +407,9 @@ class _State extends State<AdminUserManagementScreen> {
                                         children: [
                                           Expanded(
                                             child: ElevatedButton(
-                                              onPressed: () =>
-                                                  _approve(u['id']),
+                                              onPressed: () => _approve(
+                                                  u['id'] as String,
+                                                  user: u),
                                               style:
                                                   ElevatedButton.styleFrom(
                                                 backgroundColor:
@@ -340,6 +460,51 @@ class _State extends State<AdminUserManagementScreen> {
         ],
       ),
     );
+  }
+
+  /// The one-line document verdict for a card, or null when the document is
+  /// verified (or there is nothing worth saying).
+  ///
+  /// Separate from [_approvalWarning] on purpose: that one is a sentence for
+  /// a dialog and asks whether to proceed, this one is a badge that has to
+  /// fit in a card row.
+  ({IconData icon, Color color, String label})? _docBadge(
+      Map<String, dynamic> user) {
+    final doc = _idDoc(user);
+    if (doc == null) {
+      return (
+        icon: Icons.help_outline,
+        color: AppTheme.warning,
+        label: 'No ID document uploaded'
+      );
+    }
+    switch ((doc['verification_status'] ?? '').toString()) {
+      case 'SUSPECTED_FRAUD':
+        return (
+          icon: Icons.report_problem_outlined,
+          color: AppTheme.error,
+          label: 'ID flagged as suspected fraud — review before approving'
+        );
+      case 'REJECTED':
+        return (
+          icon: Icons.gpp_bad_outlined,
+          color: AppTheme.error,
+          label: 'ID document was rejected'
+        );
+      case 'VERIFIED':
+      case 'AUTO_APPROVED':
+        return (
+          icon: Icons.verified_outlined,
+          color: AppTheme.success,
+          label: 'ID verified'
+        );
+      default:
+        return (
+          icon: Icons.pending_outlined,
+          color: AppTheme.warning,
+          label: 'ID not reviewed yet'
+        );
+    }
   }
 
   Widget _chip(String value, String label) {

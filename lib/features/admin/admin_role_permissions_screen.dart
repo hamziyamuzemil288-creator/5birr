@@ -177,34 +177,40 @@ class _AdminRolePermissionsScreenState
                   : Column(
                       children: [
                         // Person selector.
-                        SizedBox(
-                          height: 56,
-                          child: ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 10),
-                            itemCount: _staff.length,
-                            itemBuilder: (_, i) {
-                              final s = _staff[i];
-                              final selected =
-                                  _selected?['id'] == s['id'];
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: ChoiceChip(
-                                  label: Text(
-                                    '${s['name']} · ${_label(s)}',
-                                    style: const TextStyle(fontSize: 12),
+                        //
+                        // Row inside a horizontal SingleChildScrollView, not
+                        // SizedBox(height: 56) + ListView. The fixed box was
+                        // sized to exactly chip-height + padding, so it
+                        // overflowed at any system text scale above 1.0, and
+                        // these labels are variable-length staff names, so
+                        // there was no safe constant to raise it to. The
+                        // scroll view gives the Row unbounded width and its
+                        // own intrinsic height — no overflow, at any scale.
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              for (final s in _staff)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ChoiceChip(
+                                    label: Text(
+                                      '${s['name']} · ${_label(s)}',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                    selected: _selected?['id'] == s['id'],
+                                    onSelected: (_) {
+                                      setState(() {
+                                        _selected = s;
+                                        _syncSelection();
+                                      });
+                                    },
                                   ),
-                                  selected: selected,
-                                  onSelected: (_) {
-                                    setState(() {
-                                      _selected = s;
-                                      _syncSelection();
-                                    });
-                                  },
                                 ),
-                              );
-                            },
+                            ],
                           ),
                         ),
                         const Divider(height: 1),

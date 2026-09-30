@@ -16,6 +16,10 @@ describing your problem from scratch:
   landed
 - **An order or a ride problem** — wrong, missing, late, or a driver issue
 - **Your account** — profile, phone number, password, or closing your account
+- **Prices and fees** — why a fare differs by vehicle type or by city, and
+  what the platform fee covers
+- **Finding a provider** — browsing providers and seeing their photos before
+  you choose
 
 Pick the closest one and it takes you straight to the right screen, or answers
 with the exact steps. If none of them fit, just describe what is going on and
@@ -33,6 +37,18 @@ than the common ones.
 - **Answer how-to questions** about every part of the app: signing up,
   buying and orders, escrow and payments, wallet recharges, fees, points,
   rides, and provider tools.
+- **Explain prices.** Ask it why a fare differs by vehicle type or by city,
+  what the platform fee covers, or what a particular booking will cost — it
+  explains that fees are set per category and per city, so a three-wheeler and
+  a heavy truck are not charged the same, and the rate follows the city the
+  trip starts in.
+- **Talk you through finding a provider.** Ask how to see a provider's photos,
+  where their gallery is, or how to browse providers before choosing. It will
+  point you at **All providers** on the home screen and the photos on a
+  provider's page.
+- **Explain pickup locations.** Ask why the app asks for your area or kebele
+  rather than just the city — it drives the driver to the right street, and
+  you can always set the pickup point yourself on the map.
 - **Check your live account status** when you ask, for example:
   - "What is my wallet balance?"
   - "Where is my order?" / "Track my order"

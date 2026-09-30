@@ -1410,6 +1410,112 @@ void main() {
     });
   });
 
+  group('staff city scope and per-category fees', () {
+    test('a staff city actually stops something, on every surface', () async {
+      // The whole point of a staff city is that it FILTERS. A column that is
+      // recorded, displayed and never tested is worse than no column at all,
+      // because a manager reads the chip on the staff card, believes the
+      // queue below it is scoped, and acts on it. Four separate surfaces can
+      // each be the one that was missed, so each is named separately — one
+      // combined boolean would tell us that "something" is unguarded and not
+      // which.
+      expect(await ok('assert_staff_separation_survives_city_scope'), isTrue,
+          reason: 'The registration queue no longer separates staff from '
+              'registered persons once a city scope is applied — so a staff '
+              'member shows up in the person list, or a registration the city '
+              'does not cover is still queued. The assertion names which '
+              'branch lost the guard.');
+
+      expect(
+          await ok('assert_staff_city_scope_covers_the_task_feed'), isTrue,
+          reason: 'staff_task_feed carries fewer city scopes than category '
+              'scopes, so a categorized branch of the staff work queue is '
+              'filtered by category but not by city — or '
+              'verify_payment_proof no longer enforces the city scope, which '
+              'would let a city-scoped person verify another city\'s payment. '
+              'The assertion counts both.');
+    });
+
+    test('the per-category and per-city fee surface is readable', () async {
+      // These are the reports an admin reads to answer "what does a bajaj in
+      // Hawassa cost?". If the catalogue cannot be read back, the editor
+      // saves settings nobody can verify, and the fee table is a write-only
+      // surface with no confirmation that it applied.
+      final (detail, error) =
+          await rpcTextDiagnosed('category_fee_surface_report');
+      expect(detail, isNotNull,
+          reason: 'category_fee_surface_report() could not run, so nothing '
+              'verifies that the per-category / per-city fee settings are '
+              'readable and complete. If this is null WITH the function '
+              'present, read the diagnostic before changing anything: it is '
+              'either a genuine finding or a PostgREST cache problem, and '
+              'those are not the same. Diagnostic: $error');
+      // ignore: avoid_print
+      print('    category fee surface -> $detail');
+    });
+
+    test('the city scope report agrees with the guards that enforce it', () async {
+      // The report is what a human reads to answer "is the city scope real".
+      // A report that says "wired" while a guard is missing is worse than no
+      // report, so this asks the database to count both and compare.
+      final (detail, error) =
+          await rpcTextDiagnosed('staff_city_scope_report');
+      expect(detail, isNotNull,
+          reason: 'staff_city_scope_report() could not run, so the city scope '
+              'has no readable evidence that it is enforced. Diagnostic: '
+              '$error');
+      // ignore: avoid_print
+      print('    staff city scope -> $detail');
+    });
+
+    test('a provider may only work once verified, paid and funded', () async {
+      // The product rule: documents verified, activation fee paid, wallet able
+      // to cover the platform fee, before posting a listing, adding a vehicle,
+      // claiming a ride or accepting an order.
+      //
+      // Two of those were not true before migration 0113. The document half
+      // was satisfied by UPLOADING an ID — provider_docs_satisfied() admits
+      // MANUAL_REVIEW, which is the state a document row is born in — and
+      // claim_ride and transition_order_status never consulted the gate at
+      // all, so an unfunded provider could take a rider's trip. Both are
+      // invisible from the client, which is why this asserts the wiring.
+      expect(await ok('assert_provider_fulfilment_gate_is_wired'), isTrue,
+          reason: 'The fulfilment gate is not fully wired. The named failure '
+              'is the one that is true: a surface that hands out work without '
+              'consulting the gate, a strict document check that has gone back '
+              'to accepting MANUAL_REVIEW ("verified" meaning "uploaded"), or a '
+              'blocker that is no longer produced.');
+    });
+
+    test('the other side of an order or a ride is told', () async {
+      // A notification is the only thing that makes a marketplace reactive.
+      // Three of the most important events fired silently: a provider was
+      // never told an order arrived, no driver was ever told a ride was
+      // nearby, and a rider was never told their ride had a driver. All three
+      // "worked" — which is why they survived: the counterparty found out by
+      // polling, and polling raises nothing.
+      expect(await ok('assert_counterparties_are_notified'), isTrue,
+          reason: 'A counterparty is no longer notified. The assertion names '
+              'which one: the provider on a new order, the nearby drivers on a '
+              'new ride, or the rider on a claim.');
+    });
+
+    test('a per-category fee resolves for the case the UI actually asks for',
+        () async {
+      // The editor's contract: a BLANK field means inherit, and the effective
+      // value is shown as a hint that is never seeded into a controller. If
+      // the resolver cannot answer for a category with no row of its own, the
+      // screen either shows "null" as a price or invents one. This returns a
+      // BOOLEAN, so it goes through ok() -- reading it as text would return
+      // null and fail as "could not run" on a function that works fine.
+      expect(await ok('assert_category_fees_are_wired'), isTrue,
+          reason: 'category_fee() does not fall back to the inherited '
+              'default, a fee column is NOT NULL where the blank-means-inherit '
+              'contract requires NULL, a fee is negative or a commission is '
+              'over 100, or a client can still write the fee table directly.');
+    });
+  });
+
   group('money and approval notifications', () {
     // Everything in this group is a WRITE test, run inside a subtransaction
     // that is always rolled back. They are not read-only because the property

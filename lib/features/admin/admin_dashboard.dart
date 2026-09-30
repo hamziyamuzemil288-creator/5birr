@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+// `AuthState` is hidden because GoTrue also exports one and they are
+// unrelated: this file's `_initials(AuthState auth)` takes the app's, which
+// carries `.profile` (a UserProfile). GoTrue's has no `profile` at all.
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
@@ -141,6 +144,29 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   bool _can(String perm) =>
       _myPerms.contains('*') || _myPerms.contains(perm);
 
+  /// Up to two initials for the account avatar, from whatever the signed-in
+  /// profile carries. Falls back to a single letter rather than an empty
+  /// avatar, so the menu button always has something to tap and read.
+  ///
+  /// Derived from the auth state rather than a second profile query: this is
+  /// decoration, and a failure to load a name must not put an error on the
+  /// dashboard.
+  String _initials(AuthState auth) {
+    final source = (auth.profile?.fullName ?? '').trim().isNotEmpty
+        ? auth.profile!.fullName
+        : (auth.user?.email ?? '');
+    final parts = source
+        .trim()
+        .split(RegExp(r'[\s@._-]+'))
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) {
+      return parts.first.substring(0, 1).toUpperCase();
+    }
+    return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
@@ -185,9 +211,55 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                 ),
               ),
             ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => ref.read(authProvider.notifier).signOut(),
+          // The account menu. The admin app bar previously offered exactly two
+          // actions — CEO workspace and a bare logout — so an administrator had
+          // no way to reach /account/password from the surface they actually
+          // work in, even though the screen and its Edge Function both existed
+          // and worked. Sign-out moves in here so the bar does not lose it.
+          PopupMenuButton<String>(
+            tooltip: 'Account',
+            icon: CircleAvatar(
+              radius: 15,
+              backgroundColor: AppTheme.primaryGreen.withOpacity(0.15),
+              child: Text(
+                _initials(auth),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.primaryGreenDark,
+                ),
+              ),
+            ),
+            onSelected: (value) {
+              if (value == 'password') {
+                context.push('/account/password');
+              } else if (value == 'logout') {
+                ref.read(authProvider.notifier).signOut();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem<String>(
+                value: 'password',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.lock_outline, size: 20,
+                      color: AppTheme.primaryGreenDark),
+                  title: Text('Change password',
+                      style: TextStyle(fontSize: 14)),
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'logout',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.logout, size: 20, color: AppTheme.error),
+                  title: Text('Sign out',
+                      style: TextStyle(fontSize: 14, color: AppTheme.error)),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -475,13 +547,36 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           if (ref.read(authProvider).isAdmin)
                             _menuCard(Icons.settings_outlined, 'System Settings',
                                 'Fees, points & rank rules', () => context.push('/admin/settings')),
-                            // Every money value the platform charges, editable
-                            // live. Separate from System Settings because a fee
-                            // change is a money decision with its own history,
-                            // not one row among dozens of knobs.
+                          // Every money value the platform charges, editable
+                          // live. Separate from System Settings because a fee
+                          // change is a money decision with its own history,
+                          // not one row among dozens of knobs.
+                          //
+                          // This card carries its OWN `if`, and that is not
+                          // cosmetic. It used to be written as a second
+                          // argument to the System Settings `if` above, and in
+                          // a Dart list literal `[if (c) a, b]` the `if` takes
+                          // only `a` — `b` became an unconditional element.
+                          // Every staff member therefore saw Fees & Pricing
+                          // regardless of isAdmin, while System Settings was
+                          // correctly hidden from them. Server-side
+                          // admin_update_setting() still refused the write, so
+                          // this never cost money, but it advertised a money
+                          // screen to people who cannot use it.
+                          if (ref.read(authProvider).isAdmin)
                             _menuCard(Icons.payments_outlined, 'Fees & Pricing',
                                 'Commission, activation and ride fares',
                                 () => context.push('/admin/fees')),
+                          // The override layer above Fees & Pricing: what a
+                          // bajaj pays differs from a big truck, and Addis
+                          // Ababa differs from Hawassa. Without this card the
+                          // per-category rates exist in the schema with no way
+                          // to reach them.
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.price_change_outlined,
+                                'Category & City Fees',
+                                'Bajaj vs truck · per-city rates',
+                                () => context.push('/admin/fees/categories')),
                         ],
                       ),
                     ),

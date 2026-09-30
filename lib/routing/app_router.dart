@@ -62,6 +62,7 @@ import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/admin/admin_settings_screen.dart';
 import '../features/admin/fee_settings_screen.dart';
+import '../features/admin/category_fee_settings_screen.dart';
 import '../features/appeal/appeal_screen.dart';
 import '../features/appeal/my_appeals_screen.dart';
 import '../features/settings/account_deletion_screen.dart';
@@ -490,6 +491,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // admin_update_setting() — a non-owner admin sees the values and why
       // they cannot change them, instead of buttons that would fail.
       GoRoute(path: '/admin/fees', builder: (_, __) => const FeeSettingsScreen()),
+      // Per-category and per-city overrides. Separate from /admin/fees
+      // because that one edits the global rates in system_settings and this
+      // one edits what a specific category (or a specific category in a
+      // specific city) pays instead.
+      GoRoute(
+          path: '/admin/fees/categories',
+          builder: (_, __) => const CategoryFeeSettingsScreen()),
 
       // ── Help (signed-in users) ──
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),

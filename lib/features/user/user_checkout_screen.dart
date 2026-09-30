@@ -62,6 +62,22 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   bool _providerHasBalance = true;
   String _providerName = 'The provider';
 
+  /// The provider's category and city, which is what the commission is
+  /// resolved AGAINST.
+  ///
+  /// These exist because 0107 made the commission per-category and per-city.
+  /// The quote below used to call the one-argument
+  /// `platform_transaction_fee()`, which resolves the GLOBAL rate, while
+  /// `deduct_transaction_fee()` charges `platform_transaction_fee_for()` with
+  /// the provider's real category and city. The moment an admin set a
+  /// category or city override, the figure on this screen stopped being the
+  /// figure the provider is charged — and the old comment here claimed the
+  /// opposite, which is how it survived review. Null until loaded, and null
+  /// is a valid input that means "fall back to the global rate", so a failed
+  /// provider read degrades to exactly the old behaviour.
+  String? _feeCity;
+  String? _feeCategoryId;
+
   /// Re-fetches the provider's activation/wallet state. Called on load and
   /// again after returning from the waiting screen, so a provider who has just
   /// recharged does not bounce the buyer straight back to waiting.
@@ -69,13 +85,23 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     try {
       final prov = await Supabase.instance.client
           .from('public_provider_profiles')
-          .select('business_name, registration_fee_paid, status')
+          .select(
+              'business_name, registration_fee_paid, status, category_id, city')
           .eq('id', widget.providerId)
           .maybeSingle();
       if (prov != null) {
         _providerName = (prov['business_name'] as String?)?.isNotEmpty == true
             ? prov['business_name'] as String
             : _providerName;
+        // Raw city, NOT pre-normalised: `category_fee()` does
+        // `lower(btrim(coalesce(p_city,'')))` itself, so normalising here
+        // would be a second place for the rule to live and a second place for
+        // it to be wrong.
+        final rawCity = (prov['city'] as String?)?.trim();
+        _feeCity = (rawCity == null || rawCity.isEmpty) ? null : rawCity;
+        final rawCat = prov['category_id']?.toString();
+        _feeCategoryId =
+            (rawCat == null || rawCat.isEmpty) ? null : rawCat;
         _providerActivated = (prov['registration_fee_paid'] as bool?) == true &&
             prov['status'] == 'APPROVED';
         final wallet = await Supabase.instance.client
@@ -93,9 +119,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   }
 
   /// The platform commission for this order, quoted live by
-  /// platform_transaction_fee(). Display only — the charge itself is made
-  /// server-side by deduct_transaction_fee(), which calls that same function,
-  /// so this figure cannot drift from what the provider is actually charged.
+  /// platform_transaction_fee_for() using the SAME category, city and
+  /// is_product flag that deduct_transaction_fee() will use, so this figure
+  /// cannot drift from what the provider is actually charged.
+  ///
+  /// The last argument is `true` because the charge passes
+  /// `p_order_id IS NOT NULL` — this quote is for an order. Getting that
+  /// backwards would quote the product rate for an order, or the order rate
+  /// for a booking.
   double? _platformFee;
 
   @override
@@ -116,18 +147,46 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final all = await CartService.instance.getCart();
       final items =
           all.where((i) => i.providerId == widget.providerId).toList();
-      // The commission is GREATEST(transaction_fee_percent% of the order,
-      // transaction_fee_min) and is the CEO's to change at any time, so it is
-      // quoted from the server rather than recomputed here. Informational:
-      // hide the row entirely if it cannot be loaded.
+      // BEFORE the fee quote. This read is what populates _feeCategoryId and
+      // _feeCity; quoting first would resolve them as null, fall back to the
+      // global rate, and silently reintroduce exactly the drift this quote
+      // exists to remove. Ordering, not correctness, is the whole fix here.
+      await _refreshProviderReadiness();
+      // The commission is resolved per category and per city, and it is the
+      // CEO's to change at any time, so it is quoted from the server rather
+      // than recomputed here. The category, city and is_product flag are the
+      // provider's own, so the quote and the charge resolve identically.
+      // Informational: hide the row entirely if it cannot be loaded.
       double? platformFee;
       try {
         final subtotal = items.fold<double>(0.0, (sum, i) => sum + i.lineTotal);
-        final quoted = await Supabase.instance.client
-            .rpc('platform_transaction_fee', params: {'p_amount': subtotal});
+        final quoted = await Supabase.instance.client.rpc(
+          'platform_transaction_fee_for',
+          params: {
+            'p_amount': subtotal,
+            'p_category_id': _feeCategoryId,
+            'p_city': _feeCity,
+            // This quote is for an order, matching deduct_transaction_fee()'s
+            // `p_order_id IS NOT NULL`.
+            'p_is_product': true,
+          },
+        );
         final v = (quoted as num?)?.toDouble();
         if (v != null && v > 0) platformFee = v;
-      } catch (_) {}
+      } catch (_) {
+        // Any argument the server does not recognise (an older deployment
+        // that has not run 0107 yet) raises rather than returning null, so
+        // fall back to the global rate. A hidden row is better than a wrong
+        // one, and the server still charges the truth either way.
+        try {
+          final subtotal =
+              items.fold<double>(0.0, (sum, i) => sum + i.lineTotal);
+          final quoted = await Supabase.instance.client
+              .rpc('platform_transaction_fee', params: {'p_amount': subtotal});
+          final v = (quoted as num?)?.toDouble();
+          if (v != null && v > 0) platformFee = v;
+        } catch (_) {}
+      }
       // Skip the ID upload for buyers who already verified one at signup
       // (older accounts / re-installed app). Best-effort: on failure the
       // checkout keeps asking for the ID, which is always safe.
@@ -144,8 +203,6 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
           if (existing != null) _needsNationalId = false;
         }
       } catch (_) {}
-      // Provider readiness check.
-      await _refreshProviderReadiness();
 
       // Does anything in this cart need the provider to confirm it is
       // available? One gated item gates the order: the buyer pays for the
