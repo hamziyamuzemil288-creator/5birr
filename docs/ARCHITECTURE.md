@@ -1254,6 +1254,48 @@ pre-existing false positives** across applied history, and the new `LANGUAGE sql
 path reports zero across all 310 migrations — so it is not simply a louder
 check. `falsify_sql_body_syntax.py` cases A–E pin all of it.
 
+**A refactor that keeps every gate green and drops behaviour.** 0107-0114
+applied cleanly. Then Connectivity ran against the real schema: **76 passed, 6
+failed.** The six are worth reading as three kinds, because only one of them was
+a parsing problem:
+
+| Kind | Findings |
+|---|---|
+| **regression** | 0073 wired `fee_enabled_transaction` into `platform_transaction_fee` and `fee_enabled_ride` into `calculate_fare_estimate`. 0107 restated both as delegations to new category-aware resolvers — a correct refactor — and the switch reads went with the old bodies. **Both of the CEO's switches were stored and inert** |
+| **runtime** | a function call qualified with `.id`; `bool_and()` over the `information_schema.yes_or_no` domain; `AS x` naming a *table* where a column was meant (`column "x" does not exist`); and `orders.order_number`, a column from migration 0037, which is **below the baseline** and so was recorded as applied *without ever being executed* |
+| **false red** | two of my own assertions |
+
+The last row of the middle band is the trap this repo keeps setting: 0037
+created `order_number`, `order_number_sequences` and `allocate_order_number()`,
+and none of them exist on the live database. 0114 read `orders.order_number` and
+so **failed every order creation** — the one path the product cannot survive.
+
+Two of my assertions were red on correct code, which is worse than no check
+because it teaches people to ignore red. Both searched a whole function *body*
+for a needle a correct body also contains: `MANUAL_REVIEW` appears in
+`coalesce(d.verification_status, 'MANUAL_REVIEW')` **before** the accepted
+`IN ('AUTO_APPROVED', 'VERIFIED')` list, so `'%MANUAL_REVIEW%AUTO_APPROVED%'`
+matched; and `find_nearby_drivers` sits one level down, inside
+`notify_nearby_drivers()`, so requiring it at the call site flagged a working
+function. The needles now mirror the structure: the docs check inspects only
+`IN (...)` lists, and the ride check follows the helper and verifies *it* still
+reaches the fan-out.
+
+Fixing these broke **three falsifiers**, every one for the reason this project
+keeps re-learning: **an anchor that a later edit invalidates passes while
+proving nothing.** 0115 restates six functions, so each falsifier's mutation
+landed in an older file that the check no longer reads. Two of the three also
+exposed a *check* with the same flaw — `check_category_fees_are_wired` located
+its storage migration as "the last file mentioning `category_fee_settings`",
+which 0115 mentions in a comment. Both now go through one shared
+`category_fee_storage_migration()`, and mutation-based cases use
+`authoritative_patch()`, which raises on a missing anchor instead of returning
+an empty patch. `check_fee_switches_survive_restatement()` reads the
+(function, switch) pairs **from 0073's own assertion** rather than retyping
+them, and searches the function body rather than the file — its first version
+searched the file and passed a mutation that deleted the switch, because
+0115's comments still named it.
+
 **A static check cannot find a Dart compile error.** 39 checks, 12 falsifiers
 and four gates all passed while the app did not compile. The gap was structural,
 not an oversight: `tools/harness/static_checks.py` reads Dart as *text*, so

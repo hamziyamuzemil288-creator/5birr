@@ -69,11 +69,13 @@ def main() -> int:
         return 1
     print("[ ok ] real sources are green")
 
-    # Locate the fee migration and the screen, the way the check does.
-    fee_migration = None
-    for candidate in sc.migration_files():
-        if "category_fee_settings" in sc._read(candidate):
-            fee_migration = candidate
+    # Locate the fee migration and the screen, the way the check does --
+    # through the shared locator, not a second copy of the rule. This used to
+    # be "the last migration mentioning category_fee_settings", which after
+    # 0115 restated an assertion that READS that table name became 0115: a
+    # file with no table definition in it. Every mutation below then landed
+    # nowhere and the cases passed while proving nothing.
+    fee_migration = sc.category_fee_storage_migration()
     if fee_migration is None:
         print("[FAIL] could not find the fee migration")
         return 1

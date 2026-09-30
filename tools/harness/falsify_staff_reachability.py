@@ -231,14 +231,18 @@ def main() -> int:
     # J. the assertion pinning the feed stops pinning it. The feed body would
     #    still carry the guard TODAY, so only the assertion catches this -- and
     #    it is what makes the pin survive tomorrow's restatement.
+    #    Patched through authoritative_patch: 0115 restates this assertion, so
+    #    mutating 0112's copy left the live definition intact and the case
+    #    passed while proving nothing.
     ok &= expect_red(
         "J: assert_staff_city_scope_covers_the_task_feed stops pinning the guard",
-        {MONEY_MIGRATION: money.replace(
+        sc.authoritative_patch(
+            "assert_staff_city_scope_covers_the_task_feed",
             "  IF position('staff_scope_allows_city' in v_proof) = 0 THEN\n"
             "    RAISE EXCEPTION 'verify_payment_proof no longer enforces the city scope"
             " -- a city-scoped person could verify another city''s payment';\n"
             "  END IF;\n",
-            "")})
+            ""))
 
     if not ok:
         print("\nFALSIFICATION FAILED")

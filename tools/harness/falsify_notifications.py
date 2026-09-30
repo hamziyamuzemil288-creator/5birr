@@ -87,9 +87,13 @@ def main() -> int:
         enum_check)
 
     # B. a new order stops reaching the provider.
+    #    Patched through authoritative_patch, not the 0114 file: 0115 restates
+    #    create_order_secure, so mutating the older copy changed nothing the
+    #    check reads and this case went green while proving nothing.
     ok &= expect_red(
         "B: create_order_secure no longer tells the provider",
-        {TOLD: told.replace("    'ORDER_RECEIVED',", "    'APPROVAL',")},
+        sc.authoritative_patch(
+            "create_order_secure", "    'ORDER_RECEIVED',", "    'APPROVAL',"),
         told_check)
 
     # C. a new ride stops reaching drivers -- the fan-out is emptied rather

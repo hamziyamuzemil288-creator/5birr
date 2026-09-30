@@ -3284,6 +3284,116 @@ def _dart_body(src: str, name: str) -> str:
     return ""
 
 
+def check_fee_switches_survive_restatement() -> list[str]:
+    """Every function 0073 pinned to a fee switch must still read that switch.
+
+    The most expensive finding of this round, and the one no local gate could
+    see. 0073 wired `fee_enabled_transaction` into `platform_transaction_fee`
+    and `fee_enabled_ride` into `calculate_fare_estimate`. 0107 restated both
+    as delegations to new category-aware resolvers -- a correct refactor -- and
+    the switch reads went with the old bodies. Both switches became stored but
+    inert: the CEO's toggle saved, showed, and changed nothing the platform
+    charged.
+
+    `assert_fee_switches_are_wired()` catches this, but it is a SQL function
+    that only runs against a live database, so the failure surfaces AFTER the
+    deploy, in the connectivity run. This asks the same question of the source
+    the deploy will push, which is where it should have been caught.
+
+    The pairs are the ones 0073 pins, read from 0073 itself rather than
+    retyped, so adding a pair there cannot leave this check behind.
+    """
+    # Located by DEFINITION, not by mention. "The last migration containing
+    # the name" picked 0115, whose comments refer to the assertion while the
+    # pair list lives in 0073 -- the third time this session that a locator
+    # matching a bare string found the wrong file. A check that reads its own
+    # input from a comment is matching nothing.
+    pinner, _ = last_migration_defining("assert_fee_switches_are_wired")
+    if pinner is None:
+        return ["no migration defines assert_fee_switches_are_wired, so the "
+                "list of (function, switch) pairs cannot be read -- the "
+                "assertion was renamed or removed and this check is now "
+                "testing a hard-coded list that nothing maintains"]
+
+    src = _read(pinner)
+    pairs = re.findall(
+        r"\['([a-z_]+)',\s*'(fee_enabled_[a-z_]+)'\]", src)
+    if not pairs:
+        return ["%s: could not read any (function, switch) pair, so this "
+                "check is matching nothing" % pinner.name]
+
+    problems: list[str] = []
+    for fn, flag in pairs:
+        # `last_migration_defining` returns the whole FILE, so the FUNCTION
+        # BODY is what gets searched. Reading the file instead reported green
+        # on a mutation that deleted the switch, because 0115's comments
+        # mention `fee_enabled_transaction` while its code no longer read it
+        # -- the same "a mention is not an implementation" mistake this check
+        # exists to catch, made by the check itself. The falsifier found it.
+        path, sql = last_migration_defining(fn)
+        if path is None:
+            problems.append("%s() is missing" % fn)
+            continue
+        body = function_body(sql, fn)
+        if not body:
+            problems.append(
+                "%s(): %s defines it but the body could not be read, so this "
+                "check cannot tell whether the switch survived"
+                % (fn, path.name))
+            continue
+        if flag not in body:
+            problems.append(
+                "%s(): the authoritative definition in %s no longer reads "
+                "%s, so that CEO switch is stored but inert. 0073 wired it and "
+                "a later restatement dropped it -- this is what happened to "
+                "platform_transaction_fee and calculate_fare_estimate in 0107, "
+                "and the database only told us after the deploy."
+                % (fn, path.name, flag))
+    return problems
+
+
+def authoritative_patch(fn_name: str, old: str, new: str) -> dict[str, str]:
+    """A `{filename: patched source}` for the migration that WINS for `fn_name`.
+
+    For falsifiers that mutate a function body. Patching a specific old file
+    stops working the moment a later migration restates that function -- the
+    mutation lands nowhere, the check reads the newer body, and the case goes
+    green while proving nothing. That happened to three falsifiers when 0115
+    restated six functions, and it is silent, which is what makes it dangerous.
+
+    Raises (rather than returning an empty patch) when the anchor is absent,
+    so a stale needle is a loud failure and never a quiet pass.
+    """
+    path, _ = last_migration_defining(fn_name)
+    if path is None:
+        raise AssertionError("no migration defines %s" % fn_name)
+    src = _read(path)
+    if old not in src:
+        raise AssertionError(
+            "anchor missing for %s in its authoritative migration %s"
+            % (fn_name, path.name))
+    return {path.name: src.replace(old, new)}
+
+
+def category_fee_storage_migration() -> Path | None:
+    """The migration that CREATES `category_fee_settings`.
+
+    Shared by the check and its falsifier on purpose. Both used to locate it
+    with "the last migration mentioning the name", which is not the same
+    question: 0115 restates an assertion that READS information_schema for
+    'category_fee_settings', so the check demanded the resolver fallback chain
+    in a needle fix, and the falsifier mutated a file with no table definition
+    in it and passed while proving nothing. One locator, one answer.
+    """
+    found = None
+    for candidate in migration_files():
+        if re.search(
+                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?"
+                r"category_fee_settings\b", _read(candidate), re.IGNORECASE):
+            found = candidate
+    return found
+
+
 def check_category_fees_are_wired() -> list[str]:
     """Per-category / per-city fees must be reachable end to end.
 
@@ -3307,10 +3417,12 @@ def check_category_fees_are_wired() -> list[str]:
     """
     problems: list[str] = []
 
-    path = None
-    for candidate in migration_files():
-        if "category_fee_settings" in _read(candidate):
-            path = candidate
+    # The migration that CREATES the storage, not the last one to mention the
+    # name. Matching on the bare string picked 0115, which only restates an
+    # assertion that READS information_schema for 'category_fee_settings' --
+    # so the check demanded the resolver fallback chain in a file whose job is
+    # to fix two needles, and reported it as a fee-wiring defect.
+    path = category_fee_storage_migration()
     if path is None:
         return ["no migration creates category_fee_settings -- per-category "
                 "and per-city fees have no storage"]
@@ -4961,6 +5073,8 @@ CHECKS = [
      check_notification_types_exist),
     ("the other side of an order or a ride is told, not left to poll",
      check_provider_is_told_about_work),
+    ("a restatement cannot drop a fee switch another migration pinned",
+     check_fee_switches_survive_restatement),
     ("a migration seeding a blanket-guarded table lifts the guard first",
      check_guarded_tables_are_lifted_at_migration_time),
     ("a dynamic GRANT/REVOKE only names signatures the file actually creates",
