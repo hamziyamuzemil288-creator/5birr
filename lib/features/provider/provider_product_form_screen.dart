@@ -184,11 +184,42 @@ class _State extends State<ProviderProductFormScreen> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_providerId == null) return;
+    if (_providerId == null) {
+      // This used to be a bare `return`. The form looks complete, the profile
+      // row every write is scoped to could not be read, and no listing, no
+      // photo and no error were produced — which is what a provider experiences
+      // as "the Save button does nothing". A refused save has to say so.
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+          'Your provider profile could not be loaded, so nothing was saved. '
+          'Pull to refresh, then try again.',
+        ),
+        backgroundColor: AppTheme.error,
+        duration: Duration(seconds: 4),
+      ));
+      return;
+    }
     // Task 7: one-time document check before the first protected action.
     // Providers upload their ID documents here (not at signup) — after
     // their wallet recharge, exactly when they start selling.
-    if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
+    final documentsOk =
+        await ProviderDocGate.instance.ensureDocuments(context);
+    if (!documentsOk) {
+      // The gate returns false when its sheet is dismissed with "Later", and
+      // this branch used to return silently too: the provider tapped SAVE,
+      // the dialog closed, and no listing and no photo were uploaded with no
+      // message at all. Nothing was saved, so say nothing was saved.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+          'Nothing was saved. Verify your identity to upload listings and '
+          'photos.',
+        ),
+        backgroundColor: AppTheme.error,
+        duration: Duration(seconds: 4),
+      ));
+      return;
+    }
     // Block uploads until the one-time registration fee is paid.
     if (!_registrationFeePaid) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

@@ -691,6 +691,83 @@ void main() {
               'could write to.');
     });
 
+    test('every bucket the app uses exists, and is as visible as it claims',
+        () async {
+      // provider_gallery_screen.dart uploads to `provider-gallery`, and that
+      // bucket is created by exactly one migration — 0017 — which sits in the
+      // version range the deploy workflow marks applied WITHOUT executing it
+      // (the `Baseline migration history` step of deploy-supabase.yml). 0033
+      // then re-created the four buckets the app did have, which is why a
+      // gallery could be built, reviewed and shipped against a bucket that was
+      // never there: every upload failed with "Bucket not found" (404) and the
+      // screen could only show its generic upload error.
+      //
+      // The policy-shape assertion next to this one could not see it: a bucket
+      // with no policies and a bucket that does not exist look identical to a
+      // check that only reads pg_policies. This one reads storage.buckets
+      // through a SECURITY DEFINER function, because no client role can reach
+      // that table, and it fails BOTH ways — a public bucket that should be
+      // private leaks documents.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_app_buckets_exist');
+      expect(detail, isNotNull,
+          reason: 'assert_app_buckets_exist() could not run, so nothing '
+              'verified that the buckets the app writes to exist. '
+              'Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'A bucket the Flutter client writes to or fetches from is '
+              'missing, or its visibility is the opposite of what the app '
+              'expects: $detail');
+      // ignore: avoid_print
+      print('    app buckets -> $detail');
+    });
+
+    test('the activation fee is withheld and recorded as income', () async {
+      // The bug this closes: the registration/activation fee was collected on
+      // the provider's first approved recharge -- approve_wallet_recharge
+      // wrote a RECHARGE row carrying the withheld amount in platform_fee --
+      // but the admin income summary read only TRANSACTION_FEE and
+      // SUBSCRIPTION_FEE, so it rendered a confident ETB 0.00 while the money
+      // was in the ledger. The read-only money net could not see it either:
+      // assert_recent_approved_recharges_credited checks that a recharge was
+      // CREDITED, and the activation-fee branch is the one recharge that is
+      // deliberately credited LESS than it was charged.
+      //
+      // This is a WRITE test: it drives the real approved-recharge path inside
+      // a subtransaction that always rolls back, with registration_fee_paid
+      // = false so the withholding branch is actually exercised, and it reads
+      // provider_registration_fee rather than hardcoding the amount.
+      expect(await ok('assert_activation_fee_writes_income'), isTrue,
+          reason: 'approve_wallet_recharge no longer withholds the '
+              'registration fee from the first approved recharge, or no '
+              'longer records it as platform_fee on the RECHARGE ledger row, '
+              'so the fee is collected but invisible to income reporting.');
+    });
+
+    test('the income report counts every fee type, and says what it sees',
+        () async {
+      // assert_income_covers_every_fee_type() returns a diagnostic STRING
+      // rather than a boolean, so the CI log carries the live figures -- how
+      // many of each fee type exist, how much the activation fee has actually
+      // collected, and whether any arithmetic is impossible. It FAILS for bad
+      // arithmetic (a negative platform_fee, a fee larger than the gross) and
+      // for a RECHARGE that short-changed a provider without recording the
+      // withheld amount as a fee. It REPORTS, rather than fails, an activation
+      // fee that is switched on but has never fired on this deployment, since
+      // that is a state a fresh project is legitimately in.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_income_covers_every_fee_type');
+      expect(detail, isNotNull,
+          reason: 'assert_income_covers_every_fee_type() could not run, so '
+              'nothing verified that income reporting covers every fee path. '
+              'Diagnostic: $error');
+      expect(detail, isNot(startsWith('FAIL')),
+          reason: 'Income reporting does not cover every fee type, or the '
+              'ledger contains impossible arithmetic: $detail');
+      // ignore: avoid_print
+      print('    income coverage -> $detail');
+    });
+
     test('REPORT: the client write surface', () async {
       // A diagnostic, not an assertion. It prints so the next run shows the
       // LIVE state of what a client can write, which cannot be read from the

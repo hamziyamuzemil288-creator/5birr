@@ -113,7 +113,7 @@ gateway → `/staff/dashboard`, admin → `/admin`, vehicle → `/vehicle`, serv
 | Manage the provider gallery | ❌ | ✅ | ❌ | — | — |
 | Confirm availability on an order | ❌ | ✅ | ❌ | — | — |
 | Post and edit a vehicle | ❌ | ❌ | ✅ | — | — |
-| Attach **images** to a vehicle | ❌ | ❌ | **❌ see §5.3** | — | — |
+| Attach **images** to a vehicle | ❌ | ❌ | ✅ | — | — |
 | Claim and complete a ride | ❌ | ❌ | ✅ | — | — |
 | Rate the other side of a completed order | ✅ | ✅ | ✅ | — | — |
 | Approve users / providers / payments | ❌ | ❌ | ❌ | ✅ | ✅ |
@@ -350,6 +350,31 @@ because the fee amount is computed inside the fee function and is not available
 to the trigger. Approvals are single: the status notice and the welcome are
 different messages, and both are keyed, so a retried approval adds neither.
 
+**Every fee the platform charges is income, and every reader has to see all
+three.** Income lives in `wallet_transactions.platform_fee`, written by three
+paths: `deduct_transaction_fee()` (orders on `STARTED`, rides on `COMPLETED`,
+type `TRANSACTION_FEE`), `deduct_subscription_fee()` and the monthly scheduler
+(`SUBSCRIPTION_FEE`), and `approve_wallet_recharge()`, which withholds the
+one-time `provider_registration_fee` from a provider's **first** approved
+recharge and records it as `platform_fee` on a `RECHARGE` row (gross = the
+amount paid, net = amount − fee; every later recharge carries
+`platform_fee = 0`, so summing the column cannot double-count a deposit).
+
+Only the first two were counted for a long time, in both the admin income
+summary and the dashboard total. The result was not an error and not an empty
+state but a confident **ETB 0.00** on a deployment whose providers were still
+activating — and the activation fee is the only income a provider pays before
+completing an order. Both readers now query all three types, and
+`check_income_readers_count_every_fee_type()` fails the build if a file that
+folds `platform_fee` stops naming one of them.
+
+The related trap: the ledger assertions (`assert_recent_started_orders_have_-
+fees()`, `assert_recent_completed_rides_have_fees()`,
+`assert_income_ledger_consistent()`) are **existential-negative** — "no row that
+exists lacks its fee row". They pass with zero rows, so a green money suite is
+not evidence that any income exists. Read the counts before trusting the
+number on the screen.
+
 ---
 
 ## 5. Known gaps
@@ -380,13 +405,34 @@ by 33 files, including `async_view.dart` itself. The behaviour is mostly
 right, so this is consistency, not breakage.
 *Fix:* per-screen swap, mechanical.
 
-### 5.3 Vehicles cannot have images — **medium**
-`vehicle_images` has existed since migration 0001 with RLS and storage
-policies, and **no Dart file references it**. `vehicle_form_screen.dart` has
-no image picker at all, so a vehicle provider can post a vehicle but cannot
-photograph it. The database work is done; only the client is missing.
-*Fix:* mirror `add_gallery_image` / `delete_gallery_image` for vehicles in
-`vehicle_form_screen`.
+### 5.3 Vehicles cannot have images — **fixed, migration 97**
+`vehicle_images` had existed since migration 0001 with RLS and storage
+policies, and **no Dart file referenced it**: `vehicle_form_screen.dart` had
+no image picker at all, so a vehicle provider could post a vehicle but could
+not photograph it. The database work was written but unreachable, and the
+`vehicle-images` bucket was in the state `provider-gallery` had been in —
+declared only by `0012`, which is below the deploy baseline and therefore
+marked applied without ever being executed, so it did not exist live. The
+client and the bucket were the two halves of one gap.
+
+`0097` closes both. It creates `vehicle-images` with `ON CONFLICT DO UPDATE`
+(public, 5 MB, jpeg/png/webp), restates the four storage policies (`0012`
+never executed), restates the table and its owner/read policies, and revokes
+`INSERT`/`UPDATE`/`DELETE` from `anon`/`authenticated` so the app writes only
+through two new `SECURITY DEFINER` functions — `add_vehicle_image()` (which
+refuses a path outside the caller's own `{uid}/{vehicle_id}/` folder) and
+`delete_vehicle_image()` — mirroring the provider gallery's
+`add_gallery_image` / `delete_gallery_image` from `0055`. The Dart side is the
+consumer: `vehicle_form_screen.dart` now picks, uploads (path
+`{uid}/{vehicle_id}/{stamp}-{name}`), lists and removes vehicle photos, and
+the two silent early returns in its `_save()` now report their failure.
+
+The rule that the bucket, the policy and the upload path are introduced
+together is what `0096` stated when it deliberately left `vehicle-images` out.
+`check_client_buckets_are_created()` fails the build if a bucket appears in
+`lib/` without a migration the pipeline runs, and `assert_app_buckets_exist()`
+fails the live suite if it is not there or has the wrong visibility.
+`assert_bucket_writes_are_owner_scoped()` now covers all six buckets.
 
 ### 5.4 There is no Booking Provider role — **large**
 `AppUserRole` has four values and none of them is a booking provider. "Booking"
@@ -535,6 +581,9 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | The notifications inbox is owner-scoped and still guarded | `assert_notification_inbox_is_owner_only()` (migration 90) |
 | Every assertion the suite calls is reachable by the role the suite runs as | `assert_every_assertion_is_reachable()` (migration 91) |
 | Source-matching assertions compare against text that exists | `assert_source_needles_match()` (migration 93) |
+| Every storage bucket the client uses exists, and is as visible as the app expects | `assert_app_buckets_exist()` (migrations 96/97, six buckets) |
+| The activation fee is withheld as income, and a second recharge withholds nothing | `assert_activation_fee_writes_income()` (migration 98, a **write** test) |
+| The income report counts every fee type, and says what it measured | `assert_income_covers_every_fee_type()` (migration 98) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
@@ -550,6 +599,9 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | Pre-auth endpoints are deployed reachable (`--no-verify-jwt`) | `check_edge_functions_deployed()` + `PRE_AUTH_FUNCTIONS` |
 | A gated order is payable after confirmation, details and upload in one card | `check_availability_payment_flow()` |
 | The login screen reports its own outcome instead of spinning forever | `check_login_reports_its_own_outcome()` |
+| A bucket the client writes to is created by a migration the deploy workflow actually *executes* | `check_client_buckets_are_created()` |
+| Every income figure counts every fee type, the activation fee included | `check_income_readers_count_every_fee_type()` |
+| The activation fee is written where an income reader can see it | `check_activation_fee_is_recorded_as_income()` |
 
 Two lessons worth keeping, both paid for:
 
@@ -602,9 +654,40 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0093` | two more assertion needles corrected, and needles are declared + verified | an assertion searches for text that is not there and reports phantom defects |
 | `0094` | `assert_source_needles_match()` can actually run (subscripted FOR) | it raises 42804 on every call, so it silently asserts nothing |
 | `0095` | the needle table is two flat arrays walked by `unnest(a, b)` | the second dimension cost two deploy cycles: a refused `FOREACH`, then an empty loop |
+| `0096` | the five buckets the app then used are declared by a migration the pipeline runs, plus the `provider-gallery` policies `0017` never created | **the provider gallery cannot upload at all** — `provider-gallery` was created only by `0017`, which the workflow marks applied without executing it, so every upload failed with "Bucket not found" (404) and the screen could only show its generic error |
+| `0097` | the `vehicle-images` bucket, its policies and table restated, and `add_vehicle_image()` / `delete_vehicle_image()` for the new vehicle-photo client | **a vehicle cannot have a photograph** — the bucket was created only by `0012` (marked applied, never executed), so every vehicle-photo upload 404s; and nothing in `lib/` could write `vehicle_images` at all |
+| `0098` | `assert_activation_fee_writes_income()` (write test) and `assert_income_covers_every_fee_type()`, which report the fee figures instead of the vacuous existential negatives | the activation fee keeps being collected with nothing that proves it reaches the ledger, and the money assertions stay green on an empty wallet table |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
+
+**A bucket is only as deployed as the migration that creates it.** `0012`,
+`0017` and `0033` are all below the workflow's baseline, so the workflow records
+them as applied and never runs them; the four buckets that work today work
+because they were pasted into the SQL editor, and the two that were not pasted
+(the gallery, and `vehicle-images`) did not exist. `0096` re-declares those five
+with `ON CONFLICT DO UPDATE` and `0097` adds the sixth (`vehicle-images`) the
+same way, so the set no longer depends on that history, and
+`check_client_buckets_are_created()` fails the build if a bucket named in `lib/`
+is created only by a pre-baseline file. The failure mode this guards against is
+the one that shipped: `grep provider-gallery supabase/migrations/` found a
+creation statement and looked reassuring — in a file that is never executed.
+
+**The activation fee is income, and `0098` is what proves it.**
+`approve_wallet_recharge` withholds the one-time `provider_registration_fee`
+from a provider's first approved recharge and records it as `platform_fee` on a
+`RECHARGE` ledger row — not a `TRANSACTION_FEE` and not a `SUBSCRIPTION_FEE`. A
+reader that filtered on those two types only therefore rendered a confident
+`ETB 0.00` while the money had been collected. The read side is fixed (there are
+now two income readers, and `check_income_readers_count_every_fee_type()` fails
+the build if either stops counting `RECHARGE`); the write side is
+`assert_activation_fee_writes_income()`, the only test that drives the
+withholding branch — the existing wallet write test deliberately sets
+`registration_fee_paid = true` to keep its arithmetic simple. The three
+read-only money assertions (`assert_recent_approved_recharges_credited` and the
+ride/order fee checks) are existential negatives that pass with zero rows, which
+is why `assert_income_covers_every_fee_type()` returns the live figures, fails on
+impossible arithmetic, and says so when the ledger is empty.
 
 ### 7.2 Edge Functions
 
@@ -665,7 +748,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (64 tests). If it is red, the failure message names
+1. Connectivity CI green (67 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
@@ -686,6 +769,24 @@ the dashboard survives a deploy.
    `ok:`. A `FAIL:` prefix names the specific thing that regressed.
 9. `select public.assert_source_needles_match();` returns `ok:` — the
    source-matching assertions are comparing against text that exists.
+10. `select public.assert_app_buckets_exist();` returns `ok:` and names all
+   six buckets. A `FAIL:` prefix names the bucket that is missing or has the
+   wrong visibility: `product-images` / `provider-gallery` / `vehicle-images`
+   have to be there and public, `user-documents` / `payment-proofs` /
+   `payment-screenshots` have to stay private. This is the only check that can
+   see a missing bucket — the policy-shape assertion next to it reads
+   `pg_policies`, where a bucket with no policies and a bucket that does not
+   exist look identical.
+11. `select public.assert_activation_fee_writes_income();` returns `true`.
+   This is a **write** test that rolls itself back, and it is the only place the
+   activation-fee withholding branch is exercised rather than inspected: it
+   drives `approve_wallet_recharge` for a provider whose
+   `registration_fee_paid` is false and asserts the fee lands as `platform_fee`
+   on the `RECHARGE` row. Run it once after the first deploy of `0098`.
+   `select public.assert_income_covers_every_fee_type();` returns a string
+   beginning `ok:` that prints every fee figure — a `FAIL:` prefix means the
+   ledger's arithmetic is impossible or a recharge withheld money without
+   recording it as a fee.
 
 **Migrations must be applied before Connectivity CI can pass.** It runs against
 the live database, and it runs as the **`anon`** role: the suite builds

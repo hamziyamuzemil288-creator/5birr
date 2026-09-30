@@ -16,15 +16,26 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
   bool _loading = true;
   DateTime? _startDate;
   DateTime? _endDate;
-  String _typeFilter = 'ALL'; // ALL, TRANSACTION_FEE, SUBSCRIPTION_FEE
+  // ALL, TRANSACTION_FEE, SUBSCRIPTION_FEE, REGISTRATION_FEE
+  String _typeFilter = 'ALL';
 
-  // Both fee types come from wallet_transactions — the authoritative ledger
-  // the fee functions write. (The previous sources were permanently empty:
-  // orders.admin_fee is never written by any migration, and subscriptions
-  // rows are schedules with status ACTIVE/DUE/GRACE/SUSPENDED — never PAID —
-  // and have no amount column, so that query errored silently.)
+  // All three income categories come from wallet_transactions — the
+  // authoritative ledger the fee functions write. (The previous sources were
+  // permanently empty: orders.admin_fee is never written by any migration, and
+  // subscriptions rows are schedules with status ACTIVE/DUE/GRACE/SUSPENDED —
+  // never PAID — and have no amount column, so that query errored silently.)
+  //
+  // The third category was missing, and it is the only income a provider has
+  // paid before they complete an order: the one-time activation fee, withheld
+  // from their FIRST approved recharge by approve_wallet_recharge() and written
+  // into `platform_fee` on a RECHARGE ledger row (gross = the amount paid,
+  // net = amount − fee). Reading only TRANSACTION_FEE and SUBSCRIPTION_FEE left
+  // it out of every figure on this screen, so a deployment whose providers were
+  // still activating rendered a confident ETB 0.00 — no error and no empty
+  // state, just a wrong total — while money had been collected.
   List<Map<String, dynamic>> _txFees = [];
   List<Map<String, dynamic>> _monthlyFees = [];
+  List<Map<String, dynamic>> _activationFees = [];
   // A snackbar was the only signal here, and it disappears after a few
   // seconds — leaving a Total Income of 0.00 on screen with no indication
   // that the ledger was never actually read. Money totals must not look
@@ -83,6 +94,26 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       } else {
         _monthlyFees = [];
       }
+
+      // One-time activation fees. The withheld registration fee is stored as
+      // `platform_fee` on a RECHARGE row, so it is selected by type RECHARGE
+      // plus a non-zero platform_fee: every LATER recharge carries
+      // platform_fee = 0 and is the provider's own money, not income.
+      if (_typeFilter == 'ALL' || _typeFilter == 'REGISTRATION_FEE') {
+        final data = await client
+            .from('wallet_transactions')
+            .select(
+                'id, provider_id, order_id, ride_request_id, gross_amount, platform_fee, created_at')
+            .gte('created_at', startIso)
+            .lt('created_at', endIso)
+            .eq('transaction_type', 'RECHARGE')
+            .gt('platform_fee', 0)
+            .order('created_at', ascending: false)
+            .limit(500);
+        _activationFees = List<Map<String, dynamic>>.from(data as List);
+      } else {
+        _activationFees = [];
+      }
     } catch (e) {
       // Surface failures instead of silently rendering a fake zero summary.
       if (mounted) {
@@ -107,7 +138,10 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       0.0, (s, e) => s + ((e['platform_fee'] as num?)?.toDouble() ?? 0));
   double get _totalMonthlyAmount => _monthlyFees.fold(
       0.0, (s, e) => s + ((e['platform_fee'] as num?)?.toDouble() ?? 0));
-  double get _totalIncome => _totalTxAmount + _totalMonthlyAmount;
+  double get _totalActivationAmount => _activationFees.fold(
+      0.0, (s, e) => s + ((e['platform_fee'] as num?)?.toDouble() ?? 0));
+  double get _totalIncome =>
+      _totalTxAmount + _totalMonthlyAmount + _totalActivationAmount;
 
   Future<void> _pickDate({required bool isStart}) async {
     final picked = await showDatePicker(
@@ -155,6 +189,17 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
       });
     }
 
+    for (final fee in _activationFees) {
+      rows.add({
+        'Type': 'Provider Activation Fee',
+        'Ref': fee['provider_id'] ?? fee['id'] ?? '',
+        'Gross Amount': 'ETB ${fee['gross_amount'] ?? 0}',
+        'Fee Charged': 'ETB ${fee['platform_fee'] ?? 0}',
+        'Date': DateFormat('dd/MM/yyyy HH:mm')
+            .format(DateTime.parse(fee['created_at'])),
+      });
+    }
+
     await CsvExport.exportAndShare(
       columns: ['Type', 'Ref', 'Gross Amount', 'Fee Charged', 'Date'],
       rows: rows,
@@ -187,7 +232,10 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // Summary cards
+                  // Summary cards, two per row and every card Expanded. A row
+                  // of three would leave ~41dp of content width on a 360dp
+                  // phone once the theme's 16dp card margin is applied twice to
+                  // each card, which is narrower than "ETB 0.00" at 18pt.
                   Row(
                     children: [
                       Expanded(
@@ -210,11 +258,26 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  _summaryCard(
-                    'Total Income',
-                    'ETB ${_totalIncome.toStringAsFixed(2)}',
-                    AppTheme.gold,
-                    Icons.account_balance_wallet,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _summaryCard(
+                          'Activation Fees',
+                          'ETB ${_totalActivationAmount.toStringAsFixed(2)}',
+                          AppTheme.info,
+                          Icons.verified_user,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _summaryCard(
+                          'Total Income',
+                          'ETB ${_totalIncome.toStringAsFixed(2)}',
+                          AppTheme.gold,
+                          Icons.account_balance_wallet,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 16),
 
@@ -262,12 +325,12 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                             ],
                           ),
                           const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              _filterChip('ALL'),
-                              _filterChip('TRANSACTION_FEE'),
-                              _filterChip('SUBSCRIPTION_FEE'),
-                            ],
+                          IncomeFilterChips(
+                            value: _typeFilter,
+                            onChanged: (type) {
+                              setState(() => _typeFilter = type);
+                              _load();
+                            },
                           ),
                         ],
                       ),
@@ -292,13 +355,21 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                                     Icon(Icons.receipt_long,
                                         size: 16, color: AppTheme.primaryGreen),
                                     const SizedBox(width: 6),
-                                    Text(
-                                        'Fee #${(tx['id'] ?? '').toString().substring(0, 8)}',
-                                        style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            color: AppTheme.textPrimary)),
-                                    const Spacer(),
+                                    // Expanded, not a bare Text: this row's
+                                    // children used to be all inflexible (two
+                                    // Texts and a Spacer), so a longer fee id
+                                    // plus a larger platform fee (or a raised
+                                    // text scale) overflowed the card instead
+                                    // of ellipsizing.
+                                    Expanded(
+                                      child: Text(
+                                          'Fee #${(tx['id'] ?? '').toString().substring(0, 8)}',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppTheme.textPrimary)),
+                                    ),
                                     Text('ETB ${tx['platform_fee'] ?? 0}',
                                         style: const TextStyle(
                                             fontSize: 12,
@@ -340,13 +411,15 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                                     Icon(Icons.calendar_month,
                                         size: 16, color: AppTheme.teal),
                                     const SizedBox(width: 6),
-                                    Text(
-                                        'Fee #${(sub['id'] ?? '').toString().substring(0, 8)}',
-                                        style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            color: AppTheme.textPrimary)),
-                                    const Spacer(),
+                                    Expanded(
+                                      child: Text(
+                                          'Fee #${(sub['id'] ?? '').toString().substring(0, 8)}',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppTheme.textPrimary)),
+                                    ),
                                     Text('ETB ${sub['platform_fee'] ?? 0}',
                                         style: const TextStyle(
                                             fontSize: 12,
@@ -367,7 +440,61 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
                         )),
                   ],
 
-                  if (_txFees.isEmpty && _monthlyFees.isEmpty) ...[
+                  // Activation fee details
+                  if (_activationFees.isNotEmpty) ...[
+                    _sectionHeader(
+                        'Provider Activation Fee Details', AppTheme.info),
+                    const SizedBox(height: 8),
+                    ..._activationFees.take(50).map((fee) => Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.verified_user,
+                                        size: 16, color: AppTheme.info),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                          'Activation #${(fee['id'] ?? '').toString().substring(0, 8)}',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppTheme.textPrimary)),
+                                    ),
+                                    Text('ETB ${fee['platform_fee'] ?? 0}',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppTheme.info)),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                    'Charged out of a recharge of ETB '
+                                    '${fee['gross_amount'] ?? 0}',
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        color: AppTheme.textMuted)),
+                                Text(
+                                    DateFormat('dd/MM/yyyy HH:mm').format(
+                                        DateTime.parse(fee['created_at'])),
+                                    style: const TextStyle(
+                                        fontSize: 10,
+                                        color: AppTheme.textMuted)),
+                              ],
+                            ),
+                          ),
+                        )),
+                  ],
+
+                  if (_txFees.isEmpty &&
+                      _monthlyFees.isEmpty &&
+                      _activationFees.isEmpty) ...[
                     const SizedBox(height: 40),
                     Center(
                       child: Column(
@@ -411,9 +538,19 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            Text(value,
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w700, color: color)),
+            // Scale down rather than wrap. The card is ~98dp of content wide on
+            // a 360dp phone once the theme's 16dp card margin is applied to
+            // both sides, and an amount that wraps puts "ETB 12345" on one line
+            // and ".67" on the next, which reads as a different number.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(value,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: color)),
+            ),
           ],
         ),
       ),
@@ -432,31 +569,6 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
     );
   }
 
-  Widget _filterChip(String type) {
-    final selected = _typeFilter == type;
-    final labels = {
-      'ALL': 'All',
-      'TRANSACTION_FEE': '1% Fees',
-      'SUBSCRIPTION_FEE': '5birr Fees'
-    };
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: FilterChip(
-        label: Text(labels[type] ?? type,
-            style: TextStyle(
-                fontSize: 11,
-                color: selected ? Colors.white : AppTheme.textPrimary)),
-        selected: selected,
-        onSelected: (_) {
-          setState(() => _typeFilter = type);
-          _load();
-        },
-        selectedColor: AppTheme.primaryGreen,
-        visualDensity: VisualDensity.compact,
-      ),
-    );
-  }
-
   Widget _sectionHeader(String title, Color color) {
     return Row(
       children: [
@@ -466,11 +578,70 @@ class _IncomeSummaryScreenState extends State<AdminIncomeSummaryScreen> {
             decoration: BoxDecoration(
                 color: color, borderRadius: BorderRadius.circular(2))),
         const SizedBox(width: 8),
-        Text(title,
-            style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary)),
+        Expanded(
+          child: Text(title,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary)),
+        ),
+      ],
+    );
+  }
+}
+
+/// The fee-category filter row, extracted from the screen so it can be laid out
+/// at hostile sizes by a widget test — the same reason [AlreadyVerifiedDialog]
+/// is public.
+///
+/// It used to be four `FilterChip`s in a plain `Row`. Every Card in this theme
+/// carries `margin: EdgeInsets.symmetric(horizontal: 16)`, so inside
+/// `ListView(padding: EdgeInsets.all(16))` a 360dp phone leaves 272dp for the
+/// chips rather than 360dp, and four inflexible chips need ~226dp at the
+/// default text scale and ~294dp at 1.3x — the "Large" font setting on many
+/// Android devices. A `Row` cannot absorb that; it reports RenderFlex overflow
+/// and clips the last chip. `Wrap` wraps to a second line instead.
+class IncomeFilterChips extends StatelessWidget {
+  const IncomeFilterChips({
+    super.key,
+    required this.value,
+    required this.onChanged,
+  });
+
+  /// The selected category key.
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  /// Keys are the `transaction_type` values the queries filter on, except
+  /// `ALL`; `REGISTRATION_FEE` is the activation fee, which is a `RECHARGE` row
+  /// with a non-zero platform_fee.
+  static const labels = <String, String>{
+    'ALL': 'All',
+    'TRANSACTION_FEE': '1% Fees',
+    'SUBSCRIPTION_FEE': '5birr Fees',
+    'REGISTRATION_FEE': 'Activation Fees',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        for (final entry in labels.entries)
+          FilterChip(
+            label: Text(entry.value,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: entry.key == value
+                        ? Colors.white
+                        : AppTheme.textPrimary)),
+            selected: entry.key == value,
+            onSelected: (_) => onChanged(entry.key),
+            selectedColor: AppTheme.primaryGreen,
+            visualDensity: VisualDensity.compact,
+          ),
       ],
     );
   }

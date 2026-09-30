@@ -611,6 +611,291 @@ def check_data_targets_exist() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 6b. every storage bucket lib/ uses is created by a migration the deploy
+#     workflow actually executes
+# ---------------------------------------------------------------------------
+# The deploy workflow's `Baseline migration history` step marks every staged file
+# whose version is below BASELINE as applied via `migration repair`, and its own
+# comment says the step "never executes the files" -- the live database was built
+# by pasting SQL into the editor. A bucket whose only creation statement lives in
+# one of those files therefore exists only if somebody pasted it by hand.
+#
+# That is how the provider gallery shipped: `provider-gallery` is declared in
+# 0017, its upload path is in provider_gallery_screen.dart, the RPC and the table
+# are live -- and every upload failed with "Bucket not found" (404) because the
+# bucket was never created. "It has a creation migration" and "it has a creation
+# migration the pipeline runs" are different tests, and only the second one is
+# about reality.
+BASELINE = 20260919000000
+BUCKET_CREATE_RX = re.compile(
+    r"INSERT\s+INTO\s+storage\.buckets[^;]*;", re.IGNORECASE | re.DOTALL
+)
+BUCKET_ID_RX = re.compile(r"'([a-z0-9][a-z0-9-]*)'")
+
+
+#: Buckets lib/ is known to use, so the check below cannot pass vacuously.
+#: user-documents, payment-screenshots, payment-proofs, product-images,
+#: provider-gallery and vehicle-images. The last one was added in migration 97
+#: together with the first Dart code that writes it -- the bucket, the policy
+#: and the upload path move together, or the check below is the thing that says
+#: so.
+EXPECTED_CLIENT_BUCKETS = 6
+
+
+def dart_buckets() -> tuple[dict[str, set[str]], list[str]]:
+    """Every bucket named in lib/, resolving a file's `_bucket` constant.
+
+    `storage.from('provider-gallery')` is read directly; `storage.from(_bucket)`
+    reads `static const _bucket = 'provider-gallery'` from the same file. The
+    indirect form is not a nicety: the gallery uses it, so a check that only
+    understood literals would have skipped the one path that was broken.
+    """
+    buckets: dict[str, set[str]] = {}
+    unresolved: list[str] = []
+    for path in dart_sources():
+        src = _read(path)
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        consts = {
+            m.group(1): m.group(2)
+            for m in re.finditer(r"\bconst\s+([A-Za-z_]\w*)\s*=\s*'([^']+)'", src)
+            if "ucket" in m.group(1)
+        }
+        # A non-const declaration means a runtime value, which is known to be
+        # legitimate in two places: admin_history_screen derives the bucket from
+        # a stored `bucket/path`, and photo_grid is handed one by its caller.
+        # Those can only be checked by running the app, so they are skipped
+        # rather than guessed at.
+        runtime = set(
+            re.findall(r"\b(?:final|var|late|String)\s+([A-Za-z_]\w*)\s*=", src)
+        )
+        for m in re.finditer(r"storage\s*\.\s*from\(([^)]*)\)", src):
+            arg = m.group(1).strip()
+            if re.fullmatch(r"'[^']+'", arg):
+                buckets.setdefault(arg.strip("'"), set()).add(rel)
+            elif re.fullmatch(r"[A-Za-z_]\w*", arg):
+                if arg in consts:
+                    buckets.setdefault(consts[arg], set()).add(rel)
+                elif arg in runtime:
+                    continue
+                else:
+                    unresolved.append(
+                        "%s: storage.from(%s) is neither a literal nor a "
+                        "constant nor a local variable, so which bucket it "
+                        "targets cannot be checked" % (rel, arg)
+                    )
+            # Anything else -- a field, a getter, `item.bucket!` -- is dynamic
+            # by design and cannot be resolved without running the app.
+    return buckets, unresolved
+
+
+def _buckets_created_by_the_pipeline() -> dict[str, list[str]]:
+    """Bucket id -> the migrations at/after the baseline that create it."""
+    created: dict[str, list[str]] = {}
+    for path in migration_files():
+        version = path.name.split("_", 1)[0]
+        if not version.isdigit() or int(version) < BASELINE:
+            continue
+        for stmt in BUCKET_CREATE_RX.finditer(_read(path)):
+            for name in BUCKET_ID_RX.findall(stmt.group(0)):
+                created.setdefault(name, []).append(path.name)
+    return created
+
+
+def check_client_buckets_are_created() -> list[str]:
+    buckets, problems = dart_buckets()
+    created = _buckets_created_by_the_pipeline()
+    for name, files in sorted(buckets.items()):
+        if name not in created:
+            problems.append(
+                "lib/ writes to bucket %r (from %s), but no migration at or "
+                "after the deploy baseline %d creates it. Older files are "
+                "marked applied WITHOUT being executed, so this bucket exists "
+                "only if it was pasted into the SQL editor by hand -- and when "
+                "it was not, every upload to it fails with 'Bucket not found' "
+                "(404). Add it to an INSERT INTO storage.buckets in a current "
+                "migration."
+                % (name, ", ".join(sorted(files)), BASELINE)
+            )
+    if len(buckets) < EXPECTED_CLIENT_BUCKETS:
+        problems.append(
+            "only %d storage bucket(s) were resolved from lib/, fewer than the "
+            "%d the client is known to use. A check that reads no buckets "
+            "cannot report a missing one -- if a bucket was genuinely removed, "
+            "lower EXPECTED_CLIENT_BUCKETS in the same change."
+            % (len(buckets), EXPECTED_CLIENT_BUCKETS)
+        )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 6c. every income figure counts every fee the platform charges
+# ---------------------------------------------------------------------------
+# The three transaction types a fee is written on in wallet_transactions:
+#
+#   TRANSACTION_FEE  -- deduct_transaction_fee(): orders on STARTED, rides on
+#                       COMPLETED
+#   SUBSCRIPTION_FEE -- deduct_subscription_fee() and the monthly scheduler
+#   RECHARGE         -- approve_wallet_recharge(), which withholds the one-time
+#                       provider_registration_fee from the FIRST approved
+#                       recharge and records it as platform_fee (gross = amount
+#                       paid, net = amount - fee); every later recharge carries
+#                       platform_fee = 0
+#
+# A reader that sums platform_fee while ignoring RECHARGE reports ETB 0.00 on a
+# deployment whose providers are still activating -- which is where the admin
+# income summary and the dashboard total both were, with no error and no empty
+# state, just a confidently wrong number. These three constants and the
+# transaction_type filters in lib/ move together.
+FEE_TYPES = ("TRANSACTION_FEE", "SUBSCRIPTION_FEE", "RECHARGE")
+
+
+#: Readers of wallet_transactions.platform_fee that build an income figure, so
+#: the check cannot pass vacuously if they are renamed away.
+EXPECTED_INCOME_READERS = 2
+
+#: What "building an income figure" looks like: selecting the fee column on its
+#: own, or folding/ reducing over it. Deliberately NOT "the file mentions
+#: platform_fee" -- admin_transaction_history_screen.dart selects `*` and prints
+#: each row's fee (the ledger browser, which already shows RECHARGE rows), and
+#: flagging it would have been a false positive.
+INCOME_READER_RX = re.compile(
+    r"select\(\s*'platform_fee'"
+    r"|fold\([^;]{0,200}platform_fee"
+    r"|reduce\([^;]{0,200}platform_fee",
+    re.DOTALL,
+)
+
+
+def check_income_readers_count_every_fee_type() -> list[str]:
+    problems: list[str] = []
+    readers = 0
+    for path in dart_sources():
+        src = _read(path)
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        if "from('wallet_transactions')" not in src or "platform_fee" not in src:
+            continue
+        if not INCOME_READER_RX.search(src):
+            continue
+        readers += 1
+        # The transaction types this file names, taken from the filter argument
+        # rather than from the whole file, so a UI category name cannot be
+        # mistaken for a ledger type.
+        named: set[str] = set()
+        for m in re.finditer(
+            r"transaction_type['\"]\s*,?\s*(.{0,160})", src, re.DOTALL
+        ):
+            named.update(re.findall(r"'([A-Z][A-Z_]{3,})'", m.group(1)))
+        missing = [t for t in FEE_TYPES if t not in named]
+        if missing:
+            problems.append(
+                "%s sums wallet_transactions.platform_fee but never queries "
+                "transaction_type %s. The one-time activation fee is stored as "
+                "platform_fee on a RECHARGE row (approve_wallet_recharge), so "
+                "omitting it under-reports income: a deployment whose "
+                "providers are still activating renders 0.00 while money has "
+                "been collected." % (rel, ", ".join(missing))
+            )
+    if readers < EXPECTED_INCOME_READERS:
+        problems.append(
+            "only %d file(s) read wallet_transactions.platform_fee, fewer than "
+            "the %d that build an income figure (the admin income summary and "
+            "the admin dashboard). Those readers are the contract this check "
+            "exists for; if one was genuinely removed, lower "
+            "EXPECTED_INCOME_READERS in the same change."
+            % (readers, EXPECTED_INCOME_READERS)
+        )
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 6d. the activation fee is written where an income reader can see it
+# ---------------------------------------------------------------------------
+def check_activation_fee_is_recorded_as_income() -> list[str]:
+    """The server half of the contract 6c pins on the client.
+
+    check_income_readers_count_every_fee_type() proves the READERS query all
+    three fee types. This proves the WRITER puts the activation fee somewhere a
+    reader can find. approve_wallet_recharge withholds the one-time
+    registration fee from a provider's FIRST approved recharge and records it
+    as platform_fee on a RECHARGE row -- gross is what was paid, net is what
+    was credited, and the difference is the platform's income. If it stops
+    doing that, or writes the fee on a type nothing reads, or stops reading the
+    fee from system_settings, the readers keep working and the income quietly
+    drops. Same symptom, other end.
+
+    Read from the LAST migration that defines the function, not from the
+    earliest: a restatement is what the database ends up with, so a check
+    against an earlier copy would keep passing on a function that no longer
+    exists. That is the failure the restatement_diff tool exists for, applied
+    here to a property rather than to a whole body.
+
+    Deliberately NOT checked: that the notice text quotes the fee. Migration 73
+    fixed a hardcoded "100 birr" in that message, and a check on prose would
+    pass on a message that contradicts the ledger as long as it still said
+    something.
+    """
+    problems: list[str] = []
+    path, sql = last_migration_defining("approve_wallet_recharge")
+    if path is None:
+        return [
+            "no migration defines public.approve_wallet_recharge(), so the "
+            "one-time activation fee has no writer at all and RECHARGE rows "
+            "carry no platform_fee for any income reader to sum"
+        ]
+    rel = str(path.relative_to(ROOT)).replace("\\", "/")
+    body = function_body(sql, "approve_wallet_recharge")
+    if not body:
+        return [
+            "could not read the body of approve_wallet_recharge() out of %s, "
+            "so whether it records the activation fee as income cannot be "
+            "checked" % rel
+        ]
+
+    if "'RECHARGE'" not in body:
+        problems.append(
+            "approve_wallet_recharge() in %s no longer writes a 'RECHARGE' "
+            "ledger row, and that row is where every income reader finds the "
+            "withheld activation fee" % rel
+        )
+
+    # The withheld amount itself. The fee is an expression over what was paid,
+    # not a constant: gross is v_recharge.amount and net is v_credit, so
+    # platform_fee must be their difference. A literal 0 here is exactly the
+    # shape that made admin income render ETB 0.00 while money had been
+    # collected.
+    if not re.search(
+        r"amount\s*-\s*v_credit[\s\S]{0,400}?platform_fee"
+        r"|platform_fee[\s\S]{0,400}?amount\s*-\s*v_credit",
+        body,
+    ):
+        problems.append(
+            "the RECHARGE insert in approve_wallet_recharge() (%s) does not "
+            "record platform_fee as the withheld part of the payment "
+            "(v_recharge.amount - v_credit), so the platform can keep money "
+            "that no income figure counts" % rel
+        )
+
+    if "provider_registration_fee" not in body:
+        problems.append(
+            "approve_wallet_recharge() in %s no longer reads "
+            "provider_registration_fee from system_settings, so the activation "
+            "fee stopped being data-driven" % rel
+        )
+
+    # A literal in place of the setting: the CEO changes the fee and the charge
+    # keeps using the old number. This is the regression 73 fixed in the notice
+    # text, and it is worth failing on in the arithmetic too.
+    if re.search(r"v_reg_fee\s*:?=\s*\d", body):
+        problems.append(
+            "approve_wallet_recharge() in %s assigns a numeric literal to "
+            "v_reg_fee, so the registration fee no longer follows the "
+            "provider_registration_fee setting" % rel
+        )
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # 7. CEO -> staff -> admin -> provider -> user is wired on both sides
 # ---------------------------------------------------------------------------
 def check_role_permission_wiring() -> list[str]:
@@ -1670,6 +1955,13 @@ CHECKS = [
      check_email_provider_gateways),
     ("every table/view the client queries is created by a migration",
      check_data_targets_exist),
+    ("every storage bucket lib/ uses is created by a migration the deploy "
+     "workflow executes",
+     check_client_buckets_are_created),
+    ("every income figure counts every fee type, including the activation fee",
+     check_income_readers_count_every_fee_type),
+    ("the activation fee is written where an income reader can see it",
+     check_activation_fee_is_recorded_as_income),
     ("CEO -> staff -> admin -> provider -> user routing and permissions agree",
      check_role_permission_wiring),
     ("controllers, focus nodes, timers and subscriptions are released",

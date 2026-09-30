@@ -83,12 +83,25 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
     // Platform income = fees actually charged: per-transaction fees plus
     // subscription fees from the wallet ledger (orders table has no fee
     // column, and subscriptions hold schedule rows, not charges).
+    //
+    // RECHARGE is in this list for one reason: approve_wallet_recharge()
+    // withholds the one-time provider_registration_fee from a provider's FIRST
+    // approved recharge and records it as `platform_fee` on the RECHARGE row.
+    // Without it the activation fee — the only income collected before a
+    // provider completes an order — was missing from this total, so a
+    // deployment whose providers were still activating showed ETB 0.00 while
+    // money had been taken. Every later recharge carries platform_fee = 0, so
+    // counting the column over all three types cannot double-count a deposit.
+    // The income summary screen counts the same three types, so the definition
+    // of "income" lives in one place even though the two windows differ (this
+    // total is all-time; the summary screen is date-filterable).
     double income = 0;
     try {
       final feeRows = await client
           .from('wallet_transactions')
           .select('platform_fee')
-          .inFilter('transaction_type', ['TRANSACTION_FEE', 'SUBSCRIPTION_FEE'])
+          .inFilter(
+              'transaction_type', ['TRANSACTION_FEE', 'SUBSCRIPTION_FEE', 'RECHARGE'])
           .limit(1000);
       for (final t in feeRows as List) {
         income += (t['platform_fee'] as num?)?.toDouble() ?? 0;
