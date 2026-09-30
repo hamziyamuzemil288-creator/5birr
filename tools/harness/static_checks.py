@@ -1940,6 +1940,134 @@ def check_transaction_notifications() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 17. the Other document type is wired end to end
+# ---------------------------------------------------------------------------
+def check_other_document_type_is_wired() -> list[str]:
+    """The fourth document-type choice collects and keeps its label.
+
+    The schema half is asserted in SQL (assert_other_document_type_is_wired,
+    migration 0099). This is the half SQL cannot see: the Dart surfaces that
+    offer the choice and the upload pipeline that carries the label. Fails
+    the moment any of the five pieces go missing, because each one failing
+    silently produces a different dead end — a choice that cannot be named,
+    a name nobody stores, or a stored label nobody displays.
+    """
+    problems: list[str] = []
+
+    gate = _strip_comments(
+        _read(LIB / "core" / "services" / "provider_doc_gate.dart"))
+    service = _strip_comments(
+        _read(LIB / "core" / "services" / "document_upload_service.dart"))
+    partner = _strip_comments(
+        _read(LIB / "features" / "provider" / "become_partner_screen.dart"))
+    review = _strip_comments(
+        _read(LIB / "features" / "admin" / "admin_provider_management_screen.dart"))
+
+    # 1. The constant exists and is deliberately OUTSIDE the gate map: an
+    #    OTHER document must not satisfy identity verification by existing.
+    if "otherDocType = 'OTHER'" not in gate:
+        problems.append("ProviderDocGate.otherDocType ('OTHER') is missing")
+    other_in_map = re.search(
+        r"acceptedDocTypes\s*=\s*<String, String>\{([^}]*)\}", gate)
+    if other_in_map and "OTHER" in other_in_map.group(1):
+        problems.append(
+            "acceptedDocTypes contains OTHER — an Other document would "
+            "satisfy the identity gate without proving identity")
+
+    # 2. The upload pipeline carries the label.
+    if "otherDocumentLabel" not in service:
+        problems.append("uploadAndRecord has no otherDocumentLabel parameter")
+    if "other_document_label" not in service:
+        problems.append(
+            "the upload service never writes other_document_label, so the "
+            "label is collected and dropped")
+
+    # 3. Both upload surfaces offer the choice.
+    for label, src, needle in (
+        ("the doc-gate upload sheet", gate, "otherDocType, 'Other'"),
+        ("Become a Partner", partner, "ProviderDocGate.otherDocType"),
+    ):
+        if needle not in src:
+            problems.append(f"{label} no longer offers the Other choice")
+
+    # 4. The admin review shows the label, not a bare Other.
+    if "other_document_label" not in review:
+        problems.append(
+            "the admin review screen never reads other_document_label, so "
+            "staff review an unnamed Other document")
+    if "_typeOf" not in review:
+        problems.append("the admin review screen lost the row-level type name")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 18. the CEO account directory routes through the shared cascade
+# ---------------------------------------------------------------------------
+def check_ceo_account_directory_is_wired() -> list[str]:
+    """The CEO delete reuses delete_user_account; it never forks it.
+
+    The SQL half is asserted in the database
+    (assert_ceo_delete_is_wired, migration 0100). This is the Dart half: the
+    screen exists, is routed and tiled, gates on CEO in the client as well as
+    the server, asks for a reason, confirms by typed word, and calls the two
+    RPCs — while nothing in lib/ ever writes auth-adjacent tables directly.
+    """
+    problems: list[str] = []
+
+    screen_path = LIB / "features" / "admin" / "admin_account_directory_screen.dart"
+    raw_screen = _read(screen_path)
+    if not raw_screen:
+        return ["lib/features/admin/admin_account_directory_screen.dart is missing"]
+    # Comments stripped: this screen's own doc comment names ceo_delete_user_
+    # account() and the cascade, so a raw search would be satisfied by prose
+    # describing code that no longer exists — the failure mode the 00093
+    # needle bug in this repo already cost two deploy cycles to.
+    screen = _strip_comments(raw_screen)
+
+    router = _read(LIB / "routing" / "app_router.dart")
+    dashboard = _read(LIB / "features" / "admin" / "admin_dashboard.dart")
+    ceo_dash = _read(LIB / "features" / "ceo" / "ceo_dashboard.dart")
+
+    # The RPCs, both called, and the typed destructive confirmation.
+    for needle in ("ceo_account_directory", "ceo_delete_user_account",
+                   "TypedConfirmDialog", "p_reason"):
+        if needle not in screen:
+            problems.append(f"the directory screen no longer references {needle}")
+
+    # Client-side CEO gate (the server re-checks everything; this avoids
+    # rendering a refused workspace).
+    if "is_ceo_authority" not in screen:
+        problems.append(
+            "the directory screen no longer checks is_ceo_authority() before "
+            "loading")
+
+    # Routed and tiled.
+    if "/admin/accounts" not in router:
+        problems.append("/admin/accounts is not routed")
+    if "/admin/accounts" not in dashboard:
+        problems.append("no dashboard tile points at /admin/accounts")
+    if "/admin/accounts" not in ceo_dash:
+        problems.append(
+            "the CEO workspace danger-zone no longer links the directory")
+
+    # The new path must not go THROUGH the request table: writing a request
+    # and then approving it from the same account is a form filled in twice,
+    # and it would blur whose decision a row recorded. (The request queue
+    # itself — admin_deletion_requests_screen.dart calling reject_account_
+    # deletion — is the existing non-CEO flow and must keep working, so only
+    # THIS screen is inspected.)
+    for forbidden in ("account_deletion_requests", "approve_account_deletion"):
+        if forbidden in screen:
+            problems.append(
+                f"the directory screen references {forbidden} — the CEO path "
+                "is a direct delete through the shared cascade, not a "
+                "self-approved request")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -1976,6 +2104,10 @@ CHECKS = [
      check_documented_components_exist),
     ("money/approval notifications: both parties, once, and never fatal to the payment",
      check_transaction_notifications),
+    ("the Other document type is offered, stored, and displayed where it is reviewed",
+     check_other_document_type_is_wired),
+    ("the CEO account directory routes through the one deletion cascade",
+     check_ceo_account_directory_is_wired),
 ]
 
 

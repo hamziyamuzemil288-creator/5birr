@@ -120,6 +120,7 @@ gateway → `/staff/dashboard`, admin → `/admin`, vehicle → `/vehicle`, serv
 | Edit fees and the points rate | ❌ | ❌ | ❌ | read-only | ✅ |
 | Create staff, set staff jobs | ❌ | ❌ | ❌ | ❌ | ✅ |
 | View the CEO workspace | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Browse **all** users & providers, delete one outright | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ### 2.2 The permission system underneath
 
@@ -584,6 +585,8 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | Every storage bucket the client uses exists, and is as visible as the app expects | `assert_app_buckets_exist()` (migrations 96/97, six buckets) |
 | The activation fee is withheld as income, and a second recharge withholds nothing | `assert_activation_fee_writes_income()` (migration 98, a **write** test) |
 | The income report counts every fee type, and says what it measured | `assert_income_covers_every_fee_type()` (migration 98) |
+| An `OTHER` document keeps its label, the constraints hold, and the insert path is intact | `assert_other_document_type_is_wired()` (migration 99) |
+| The CEO delete is CEO-gated, the service-role-only cascade is unchanged, and the wrapper calls it | `assert_ceo_delete_is_wired()` (migration 100) |
 | The signup gate keys off `verified_at`, not attempt arithmetic | `assert_otp_gate_uses_verified_at()` (migration 02) |
 | The signup trigger's insert-time trust rules hold | `assert_handle_new_user_contract()` (migration 82, path B is toggle-aware) |
 | Error sink, RLS and hot-path indexes exist | `assert_resilience_is_wired()` (migration 64) |
@@ -657,6 +660,8 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0096` | the five buckets the app then used are declared by a migration the pipeline runs, plus the `provider-gallery` policies `0017` never created | **the provider gallery cannot upload at all** — `provider-gallery` was created only by `0017`, which the workflow marks applied without executing it, so every upload failed with "Bucket not found" (404) and the screen could only show its generic error |
 | `0097` | the `vehicle-images` bucket, its policies and table restated, and `add_vehicle_image()` / `delete_vehicle_image()` for the new vehicle-photo client | **a vehicle cannot have a photograph** — the bucket was created only by `0012` (marked applied, never executed), so every vehicle-photo upload 404s; and nothing in `lib/` could write `vehicle_images` at all |
 | `0098` | `assert_activation_fee_writes_income()` (write test) and `assert_income_covers_every_fee_type()`, which report the fee figures instead of the vacuous existential negatives | the activation fee keeps being collected with nothing that proves it reaches the ledger, and the money assertions stay green on an empty wallet table |
+| `0099` | `other_document_label` + a `document_type` CHECK carrying every value the app has ever written, and the pairing constraint that requires a label exactly when the type is `OTHER` | an `OTHER` upload is refused by the insert (`column "other_document_label" does not exist`), and nothing records which document the person actually uploaded |
+| `0100` | `is_ceo_authority()`, `ceo_account_directory()`, `ceo_delete_user_account()` — the wrapper that records the reason in `admin_actions` and then CALLS `delete_user_account()` | the CEO directory and its delete button do not exist (`function … in the schema cache`); `delete_user_account` itself is untouched, and it stays service-role-only |
 
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
@@ -748,7 +753,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (67 tests). If it is red, the failure message names
+1. Connectivity CI green (69 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,

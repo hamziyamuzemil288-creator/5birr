@@ -810,10 +810,11 @@ class _OtherSection extends StatelessWidget {
             leading: const Icon(Icons.gpp_maybe, color: AppTheme.error),
             title: const Text('Delete an account'),
             subtitle: const Text(
-                'CEO only. Can delete an admin as well as a user or provider. '
-                'Recorded permanently with your reason.'),
+                'The full directory: every user, provider and staff account, '
+                'each with a delete action that runs through the shared '
+                'deletion cascade. CEO only, recorded with your reason.'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/admin/users'),
+            onTap: () => context.push('/admin/accounts'),
           ),
         ),
       ],

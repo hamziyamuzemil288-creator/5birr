@@ -456,6 +456,16 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           if (ref.read(authProvider).isAdmin)
                             _menuCard(Icons.admin_panel_settings_outlined, 'Staff Assignment',
                                 'Roles, city, warnings, deletion', () => context.push('/admin/staff-assignment')),
+                          // The CEO account directory: every registered
+                          // account with the delete action. CEO-only, both in
+                          // this condition and — the real boundary — inside
+                          // the RPCs the screen calls. The "All Users" and
+                          // "All Providers" cards above cover reads for the
+                          // staff who work queues; this one exists because
+                          // nobody below the CEO may end an account.
+                          if (ref.watch(authProvider).isCeo)
+                            _menuCard(Icons.people_alt_outlined, 'All Users & Providers',
+                                'Every account · CEO delete', () => context.push('/admin/accounts')),
                           if (_can('*') || _can('admin_history'))
                             _menuCard(Icons.tune, 'Role Permissions', 'Per-staff section access', () => context.push('/admin/roles/permissions')),
                           // The business rules — fees, thresholds, the points

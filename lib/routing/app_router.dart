@@ -43,6 +43,7 @@ import '../features/ceo/ceo_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
 import '../features/admin/admin_staff_screen.dart';
+import '../features/admin/admin_account_directory_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
 import '../features/admin/admin_payment_methods_screen.dart';
 import '../features/admin/admin_payment_verification_screen.dart';
@@ -407,6 +408,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/disputes', builder: (_, __) => const AdminDisputesScreen()),
       GoRoute(path: '/admin/history', builder: (_, __) => const AdminHistoryScreen()),
       GoRoute(path: '/admin/staff', builder: (_, __) => const AdminStaffScreen()),
+      // CEO account directory: every registered account, with the delete
+      // action that runs through the shared deletion cascade. Navigation is
+      // not protection — the RPCs behind the screen re-derive the CEO
+      // authority server-side on every call.
+      GoRoute(path: '/admin/accounts', builder: (_, __) => const AdminAccountDirectoryScreen()),
       // Task 3: role management console (true-Admin-only page + per-staff
       // permission control; server paths re-check authorization).
       GoRoute(path: '/admin/staff-assignment', builder: (_, __) => const AdminStaffAssignmentScreen()),

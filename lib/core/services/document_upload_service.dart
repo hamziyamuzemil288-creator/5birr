@@ -82,10 +82,18 @@ class DocumentUploadService {
   /// Uploads [file] under `<uid>/<kind>_<ms>.jpg` and inserts its row.
   /// Throws on failure (the caller surfaces the real error); the insert is
   /// retried once for transient failures.
+  ///
+  /// [documentType] must be one of the values the schema allows
+  /// (user_documents_type_check, migration 0099): the three identity types,
+  /// the legacy spellings, or [ProviderDocGate.otherDocType]. For OTHER,
+  /// [otherDocumentLabel] is REQUIRED — user_documents_other_label_check
+  /// refuses an OTHER row without one (and a label on a non-OTHER row), so
+  /// passing it for a fixed type would fail the insert twice.
   Future<void> uploadAndRecord({
     required File file,
     required String userId,
     required String documentType,
+    String? otherDocumentLabel,
   }) async {
     final path = '$userId/${documentType.toLowerCase()}_${DateTime.now().millisecondsSinceEpoch}.jpg';
     await _client.storage.from(_bucket).upload(
@@ -101,6 +109,11 @@ class DocumentUploadService {
       'user_id': userId,
       'document_type': documentType,
       'storage_path': path,
+      // Only attached when there is one: a NULL key and a key set to null
+      // both insert SQL NULL, but omitting it keeps the payload honest about
+      // what this upload is actually claiming.
+      if (otherDocumentLabel != null)
+        'other_document_label': otherDocumentLabel,
       ...liveness,
     };
 

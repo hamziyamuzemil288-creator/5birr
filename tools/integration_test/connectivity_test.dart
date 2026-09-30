@@ -538,12 +538,31 @@ void main() {
       // Behavioural, and the half a source-text check cannot do: 0029/0030/
       // 0033/0034 all shipped guards that MENTIONED their condition and never
       // ran it, and the suite was green the whole time. This performs the
-      // attack, then requires the legitimate path to still work — removing
+      // attack, then requires the legitimate path to succeed — removing
       // the admin check would pass an attack-only test and break the feature.
       expect(await ok('assert_document_review_refuses_non_admins'), isTrue,
           reason: 'Either an ordinary user can mark their own ID VERIFIED, or '
               'an administrator cannot verify one at all, or a verified '
               'document leaves provider_docs_satisfied() false.');
+    });
+
+    test('the Other document type records what the document is', () async {
+      // Migration 0099's assertion. OTHER plus other_document_label is the
+      // schema half; the CHECK pairs them (label exactly when OTHER), the
+      // insert policy still lets the client write rows, and the verification
+      // trigger still leaves client fields alone. If the gate map ever grows
+      // OTHER, the identity gate would open on an unproven document — the
+      // Dart-side half of that guard lives in the static harness.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_other_document_type_is_wired');
+      expect(detail, isNotNull,
+          reason: 'user_documents lost the other_document_label column or its '
+              'pairing constraint, the insert policy changed, or the BEFORE '
+              'INSERT trigger now overwrites client fields. If this is null '
+              'WITH the function present, read the error: cache vs finding. '
+              'Diagnostic: $error');
+      // ignore: avoid_print
+      print('    other document type -> $detail');
     });
   });
 
@@ -1190,6 +1209,23 @@ void main() {
               'or nearby driver positions became readable by anon.');
       // ignore: avoid_print
       print('    live map -> $detail');
+    });
+
+    test('the CEO delete routes through the one deletion cascade', () async {
+      // Migration 0100's assertion. Three invariants that must never slip:
+      // delete_user_account stays service_role-only (a client-reachable
+      // cascade is every account gone), the new RPCs reach authenticated but
+      // never anon, and ceo_delete_user_account CALLS the cascade instead of
+      // growing a second implementation beside it. The Dart-side half (the
+      // screen, the typed confirmation, the tiles) is the static harness's.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_ceo_delete_is_wired');
+      expect(detail, isNotNull,
+          reason: 'The CEO delete wiring could not be verified at all. If '
+              'this is null WITH the function deployed, read the error: '
+              'cache vs finding. Diagnostic: $error');
+      expect(detail, isNot(contains('CEO_DELETE_REGRESSION')),
+          reason: 'The deletion machinery changed shape: $detail');
     });
 
     test('a document submission records where the device was', () async {

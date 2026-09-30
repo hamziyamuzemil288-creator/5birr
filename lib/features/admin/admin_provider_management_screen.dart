@@ -52,7 +52,8 @@ class _State extends State<AdminProviderManagementScreen> {
       if (userIds.isNotEmpty) {
         final docs = await Supabase.instance.client
             .from('user_documents')
-            .select('id, user_id, document_type, storage_path, uploaded_at')
+            .select('id, user_id, document_type, other_document_label, '
+                'storage_path, uploaded_at')
             .inFilter('user_id', userIds);
         for (final d in (docs as List).whereType<Map<String, dynamic>>()) {
           docsByUser.putIfAbsent(d['user_id'] as String, () => []).add(d);
@@ -474,7 +475,7 @@ class _ProviderDocumentsRow extends StatelessWidget {
           child: Text(
             docs.isEmpty
                 ? 'No documents uploaded'
-                : docs.map((d) => _shortType(d['document_type'])).join(', '),
+                : docs.map((d) => _typeOf(d)).join(', '),
             style: const TextStyle(
                 fontSize: 12, color: AppTheme.textSecondary),
             overflow: TextOverflow.ellipsis,
@@ -496,6 +497,21 @@ class _ProviderDocumentsRow extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  /// The display name of one document ROW. An OTHER row shows the label the
+  /// uploader typed ("Other — business licence"), not a bare "Other" — the
+  /// reviewer is being asked to look at a specific document, and a type that
+  /// says nothing about which one makes the review a guess. The fallback
+  /// covers rows written before the label column existed.
+  static String _typeOf(dynamic row) {
+    final d = row is Map<String, dynamic> ? row : <String, dynamic>{};
+    final type = d['document_type']?.toString();
+    if (type == 'OTHER') {
+      final label = (d['other_document_label'] as String?)?.trim();
+      return (label == null || label.isEmpty) ? 'Other' : 'Other — $label';
+    }
+    return _shortType(type);
   }
 
   static String _shortType(dynamic t) {
@@ -531,14 +547,13 @@ class _ProviderDocumentsDialog extends StatelessWidget {
               ListTile(
                 dense: true,
                 leading: const Icon(Icons.image_outlined),
-                title: Text(_ProviderDocumentsRow._shortType(d['document_type']),
+                title: Text(_ProviderDocumentsRow._typeOf(d),
                     style: const TextStyle(fontSize: 14)),
                 onTap: () => showDialog(
                   context: context,
                   builder: (_) => _ProviderDocPreview(
                     storagePath: d['storage_path'] as String,
-                    docType:
-                        _ProviderDocumentsRow._shortType(d['document_type']),
+                    docType: _ProviderDocumentsRow._typeOf(d),
                     businessName: businessName,
                   ),
                 ),

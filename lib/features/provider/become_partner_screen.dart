@@ -56,6 +56,11 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
   bool _submitting = false;
   String? _error;
 
+  /// What the document is, when the type is OTHER. A dropdown entry that
+  /// just says "Other" tells the reviewer nothing; the label is what turns
+  /// the row into a reviewable document.
+  final _otherLabelCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -68,6 +73,7 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _idCtrl.dispose();
+    _otherLabelCtrl.dispose();
     super.dispose();
   }
 
@@ -101,6 +107,12 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
           'Attach one identity document so we can verify who you are.');
       return;
     }
+    if (_docType == ProviderDocGate.otherDocType &&
+        _otherLabelCtrl.text.trim().isEmpty) {
+      setState(() => _error =
+          'Say what the document is — the person who reviews it needs to know.');
+      return;
+    }
 
     final uid = Supabase.instance.client.auth.currentUser?.id;
     if (uid == null) {
@@ -122,6 +134,9 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
         file: _docFile!,
         userId: uid,
         documentType: _docType!,
+        otherDocumentLabel: _docType == ProviderDocGate.otherDocType
+            ? _otherLabelCtrl.text.trim()
+            : null,
       );
     } catch (e) {
       setState(() {
@@ -235,7 +250,7 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
                     fontSize: 14, fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
             const Text(
-              'One of the following, so we can verify who you are.',
+              'Choose the type — or Other if none fit, and say what it is.',
               style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
             ),
             const SizedBox(height: 10),
@@ -246,9 +261,29 @@ class _BecomePartnerScreenState extends State<BecomePartnerScreen> {
                 for (final e in ProviderDocGate.acceptedDocTypes.entries)
                   DropdownMenuItem(
                       value: e.key, child: Text(e.value)),
+                // Same fourth choice the verification gate offers. NOT part
+                // of acceptedDocTypes on purpose: that map is what the gate
+                // iterates, and an Other document proves nothing about
+                // identity until an administrator has looked at it.
+                const DropdownMenuItem(
+                    value: ProviderDocGate.otherDocType,
+                    child: Text('Other')),
               ],
               onChanged: (v) => setState(() => _docType = v),
             ),
+            if (_docType == ProviderDocGate.otherDocType) ...[
+              const SizedBox(height: 14),
+              TextField(
+                controller: _otherLabelCtrl,
+                textCapitalization: TextCapitalization.sentences,
+                maxLength: 60,
+                decoration: const InputDecoration(
+                  labelText: 'What is this document?',
+                  hintText: 'e.g. business licence, health certificate',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
             const SizedBox(height: 14),
             DocumentUploadCard(
               title: 'Identity document',

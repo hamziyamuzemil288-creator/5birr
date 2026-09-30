@@ -89,6 +89,18 @@ class ProviderDocGate {
     'PASSPORT': 'Passport',
   };
 
+  /// The fourth choice in the upload sheet: a document outside the fixed
+  /// three, named by the uploader in free text (business licence, kebele ID,
+  /// health certificate, ...).
+  ///
+  /// Deliberately NOT a member of [acceptedDocTypes]: that map is what the
+  /// GATE iterates, and an OTHER document must not satisfy identity
+  /// verification merely by existing — only the four identity types do,
+  /// and provider_docs_satisfied() excludes OTHER server-side for the same
+  /// reason. Only the upload sheet offers it, and only the admin review
+  /// can turn one into an accepted document.
+  static const otherDocType = 'OTHER';
+
   Future<DocCheckStatus> checkStatus({String? userId}) async {
     final uid = userId ?? _client.auth.currentUser?.id;
     if (uid == null) return DocCheckStatus.required;
@@ -343,6 +355,9 @@ class _DocUploadSheet extends StatefulWidget {
 
 class _DocUploadSheetState extends State<_DocUploadSheet> {
   // Step 1: pick the document type. Step 2: pick the file and upload.
+  // Step 2.5 (only when the type is OTHER): name the document, because a
+  // row that just says "Other" is unreviewable — the reviewer needs to know
+  // whether they are looking at a business licence or a health certificate.
   // Task 9: the type choice lives HERE, immediately before the upload —
   // never at signup.
   int _step = 0;
@@ -351,6 +366,13 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
   bool _uploading = false;
   String? _error;
   String? _outcome;
+  final _otherLabelCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _otherLabelCtrl.dispose();
+    super.dispose();
+  }
 
   final _picker = ImagePicker();
 
@@ -374,6 +396,12 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
       setState(() => _error = 'Choose a document type and select the file.');
       return;
     }
+    final otherLabel = _otherLabelCtrl.text.trim();
+    if (docType == ProviderDocGate.otherDocType && otherLabel.isEmpty) {
+      setState(() => _error =
+          'Say what this document is — the person who reviews it needs to know.');
+      return;
+    }
     setState(() {
       _uploading = true;
       _error = null;
@@ -386,13 +414,18 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
         file: _file!,
         userId: userId,
         documentType: docType,
+        otherDocumentLabel:
+            docType == ProviderDocGate.otherDocType ? otherLabel : null,
       );
 
-      // QR verification agent (Task 4) on the uploaded document.
-      // Best-effort: any failure keeps the MANUAL_REVIEW default — never
-      // blocks.
+      // QR verification agent (Task 4) on the uploaded document —
+      // identity types only. An OTHER document has no QR payload shape to
+      // validate (the Edge Function's DocType union does not include it), so
+      // invoking it would either throw or misroute the row; it goes straight
+      // to the manual queue, which is the only review that can accept it.
       String? outcome;
-      try {
+      if (docType != ProviderDocGate.otherDocType) {
+        try {
         final docs = await client
             .from('user_documents')
             .select('id')
@@ -417,8 +450,9 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
                 'instead — nothing is blocked.';
           }
         }
-      } catch (_) {
-        // Agent unreachable → manual review (default state).
+        } catch (_) {
+          // Agent unreachable → manual review (default state).
+        }
       }
 
       if (!mounted) return;
@@ -437,8 +471,12 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
     }
   }
 
+  /// One prompt instead of two: the OTHER flow already makes the uploader
+  /// name the document, so "Upload & verify" reads wrong for a sheet whose
+  /// verdict for OTHER is always a human looking at it.
   @override
   Widget build(BuildContext context) {
+    final showOtherLabel = _selectedType == ProviderDocGate.otherDocType;
     return AlertDialog(
       title: Text(_step == 0 ? 'Choose document type' : 'Upload your document'),
       content: SingleChildScrollView(
@@ -453,8 +491,25 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
                 _typeOption(e.key, e.value),
                 const SizedBox(height: 8),
               ],
+              // The fourth choice: a document the fixed three do not cover.
+              // Step 2.5 (naming it) opens right after the file is chosen,
+              // so the label is typed while the document is in hand.
+              _typeOption(ProviderDocGate.otherDocType, 'Other'),
             ] else ...[
               _slot(),
+              if (showOtherLabel) ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _otherLabelCtrl,
+                  textCapitalization: TextCapitalization.sentences,
+                  maxLength: 60,
+                  decoration: const InputDecoration(
+                    labelText: 'What is this document?',
+                    hintText: 'e.g. business licence, health certificate',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               // Said out loud because it is a location: the app takes ONE fix
               // at the moment of upload as a verification signal, keeps it on
@@ -472,6 +527,7 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
                     : () => setState(() {
                           _step = 0;
                           _file = null;
+                          _otherLabelCtrl.clear();
                         }),
                 icon: const Icon(Icons.arrow_back, size: 16),
                 label: const Text('Change document type'),
@@ -499,7 +555,7 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
         if (_step == 1)
           FilledButton(
             onPressed: (_uploading || _file == null) ? null : _submit,
-            child: Text(_uploading ? 'Uploading…' : 'Upload & verify'),
+            child: Text(_uploading ? 'Uploading…' : 'Upload document'),
           ),
       ],
     );
@@ -558,7 +614,8 @@ class _DocUploadSheetState extends State<_DocUploadSheet> {
             Expanded(
               child: Text(
                 _file == null
-                    ? 'Take or choose the ${ProviderDocGate.acceptedDocTypes[_selectedType] ?? 'document'} image'
+                    ? 'Take or choose the '
+                        '${_selectedType == ProviderDocGate.otherDocType ? 'document' : ProviderDocGate.acceptedDocTypes[_selectedType] ?? 'document'} image'
                     : 'Selected ✓',
                 style: const TextStyle(fontSize: 13),
               ),
