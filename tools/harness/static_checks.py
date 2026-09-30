@@ -2257,6 +2257,109 @@ def check_client_write_policies_are_executable() -> list[str]:
                 "quietly stop existing and nothing would say so" % guard
             )
 
+    problems.extend(_money_assertion_cannot_pass_vacuously())
+
+    return problems
+
+
+def _money_assertion_cannot_pass_vacuously() -> list[str]:
+    """The money assertion shipped broken and reported itself as a finding.
+
+    The first version (migration 0102) walked a `text[][]` by subscript and
+    produced a NULL table name on the live database, so it raised
+    `MONEY_TABLE_MISSING: public.<NULL>` -- naming a table that has never been
+    missing. Two separate defects let that read as a schema problem:
+
+      * a 2-D array walked by subscript is the same construct migration 95
+        records as having cost two deploy cycles, so the shape is banned here
+        rather than rediscovered;
+      * its vacuity guard was `v_checked <> array_length(...)`, which is NULL
+        -- not true -- when the loop never runs, and `IF NULL` falls through.
+        A guard that cannot fail is worse than no guard, because it converts a
+        broken check into a green build.
+
+    `function_body` strips comments, so the prose above cannot satisfy these.
+    """
+    problems: list[str] = []
+    path, sql = last_migration_defining(
+        "assert_owner_can_read_and_write_their_money")
+    if path is None:
+        return ["no migration defines assert_owner_can_read_and_write_their_money()"]
+
+    body = function_body(sql, "assert_owner_can_read_and_write_their_money")
+    if not body:
+        return [
+            "%s: could not extract the body of "
+            "assert_owner_can_read_and_write_their_money(), so its shape "
+            "cannot be checked" % path.name
+        ]
+    rel = path.name
+
+    if re.search(r"\w+\s+text\s*\[\s*\]\s*\[\s*\]", body):
+        problems.append(
+            "%s: the money assertion declares a 2-D array. Walking one by "
+            "subscript is the construct that shipped broken (it yielded a NULL "
+            "table name live and reported a table that exists as missing), and "
+            "migration 95 already records a 2-D needle table costing two deploy "
+            "cycles. Use two flat arrays zipped with unnest, the shape "
+            "migration 0101 uses." % rel
+        )
+
+    if re.search(r"\bFOREACH\b", body):
+        problems.append(
+            "%s: the money assertion uses FOREACH. plpgsql refuses an "
+            "array-typed FOREACH loop variable at RUN time (42804); "
+            "CREATE FUNCTION does not catch it, so the function deploys green "
+            "and raises on every call. The FOREACH lint elsewhere in this file "
+            "exists for exactly that." % rel
+        )
+
+    if "unnest(" not in body:
+        problems.append(
+            "%s: the money assertion does not zip its requirement list with "
+            "unnest(a, b). The two flat arrays plus "
+            "`FOR x, y IN SELECT * FROM unnest(a, b)` shape is what migration "
+            "0101 uses in production and is the one that has been proven "
+            "against a live database." % rel
+        )
+
+    # A guard that cannot fail converts a broken check into a green build. The
+    # coalesce need not sit inline in the comparison -- assigning it to the
+    # expected count first is the same thing -- so this asks whether the body
+    # neutralises NULL anywhere it compares, rather than pinning one spelling.
+    if not re.search(r"v_checked\s*<>", body):
+        problems.append(
+            "%s: the money assertion has no `v_checked <> ...` comparison, so "
+            "there is nothing stopping it reporting success after "
+            "examining nothing" % rel
+        )
+    elif "coalesce" not in body.lower():
+        problems.append(
+            "%s: the money assertion compares v_checked against an expected "
+            "count with no coalesce anywhere. When the loop never runs that "
+            "count is NULL and `v_checked <> NULL` is NULL, which `IF` treats "
+            "as false -- so the guard reports success precisely when it has "
+            "checked nothing, which is the failure this check exists to "
+            "prevent." % rel
+        )
+
+    # An empty requirement list must also fail. coalesce(... , 0) alone does
+    # not catch `0 <> 0`.
+    if not re.search(r"expected\s*=\s*0|=\s*0\s+OR|OR\s+\w*expected\w*\s*=\s*0", body):
+        problems.append(
+            "%s: the money assertion never fails on an EMPTY requirement "
+            "list. `0 <> 0` is false, so a list that unzips to nothing is "
+            "reported as a clean pass rather than as a check that examined "
+            "nothing." % rel
+        )
+
+    if "MONEY_CHECK_MALFORMED" not in body:
+        problems.append(
+            "%s: the money assertion has no MONEY_CHECK_MALFORMED guard, so if "
+            "its own loop breaks again it reports the breakage as a finding "
+            "about the schema and sends the reader to the wrong file." % rel
+        )
+
     return problems
 
 
