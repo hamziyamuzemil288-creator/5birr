@@ -113,27 +113,31 @@ def main() -> int:
         "default is EXECUTE TO PUBLIC)",
         {})
 
-    # C. Removing the GRANT really does break it. Two earlier versions of this
-    #    case were wrong. The first appended `authenticated` to the REVOKE's
-    #    FROM list -- which the loop re-grants two lines later, so the function
-    #    stayed reachable. The second removed only the `(uuid, text)` grant,
-    #    forgetting that fee_subscription is granted on TWO overloads, so
-    #    `(uuid, text, boolean)` still carried the privilege.
+    # C. Removing the GRANT really does break it. Three earlier versions of
+    #    this case were wrong, each for its own reason. The first appended
+    #    `authenticated` to the REVOKE's FROM list -- which the loop re-grants
+    #    two lines later, so the function stayed reachable. The second removed
+    #    only the `(uuid, text)` grant, forgetting that fee_subscription is
+    #    granted on TWO overloads. The third deleted the two literal GRANT
+    #    lines after the loop was rewritten to build one signature from pg_proc
+    #    -- so it deleted text that no longer exists and proved nothing.
     #
-    #    That last one is a real limitation of this check, not just of the
-    #    case: privileges are tracked per NAME, not per signature, so it
-    #    cannot see an overload that is granted but another that is not.
-    #    PostgREST hides the revoked overload behind PGRST202 for a client
-    #    whose argument shape selects it. It is not fixable without parsing
-    #    each call's parameter names, so it is stated in the check's
-    #    docstring instead of being pretended away.
+    #    That last one is the recurring hazard here: a falsifier anchored on
+    #    a string that a later edit removed goes GREEN FOREVER. `assert
+    #    anchor` below exists because of it.
+    #
+    #    There is also a real limitation of this check, not just of the case:
+    #    privileges are tracked per NAME, not per signature, so it cannot see
+    #    an overload that is granted but another that is not. PostgREST hides
+    #    the revoked overload behind PGRST202 for a client whose argument shape
+    #    selects it. It is stated in the check's docstring rather than
+    #    pretended away.
+    grant_line = ("      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s "
+                  "TO authenticated, service_role', v_sig);")
+    assert grant_line in fees, "falsifier anchor missing: 0107 grant line"
     ok &= expect_red(
-        "C: fee_subscription loses its authenticated grant on both overloads",
-        {FEES: fees.replace(
-            "    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%I(uuid, text) "
-            "TO authenticated, service_role', v_fn);\n", "").replace(
-            "    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%I(uuid, text, "
-            "boolean) TO authenticated, service_role', v_fn);\n", "")})
+        "C: the fee readers lose their authenticated grant",
+        {FEES: fees.replace(grant_line, "")})
 
     # D. Revoking from PUBLIC while granting the role back is CORRECT and must
     #    stay green -- this is the shape every function in 0107 and 0113 uses.

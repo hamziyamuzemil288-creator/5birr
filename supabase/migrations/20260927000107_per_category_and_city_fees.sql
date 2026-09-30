@@ -359,9 +359,22 @@ AS $$
     coalesce(public.get_setting_numeric('provider_registration_fee'), 0));
 $$;
 
+-- Privileges for the ten scalar readers.
+--
+-- Only `fee_commission_percent` and `fee_commission_min` take the third
+-- `p_is_product` argument; the other eight are (uuid, text) only. Granting a
+-- signature that does not exist is not a no-op -- it is
+-- `ERROR: function public.fee_ride_base_fare(uuid, text, boolean) does not
+-- exist (SQLSTATE 42883)`, which aborts the whole push. The loop therefore
+-- asks pg_proc which overloads are really there and touches only those, so
+-- adding a third argument to one of these readers later cannot silently break
+-- the deploy the way the hard-coded pair did.
 DO $$
 DECLARE
   v_fn text;
+  v_sig text;
+  v_oid oid;
+  v_args text[];
 BEGIN
   FOREACH v_fn IN ARRAY ARRAY[
     'fee_ride_base_fare', 'fee_ride_per_km', 'fee_ride_minimum_fare',
@@ -369,10 +382,29 @@ BEGIN
     'fee_commission_percent', 'fee_commission_min',
     'fee_subscription', 'fee_activation']
   LOOP
-    EXECUTE format('REVOKE ALL ON FUNCTION public.%I(uuid, text) FROM PUBLIC, anon', v_fn);
-    EXECUTE format('REVOKE ALL ON FUNCTION public.%I(uuid, text, boolean) FROM PUBLIC, anon', v_fn);
-    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%I(uuid, text) TO authenticated, service_role', v_fn);
-    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%I(uuid, text, boolean) TO authenticated, service_role', v_fn);
+    FOREACH v_args IN ARRAY ARRAY[
+      ARRAY['uuid', 'text'], ARRAY['uuid', 'text', 'boolean']]
+    LOOP
+      SELECT p.oid INTO v_oid
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = v_fn
+        AND p.pronargs = array_length(v_args, 1)
+        AND (
+          SELECT array_agg(pg_get_function_arguments(p.oid)
+                           || ' ' || t.typname ORDER BY x.ord)
+          FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY AS x(oid, ord)
+          JOIN pg_type t ON t.oid = x.oid
+        ) = v_args;
+
+      IF v_oid IS NULL THEN
+        CONTINUE;
+      END IF;
+
+      v_sig := format('%I(%s)', v_fn, array_to_string(v_args, ', '));
+      EXECUTE format('REVOKE ALL ON FUNCTION public.%s FROM PUBLIC, anon', v_sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s TO authenticated, service_role', v_sig);
+    END LOOP;
   END LOOP;
 END;
 $$;

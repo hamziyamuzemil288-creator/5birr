@@ -4481,12 +4481,21 @@ def check_client_rpcs_are_executable() -> list[str]:
             revoked.setdefault(m.group(1).lower(), set()).update(
                 r.strip().lower() for r in m.group(2).split(","))
             record(m.group(1).lower(), base + m.start(), "revoke",
-                   {r.strip().lower() for r in m.group(2).split(",")})
-        # The 0107 DO-block loop builds its GRANT/REVOKE with format('%I'), so
-        # the literal statements never appear. The role lists DO appear, inside
+                   {r.strip().lower() for r in m.group(2).split(",")})        # The 0107 DO-block loop builds its GRANT/REVOKE with format(), so the
+        # literal statements never appear. The role lists DO appear, inside
         # the format string, and are read from there.
+        #
+        # The `%[Is]` alternation matters: the loop was rewritten to assemble
+        # the signature from pg_proc, so it interpolates `%s` with a variable
+        # rather than `%I` with an inline argument list. A pattern that only
+        # knew `%I(...)` silently read ZERO dynamic privileges from the file
+        # and declared the fee readers unreachable -- and, worse, would have
+        # gone on reading zero after a real grant was deleted. The verb and
+        # the role list are what this needs; the signature spelling is the
+        # loop's business.
         for m in re.finditer(
-                r"format\(\s*'(GRANT\s+EXECUTE|REVOKE\s+ALL) ON FUNCTION "                r"public\.%I\([^)]*\)\s*(?:TO|FROM)\s*([^']+)'",
+                r"format\(\s*'(GRANT\s+EXECUTE|REVOKE\s+ALL) ON FUNCTION "
+                r"public\.%[Is]\b[^']*?\b(?:TO|FROM)\s*([^']+)'",
                 live,
                 re.IGNORECASE):
             record(None, base + m.start(),
@@ -4554,6 +4563,134 @@ def check_client_rpcs_are_executable() -> list[str]:
                     "the connectivity suite calls %s() as ANON, but something "
                     "REVOKEs it from anon or PUBLIC with no GRANT back. It "
                     "will fail as PGRST202." % m.group(1))
+
+    return problems
+
+
+def _names_near(src: str, pos: int) -> set[str]:
+    """The quoted function names belonging to the privilege loop at `pos`.
+
+    The loop's own `FOREACH v_fn IN ARRAY ARRAY['fee_a', 'fee_b']` sits
+    ABOVE the signature array, so the window looks back rather than forward.
+    Bounded so a later, unrelated list cannot be blamed on this one.
+    """
+    window = src[max(0, pos - 2000):pos]
+    start = window.rfind("ARRAY[")
+    if start != -1 and "FOREACH" in window[:start]:
+        window = window[:start]
+    return set(re.findall(r"'(fee_[a-z_]+)'", window))
+
+
+def check_dynamic_privileges_name_real_signatures() -> list[str]:
+    """A GRANT/REVOKE built with format() can only name a signature that exists.
+
+    Postgres resolves `GRANT ... ON FUNCTION public.f(a, b)` at execution
+    time, so naming a function or an arity that was never created is not a
+    no-op and not a syntax error:
+
+        ERROR: function public.fee_ride_base_fare(uuid, text, boolean)
+        does not exist  (SQLSTATE 42883)
+
+    which aborts the entire `supabase db push`. The deploy that shipped this
+    file died on exactly that, after both the whole-file parse and the
+    per-body parse had passed: 0107's privilege loop granted a 3-argument
+    overload for all ten fee readers, and only two of them take a third
+    argument.
+
+    Parsing cannot catch it -- the statement is well formed -- so this reads
+    what the file CREATES and requires every name a dynamic privilege
+    statement mentions to be among them. Dynamic statements are the only
+    place this can happen: a literal `GRANT ... ON FUNCTION` is at least
+    syntactically visible, and the deploy reaches it in the same way, so the
+    file is scanned for both and only the constructed ones are judged here.
+    """
+    problems: list[str] = []
+
+    created: dict[str, set[str]] = {}
+    for path in migration_files():
+        src = _read(path)
+        for m in re.finditer(
+                r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+(?:public\.)?(\w+)\s*\(",
+                src, re.IGNORECASE):
+            # The argument list, taken with balanced parens so a default value
+            # containing a comma does not read as two arguments.
+            i = m.end() - 1
+            depth = 0
+            close = None
+            for j in range(i, len(src)):
+                if src[j] == "(":
+                    depth += 1
+                elif src[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close = j
+                        break
+            # No closing paren in this file: the definition is truncated or
+            # split across it, and a half-read signature would be a false
+            # accusation. Skipped rather than guessed at.
+            if close is None:
+                continue
+            args = [a.strip() for a in src[i + 1:close].split(",") if a.strip()]
+            # A default does not change the arity for resolution purposes
+            # (`p_is_product boolean DEFAULT false` is still one argument).
+            types = []
+            for a in args:
+                a = re.split(r"\bDEFAULT\b", a, flags=re.IGNORECASE)[0].strip()
+                types.append(a.split()[0].lower() if a.split() else "")
+            created.setdefault(m.group(1).lower(), set()).add(
+                ", ".join(types))
+
+    # Every name a dynamic privilege statement mentions.
+    named: dict[str, set[tuple[str, str, int]]] = {}
+    for path in migration_files():
+        src = _read(path)
+        for m in re.finditer(
+                r"(?:GRANT|REVOKE)\s+(?:ALL|EXECUTE)?\s*ON\s+FUNCTION\s+"
+                r"(?:public\.)?%I\s*\(([^)]*)\)", src, re.IGNORECASE):
+            sig = ", ".join(a.strip().lower() for a in m.group(1).split(","))
+            named.setdefault(path.name, set()).add((m.start(), sig, 0))
+
+        # The loop in 0107 does not build the signature with %I inline; it
+        # assembles one from an array of arg types. So the shape to catch is
+        # the ARRAY[...] of type names plus the format() that consumes it.
+        for m in re.finditer(
+                r"ARRAY\[([^\]]*'uuid'[^\]]*)\]", src, re.IGNORECASE):
+            block = m.group(1)
+            args = re.findall(r"'(\w+)'", block)
+            if len(args) < 2:
+                continue
+            # Which functions does the enclosing FOREACH grant?
+            window = src[max(0, m.start() - 2000):m.start()]
+            names = re.findall(r"'(fee_[a-z_]+)'", window)
+            if not names:
+                continue
+            for n in names:
+                named.setdefault(path.name, set()).add(
+                    (m.start(), ", ".join(a.lower() for a in args), 1))
+
+    for path in migration_files():
+        src = _read(path)
+        # A loop that checks pg_proc before granting cannot fail this way, so
+        # naming a missing overload inside one is deliberate, not a defect.
+        guarded = "IF v_oid IS NULL" in src and "CONTINUE;" in src
+        for _pos, sig, _kind in sorted(named.get(path.name, set())):
+            # The loop grants a LIST of names against one signature. That is
+            # only safe when every name in the list has that arity, so the
+            # names are collected from the enclosing FOREACH and each is
+            # required to have it.
+            window_names = _names_near(src, _pos)
+            offenders = [n for n in window_names if sig not in created.get(n, set())]
+            if not offenders or guarded:
+                continue
+            have = sorted({s for n in offenders for s in created.get(n, set())})
+            problems.append(
+                "%s: a dynamic privilege statement grants the signature (%s) "
+                "to %s, which are created as %s. Postgres resolves this at "
+                "EXECUTE time and answers 'function ... does not exist' "
+                "(SQLSTATE 42883), aborting the whole push. Either drop the "
+                "signature or guard the loop on the arity actually created."
+                % (path.name, sig, ", ".join(sorted(offenders)),
+                   "; ".join(have) or "nothing at all"))
 
     return problems
 
@@ -4639,6 +4776,8 @@ CHECKS = [
      check_notification_types_exist),
     ("the other side of an order or a ride is told, not left to poll",
      check_provider_is_told_about_work),
+    ("a dynamic GRANT/REVOKE only names signatures the file actually creates",
+     check_dynamic_privileges_name_real_signatures),
     ("every RPC the app calls is executable by the role that calls it",
      check_client_rpcs_are_executable),
 ]

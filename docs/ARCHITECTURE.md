@@ -1154,6 +1154,40 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0113` | the provider **fulfilment gate**: `provider_documents_verified()`, `provider_fulfilment_blockers()` (returns *why*, not just yes/no), `provider_can_fulfil()`; `provider_can_publish`, `claim_ride` and `transition_order_status` all routed through it; `provider_fulfilment_gate_report()`; the `enforce_verified_documents` setting; `assert_provider_fulfilment_gate_is_wired()` | **a provider with an unreviewed ID and an unpaid activation fee could take a rider's trip and accept an order.** The document half of the gate was satisfied by *uploading* a document, because the status a document is born in is one the old predicate accepted; and `claim_ride` / `transition_order_status` never consulted the gate at all, while the buyer-side checkout — which did — refused the same provider |
 | `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
 
+**Parsing proves nothing about names.** Two deploys died on the same file,
+both after it had parsed clean as a whole *and* body by body:
+
+| Run | Error | Why no parser sees it |
+|---|---|---|
+| 1 | `syntax error at or near "." (42601)` | a function call qualified like a row |
+| 2 | `function fee_ride_base_fare(uuid, text, boolean) does not exist (42883)` | a **name that resolves to nothing**, granted by a dynamic statement |
+
+The second is the instructive one. 0107 granted privileges in a `DO` block over
+ten fee readers, and granted **both** `(uuid, text)` and
+`(uuid, text, boolean)` for all ten — but only `fee_commission_percent` and
+`fee_commission_min` take a third argument. The other eight therefore named a
+function that did not exist, and Postgres resolves `ON FUNCTION` at execution
+time, so the push aborted. Nothing about that is a syntax question: the
+statement is perfectly well formed and both parsers said so.
+
+The loop now consults `pg_proc` and touches only overloads that exist, so adding
+a third argument to one of these readers later cannot break the deploy the way
+the hard-coded pair did. `check_dynamic_privileges_name_real_signatures()` fails
+the build on an unguarded loop that names a function or an arity the file never
+creates — and deliberately stays quiet about a *guarded* one, since there a
+missing overload is the loop working as intended rather than a defect.
+
+Fixing it surfaced the failure mode this harness keeps hitting, and it is worth
+naming precisely: **a falsifier anchored on a string a later edit removed goes
+green forever.** Case C of `falsify_rpc_grants.py` had deleted two literal
+`GRANT` lines; rewriting the loop to build its signature from `pg_proc` deleted
+those exact lines, so the case was still deleting them — and proving nothing.
+An `assert anchor in …` guard now runs before every case that mutates a
+literal, so a stale anchor fails loudly instead of passing quietly. The same
+rewrite broke the *check* too: its dynamic-privilege pattern matched
+`%I(...)`, so once the loop interpolated `%s` it read **zero** dynamic
+privileges from the file and would have missed a genuinely deleted grant.
+
 **A `LANGUAGE sql` body is as invisible to pglast as a plpgsql one.** The whole-file
 parse passed; the deploy then died with
 `ERROR: syntax error at or near "." (SQLSTATE 42601)` at statement 16 of 0107.
