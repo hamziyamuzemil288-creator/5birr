@@ -1211,6 +1211,27 @@ void main() {
       print('    live map -> $detail');
     });
 
+    test('a payment screenshot upload is actually accepted by its bucket', () async {
+      // Migration 101's assertion, and the half of this bug that only a live
+      // database can answer. The client fix downscales every picker, so the
+      // remaining contract is the bucket's own: it must stay PRIVATE (a
+      // payment proof readable by anyone who guesses a path is worse than the
+      // outage), must keep accepting image/jpeg (every picker re-encodes to
+      // it), and must not be lowered below the limit the recharge screen now
+      // quotes the provider. Without this, the only evidence the upload
+      // works is a provider reporting that it does not.
+      final (detail, error) =
+          await rpcTextDiagnosed(
+              'assert_payment_screenshot_uploads_are_accepted');
+      expect(detail, isNotNull,
+          reason: 'The payment-screenshot buckets could not be verified at '
+              'all. If this is null WITH the function deployed, read the '
+              'error: cache vs finding. Diagnostic: $error');
+      expect(detail, isNot(contains('SCREENSHOT_')),
+          reason: 'A payment screenshot bucket is not safe to upload to: '
+              '$detail');
+    });
+
     test('the CEO delete routes through the one deletion cascade', () async {
       // Migration 0100's assertion. Three invariants that must never slip:
       // delete_user_account stays service_role-only (a client-reachable

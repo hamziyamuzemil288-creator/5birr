@@ -96,8 +96,25 @@ class _RechargeScreenState extends State<RechargeScreen> {
   }
 
   Future<void> _pickScreenshot() async {
+    // maxWidth/maxHeight/imageQuality together, exactly as the document
+    // pipeline does it (document_upload_service, become_partner, vehicle
+    // form, gallery, product form).
+    //
+    // WHY THIS PICKER WAS DIFFERENT, AND WHAT IT COST
+    // ------------------------------------------------
+    // This one picked the gallery image at full resolution. `payment-screenshots`
+    // is capped at 5MB with an image/jpeg|png|webp mime list (migration 96),
+    // so a modern phone photo — or the HEIC an iOS gallery hands back — was
+    // rejected by storage, and because the upload shared one try/catch with
+    // the request insert, the provider saw only "Could not submit your
+    // recharge". A 1920px re-encode is a few hundred KB and always JPEG,
+    // which is what every other bucket upload in this app already relied on.
     final picked = await _picker.pickImage(
-        source: ImageSource.gallery, imageQuality: 85);
+      source: ImageSource.gallery,
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked != null) {
       setState(() => _screenshot = File(picked.path));
     }
@@ -155,8 +172,23 @@ class _RechargeScreenState extends State<RechargeScreen> {
 
       String? screenshotPath;
       if (_screenshot != null) {
-        screenshotPath = await WalletService.instance
-            .uploadScreenshot(_screenshot!.path, prov['id']);
+        // Its own try/catch on purpose. The screenshot and the request insert
+        // used to share one handler, so a refused image surfaced as "Could
+        // not submit your recharge" — the provider then re-sent the request
+        // and was refused again, with no way to tell which half had failed.
+        // The photo is the thing that gets refused (a type or size the bucket
+        // will not take), so it now says so.
+        try {
+          screenshotPath = await WalletService.instance
+              .uploadScreenshot(_screenshot!.path, prov['id']);
+        } on Exception catch (e) {
+          if (!mounted) return;
+          setState(() {
+            _submitting = false;
+            _error = _screenshotError(e);
+          });
+          return;
+        }
       }
 
       await WalletService.instance.submitRecharge(
@@ -184,6 +216,34 @@ class _RechargeScreenState extends State<RechargeScreen> {
         });
       }
     }
+  }
+
+  /// Turns a refused screenshot into something the provider can act on.
+  ///
+  /// The three refusals storage actually returns for this upload, in the
+  /// words of the limit rather than of the driver. Anything unrecognised
+  /// falls back to the shared mapper — never a raw PostgREST string on
+  /// screen.
+  String _screenshotError(Object e) {
+    final raw = e.toString().toLowerCase();
+    if (raw.contains('mime') ||
+        raw.contains('invalidpayload') ||
+        raw.contains('not allowed')) {
+      return 'That screenshot could not be accepted: it must be a JPG, PNG or '
+          'WEBP image. Try picking it again.';
+    }
+    if (raw.contains('exceeded the maximum allowed size') ||
+        raw.contains('413') ||
+        raw.contains('payload too large')) {
+      return 'That screenshot is too large to upload (the limit is 5 MB). '
+          'Crop it or screenshot it again at a smaller size.';
+    }
+    if (raw.contains('row-level security') || raw.contains('403')) {
+      return 'The screenshot could not be saved to your folder. Sign out and '
+          'in again, then try once more.';
+    }
+    return friendlyError(e,
+        context: 'Could not upload your payment screenshot');
   }
 
   @override

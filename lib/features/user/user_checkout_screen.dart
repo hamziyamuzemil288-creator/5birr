@@ -189,16 +189,30 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   double get _total => _items.fold(0.0, (sum, i) => sum + i.lineTotal);
 
   Future<void> _pickScreenshot() async {
-    final picked =
-        await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    // Downscaled like every other bucket upload in the app. payment-proofs
+    // allows 10MB, which hides the problem on most phones but not on a
+    // 48MP camera image — the same defect the provider recharge screen had,
+    // fixed there first.
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked != null) {
       setState(() => _screenshot = File(picked.path));
     }
   }
 
   Future<void> _pickNationalId() async {
-    final picked =
-        await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    // user-documents allows 10MB and takes jpeg/png/webp/pdf, so this one
+    // has the same latent refusal as the screenshot above.
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked != null) {
       setState(() => _nationalId = File(picked.path));
     }

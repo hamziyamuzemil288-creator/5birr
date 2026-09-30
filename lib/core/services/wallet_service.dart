@@ -110,6 +110,15 @@ class WalletService {
   }
 
   /// Upload payment screenshot.
+  ///
+  /// `payment-screenshots` is capped at 5MB and accepts image/jpeg, png and
+  /// webp only (migration 20260927000096). The size is checked HERE rather
+  /// than left to storage, because storage's refusal arrives as a raw
+  /// InvalidPayload the caller has to decode; a caller that forgets to
+  /// downscale — which is exactly what the recharge screen did — gets a
+  /// sentence instead of a driver string. The mime types cannot be checked
+  /// without sniffing content, which is why every picker in this app
+  /// re-encodes to JPEG with maxWidth/maxHeight instead.
   Future<String> uploadScreenshot(String filePath, String providerId) async {
     // Path convention MUST start with the caller's auth uid, with NO bucket
     // prefix: storage policies match the object NAME inside the bucket, and
@@ -124,8 +133,15 @@ class WalletService {
     final fileName =
         '${providerId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
     final path = '$uid/$fileName';
+    final file = File(filePath);
+    // 5MB, the bucket's file_size_limit. Checked before the upload so the
+    // failure names the limit instead of surfacing as an HTTP error.
+    if (file.existsSync() && await file.length() > 5 * 1024 * 1024) {
+      throw Exception(
+          'PAYMENT_SCREENSHOT_TOO_LARGE: the screenshot must be under 5 MB');
+    }
     await _client.storage.from('payment-screenshots').upload(
-        path, File(filePath),
+        path, file,
         fileOptions: const FileOptions(upsert: true));
     return path;
   }

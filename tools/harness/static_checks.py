@@ -2068,6 +2068,74 @@ def check_ceo_account_directory_is_wired() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 19. a payment screenshot is downscaled before it is uploaded
+# ---------------------------------------------------------------------------
+def check_payment_screenshots_are_downscaled() -> list[str]:
+    """Every picker that feeds a storage bucket must re-encode, not forward.
+
+    A bare `pickImage(source: ImageSource.gallery, imageQuality: 85)` sends
+    the camera's original bytes. Every bucket here has a file_size_limit and
+    an image/jpeg|png|webp mime list, so that upload is refused for a modern
+    phone photo or an iOS HEIC — and the report that reaches us is never
+    "the screenshot is too big", it is "payment screenshot is not accepting
+    from provider section", because the refusal happens server-side inside a
+    bucket the client never sees.
+
+    Checked at the call site, not in the picker: these are three independent
+    screens, and the one that was wrong was correct code in isolation.
+    """
+    problems: list[str] = []
+
+    # Every screen that uploads a payment proof or a screenshot, with the
+    # bucket it targets (migration 96's limits).
+    sites = [
+        ("recharge_screen.dart (payment-screenshots, 5MB)",
+         LIB / "features" / "wallet" / "recharge_screen.dart",
+         ["_pickScreenshot"]),
+        ("user_checkout_screen.dart (payment-proofs)",
+         LIB / "features" / "user" / "user_checkout_screen.dart",
+         ["_pickScreenshot", "_pickNationalId"]),
+        ("user_order_detail_screen.dart (payment-proofs)",
+         LIB / "features" / "user" / "user_order_detail_screen.dart",
+         ["_submitPayment"]),
+    ]
+
+    for label, path, fns in sites:
+        src = _strip_comments(_read(path))
+        if not src:
+            problems.append(f"{label}: the file is missing")
+            continue
+        for m in re.finditer(
+                r"pickImage\(\s*source:\s*ImageSource\.gallery(.{0,320}?)\)",
+                src, re.DOTALL):
+            args = m.group(1)
+            if "maxWidth" not in args or "maxHeight" not in args:
+                line = src[:m.start()].count("\n") + 1
+                problems.append(
+                    f"{label}: the gallery pick at line {line} forwards the "
+                    "original image (no maxWidth/maxHeight), so a large photo "
+                    "or a HEIC is refused by the bucket")
+        # The named methods must still exist at all.
+        for fn in fns:
+            if fn not in src:
+                problems.append(f"{label}: {fn} is gone — check the upload path")
+
+    # The service must quote a limit the bucket actually has, and check it
+    # before uploading rather than surfacing storage's refusal.
+    wallet = _strip_comments(
+        _read(LIB / "core" / "services" / "wallet_service.dart"))
+    if "payment-screenshots" not in wallet:
+        problems.append(
+            "WalletService no longer targets the payment-screenshots bucket")
+    if not re.search(r"5\s*\*\s*1024\s*\*\s*1024", wallet):
+        problems.append(
+            "uploadScreenshot no longer checks the 5MB limit up front, so a "
+            "refused image reaches the provider as a raw storage error")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -2108,6 +2176,8 @@ CHECKS = [
      check_other_document_type_is_wired),
     ("the CEO account directory routes through the one deletion cascade",
      check_ceo_account_directory_is_wired),
+    ("every payment screenshot is downscaled before upload, so the bucket accepts it",
+     check_payment_screenshots_are_downscaled),
 ]
 
 

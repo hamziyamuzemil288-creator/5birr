@@ -899,8 +899,14 @@ class _UserOrderDetailScreenState
       if (!mounted) return;
     }
 
-    final picked = await ImagePicker()
-        .pickImage(source: ImageSource.gallery, imageQuality: 85);
+    // Downscaled, like every other bucket upload in this app (the provider
+    // recharge screen had the same latent refusal and was fixed first).
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
     if (picked == null || !mounted) return;
 
     final confirmed = await showDialog<bool>(
