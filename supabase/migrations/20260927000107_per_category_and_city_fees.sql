@@ -373,16 +373,17 @@ $$;
 -- list is not -- adding a third argument to one of these readers later would
 -- otherwise break the deploy again.
 --
--- The signature is rebuilt from proname/proargtypes, which is what
--- `to_regprocedure` parses, so the GRANT names exactly what was matched.
+-- `pg_get_function_identity_arguments` and NOT `pg_get_function_arguments`:
+-- the latter renders `p_is_product boolean DEFAULT false`, and a DEFAULT
+-- clause is not part of a signature `GRANT` will accept. The identity form is
+-- the types alone -- `uuid, text, boolean` -- which is exactly what identity
+-- resolution takes, so the GRANT names precisely what the catalog matched.
 DO $$
 DECLARE
   r record;
-  v_sig text;
 BEGIN
   FOR r IN
-    SELECT p.oid,
-           p.proname || '(' || pg_get_function_arguments(p.oid) || ')' AS sig
+    SELECT p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS sig
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
