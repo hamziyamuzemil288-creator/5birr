@@ -159,6 +159,19 @@ TRAILING_COMMENT = re.compile(r"(?:--[^\n]*\n|\s)+\Z")
 DO_OPENER = re.compile(r"(?:^|[\s;)])DO\Z", re.IGNORECASE)
 
 
+#: `LANGUAGE sql` bodies are the other half of the invisible text. A
+#: `CREATE FUNCTION ... LANGUAGE sql ... AS $$ ... $$` body is equally opaque
+#: to an outer pglast pass -- it is a string literal to the file parser -- but
+#: its contents are plain SQL and must parse AS WRITTEN. The plpgsql
+#: normalisation below must not touch them: `SELECT ... INTO v` is an
+#: assignment in plpgsql and a genuine syntax error in a sql body.
+SQL_BODY = re.compile(r"LANGUAGE\s+sql\b", re.IGNORECASE)
+
+
+def is_sql_body(prefix: str) -> bool:
+    return SQL_BODY.search(prefix) is not None
+
+
 def is_plpgsql_body(prefix: str) -> bool:
     if "LANGUAGE plpgsql" in prefix:
         return True
@@ -205,8 +218,18 @@ def check_file(path: pathlib.Path) -> list[str]:
     bodies = 0
 
     for start, body in find_bodies(text):
+        # The prefix must describe THIS body only. A fixed 800-char lookback
+        # reaches into the previous function, so a `LANGUAGE sql` belonging to
+        # the one before it labelled this plpgsql body as sql -- and then the
+        # `SELECT ... INTO v` repair below was skipped and reported as a
+        # syntax error in valid SQL. Nine already-applied migrations were
+        # reported broken by that. The window is cut at the last statement
+        # boundary so the opening `LANGUAGE` line is the one that counts.
         prefix = text[max(0, start - 800):start]
-        if not is_plpgsql_body(prefix):
+        cut = max(prefix.rfind("$$"), prefix.rfind(";"))
+        prefix = prefix[cut + 1:]
+        sql_body = is_sql_body(prefix)
+        if not sql_body and not is_plpgsql_body(prefix):
             continue
         bodies += 1
         offset = 0
@@ -216,11 +239,22 @@ def check_file(path: pathlib.Path) -> list[str]:
             # the leading comments second. The other way round leaves the
             # statement starting with `--` and it matches no command.
             stmt = LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", raw))
-            if not stmt or not SQL_COMMAND.match(stmt):
+            # The allowlist exists to filter plpgsql NOISE -- assignment and
+            # control statements that are not SQL at all. A LANGUAGE sql body
+            # has no such noise: every statement in it is supposed to be SQL,
+            # so an unrecognised leading keyword there is precisely the
+            # finding. Filtering it out is what let `RETURN` inside a sql body
+            # go unreported.
+            if not stmt:
+                continue
+            if not sql_body and not SQL_COMMAND.match(stmt):
                 continue
             if PLPGSQL_DYNAMIC.match(stmt):
                 continue
-            if SELECT_START.match(stmt):
+            if sql_body:
+                # Plain SQL: parse it exactly as written. No plpgsql repair.
+                to_parse = stmt
+            elif SELECT_START.match(stmt):
                 # `SELECT ... INTO v` -- the INTO is the assignment.
                 to_parse = INTO_TARGETS.sub("", stmt, count=1)
             elif HAS_RETURNING.search(stmt):
@@ -236,8 +270,9 @@ def check_file(path: pathlib.Path) -> list[str]:
                 pglast.parse_sql(to_parse)
             except Exception as exc:  # noqa: BLE001 - report, never raise
                 line = text[: start + offset].count("\n") + 1
+                kind = "a LANGUAGE sql body" if sql_body else "a plpgsql body"
                 problems.append(
-                    f"{path.name}:{line}: SQL inside a plpgsql body does not "
+                    f"{path.name}:{line}: SQL inside {kind} does not "
                     f"parse: {str(exc).splitlines()[0]}\n"
                     f"      statement: {' '.join(stmt.split())[:140]}"
                 )

@@ -1154,6 +1154,41 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0113` | the provider **fulfilment gate**: `provider_documents_verified()`, `provider_fulfilment_blockers()` (returns *why*, not just yes/no), `provider_can_fulfil()`; `provider_can_publish`, `claim_ride` and `transition_order_status` all routed through it; `provider_fulfilment_gate_report()`; the `enforce_verified_documents` setting; `assert_provider_fulfilment_gate_is_wired()` | **a provider with an unreviewed ID and an unpaid activation fee could take a rider's trip and accept an order.** The document half of the gate was satisfied by *uploading* a document, because the status a document is born in is one the old predicate accepted; and `claim_ride` / `transition_order_status` never consulted the gate at all, while the buyer-side checkout — which did — refused the same provider |
 | `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
 
+**A `LANGUAGE sql` body is as invisible to pglast as a plpgsql one.** The whole-file
+parse passed; the deploy then died with
+`ERROR: syntax error at or near "." (SQLSTATE 42601)` at statement 16 of 0107.
+Ten scalar fee readers opened with
+
+```
+WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id))
+```
+
+A function call cannot be qualified with `.id`. It parsed clean because `AS $$
+… $$` is a *string literal* to the file parser, and `plpgsql_body_syntax.py` —
+the gate written for exactly this blindness — only looked at bodies whose
+opening statement said `LANGUAGE plpgsql`. The eight migrations the gate did
+read were fine; the one it skipped was the one that broke. It also read the
+`FROM public.category_fee f` *function* as though it were the *table*
+(`category_fee_settings`).
+
+So the gate now parses both languages, and judges them differently, because the
+repair it applies to plpgsql is a corruption when applied to sql:
+`SELECT ... INTO v` is an assignment in plpgsql and a real `SELECT-INTO` in sql,
+so plpgsql normalisation must not touch sql bodies; and the `SQL_COMMAND`
+allowlist — which exists to filter plpgsql noise — must not filter sql bodies,
+where an unrecognised leading keyword *is* the finding.
+
+That last change needed a falsifier of its own, and the first case for it was
+wrong in a way worth recording: it used `SELECT ... INTO v`, which **pglast
+accepts**, because that is Postgres's own table-creating `SELECT-INTO` and is
+valid in both languages. The case stayed green for a reason that had nothing to
+do with the gate. `RETURN` is the genuinely plpgsql-only construct.
+
+Fixing the 800-character prefix window while there also removed **18
+pre-existing false positives** across applied history, and the new `LANGUAGE sql`
+path reports zero across all 310 migrations — so it is not simply a louder
+check. `falsify_sql_body_syntax.py` cases A–E pin all of it.
+
 **A static check cannot find a Dart compile error.** 39 checks, 12 falsifiers
 and four gates all passed while the app did not compile. The gap was structural,
 not an oversight: `tools/harness/static_checks.py` reads Dart as *text*, so

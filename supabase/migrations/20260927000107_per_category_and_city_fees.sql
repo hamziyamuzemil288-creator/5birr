@@ -242,8 +242,8 @@ RETURNS numeric
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
-    (SELECT f.ride_base_fare FROM public.category_fee f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+    (SELECT f.ride_base_fare FROM public.category_fee_settings f
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     (SELECT (c.metadata ->> 'base_fare')::numeric FROM public.categories c
       WHERE c.id = p_category_id),
     coalesce(public.get_setting_numeric('ride_base_fare'), 50));
@@ -256,7 +256,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.ride_per_km FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     (SELECT (c.metadata ->> 'per_km')::numeric FROM public.categories c
       WHERE c.id = p_category_id),
     coalesce(public.get_setting_numeric('ride_per_km'), 20));
@@ -269,7 +269,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.ride_minimum_fare FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     (SELECT (c.metadata ->> 'minimum_fare')::numeric FROM public.categories c
       WHERE c.id = p_category_id),
     coalesce(public.get_setting_numeric('ride_minimum_fare'), 80));
@@ -282,7 +282,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.booking_base_fee FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('booking_base_fee'), 0));
 $$;
 
@@ -293,7 +293,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.booking_per_km FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('booking_per_km'), 0));
 $$;
 
@@ -304,7 +304,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.booking_minimum_fee FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('booking_minimum_fee'), 0));
 $$;
 
@@ -320,7 +320,7 @@ AS $$
     (SELECT CASE WHEN p_is_product THEN f.product_commission_percent
                  ELSE f.commission_percent END
        FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('transaction_fee_percent'), 0));
 $$;
 
@@ -333,7 +333,7 @@ AS $$
     (SELECT CASE WHEN p_is_product THEN f.product_commission_min
                  ELSE f.commission_min END
        FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('transaction_fee_min'), 0));
 $$;
 
@@ -344,7 +344,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.subscription_fee FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('monthly_subscription_fee'), 0));
 $$;
 
@@ -355,7 +355,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT coalesce(
     (SELECT f.activation_fee FROM public.category_fee_settings f
-      WHERE f.id = (SELECT public.category_fee(p_category_id, p_city).id)),
+      WHERE f.id = (SELECT (public.category_fee(p_category_id, p_city)).id)),
     coalesce(public.get_setting_numeric('provider_registration_fee'), 0));
 $$;
 
