@@ -1153,6 +1153,8 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0112` | `staff_task_feed` and `verify_payment_proof` restated with the city guard; `provider_profiles_staff_registration_read` and `orders_staff_reports_read` re-issued with the city added | **the work queue and the money are the two surfaces the scope most obviously has to cover**, and neither did. The support-ticket and appeal branches are deliberately left unguarded because they are uncategorised — guarding an axis a row has no value for would hide the row entirely |
 | `0113` | the provider **fulfilment gate**: `provider_documents_verified()`, `provider_fulfilment_blockers()` (returns *why*, not just yes/no), `provider_can_fulfil()`; `provider_can_publish`, `claim_ride` and `transition_order_status` all routed through it; `provider_fulfilment_gate_report()`; the `enforce_verified_documents` setting; `assert_provider_fulfilment_gate_is_wired()` | **a provider with an unreviewed ID and an unpaid activation fee could take a rider's trip and accept an order.** The document half of the gate was satisfied by *uploading* a document, because the status a document is born in is one the old predicate accepted; and `claim_ride` / `transition_order_status` never consulted the gate at all, while the buyer-side checkout — which did — refused the same provider |
 | `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
+| `0115` | restates the six functions the first live Connectivity run flagged: `platform_transaction_fee` / `calculate_fare_estimate` re-wired through the category-aware resolvers, the `information_schema.yes_or_no` domain handled, and `assert_fee_switches_are_wired()` rewritten to read the pairs from 0073's own assertion | **the CEO's two fee switches were stored and inert** after 0107 restated their callers, and four assertions raised instead of measuring |
+| `0116` | restates `assert_staff_city_scope_covers_the_task_feed()` with the derived-table wrapper removed, so `unnest(...)` is filtered directly | **the task-feed assertion raises `column "part" does not exist` (42703) on every call**, so the city-scope report cannot run — 0115 fixed the symptom's name and left the cause |
 
 **Three deploys, three different questions none of the gates could ask.** The
 third was the instructive one: the *fix* for the second
@@ -1192,6 +1194,7 @@ both after it had parsed clean as a whole *and* body by body:
 |---|---|---|
 | 1 | `syntax error at or near "." (42601)` | a function call qualified like a row |
 | 2 | `function fee_ride_base_fare(uuid, text, boolean) does not exist (42883)` | a **name that resolves to nothing**, granted by a dynamic statement |
+| 3 | `column "part" does not exist (42703)` | a **column** that resolves to nothing — the derived table projects the constant `1` |
 
 The second is the instructive one. 0107 granted privileges in a `DO` block over
 ten fee readers, and granted **both** `(uuid, text)` and
@@ -1207,6 +1210,32 @@ the hard-coded pair did. `check_dynamic_privileges_name_real_signatures()` fails
 the build on an unguarded loop that names a function or an arity the file never
 creates — and deliberately stays quiet about a *guarded* one, since there a
 missing overload is the loop working as intended rather than a defect.
+
+Row 3 is the column half of the same class, and it cost **two more** deploy
+cycles. 0112 wrote `AS x` where it meant a column, and wrapped the expression in
+a derived table that projected the constant `1`; 0115 answered the diagnostic by
+*naming* the column (`AS x(part)`) while leaving the subquery wrapped, so the
+derived table still had no `part`. Both statements parse — `pglast`, the
+whole-file parse and `plpgsql_body_syntax.py` all accept them — because
+resolution is not a parsing question: the name only has to exist when the
+statement runs, and the live run said `column "part" does not exist`.
+
+`tools/harness/column_scope.py` closes it, and it is the first gate here built to
+be **quiet first**. It judges a reference only when EVERY relation in scope is a
+derived table or a CTE whose SELECT list is constants, plain column names, or
+aliases. A base table, `unnest` in FROM, `VALUES`, `SELECT *` or an unaliased
+function result makes the scope UNKNOWN and the whole statement is skipped, so an
+unrecognised relation can only ever **suppress** a finding, never invent one — and
+plpgsql variables (the DECLARE section and the signature's parameters) are
+collected and excluded, because PostgreSQL would resolve such a name to the
+variable. A qualified reference is judged only when its qualifier is one of the
+known relations, so `public.some_table.col` stays silent.
+
+Run `--all` over the 204-migration history, it reports exactly the four shipped
+statements and **nothing else**, which is the evidence that it is not simply a
+louder check. `falsify_column_scope.py` pins both shipped shapes red and the five
+that only look like them green — the fixed `unnest` shape, a derived table that
+really has the column, a base table, a DECLARE variable, and a CTE column.
 
 Fixing it surfaced the failure mode this harness keeps hitting, and it is worth
 naming precisely: **a falsifier anchored on a string a later edit removed goes
@@ -1435,7 +1464,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (80 tests). If it is red, the failure message names
+1. Connectivity CI green (85 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,

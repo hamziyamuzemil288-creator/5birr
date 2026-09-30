@@ -211,27 +211,79 @@ SELECT_START = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
 HAS_RETURNING = re.compile(r"\bRETURNING\b", re.IGNORECASE)
 
 
-def check_file(path: pathlib.Path) -> list[str]:
-    text = path.read_text()
-    problems: list[str] = []
-    examined = 0
-    bodies = 0
+def iter_bodies(text: str):
+    """Yield (start, prefix, body, sql_body) for each body this tool can judge.
 
+    The prefix must describe THIS body only. A fixed 800-char lookback reaches
+    into the previous function, so a `LANGUAGE sql` belonging to the one before
+    it labelled this plpgsql body as sql -- and then the `SELECT ... INTO v`
+    repair below was skipped and reported as a syntax error in valid SQL. Nine
+    already-applied migrations were reported broken by that. The window is cut
+    at the last statement boundary so the opening `LANGUAGE` line is the one
+    that counts.
+
+    Shared with column_scope.py: two gates that disagree about which bodies
+    exist can disagree about which statements exist, and then one of them is
+    checking a file the other silently skipped.
+    """
     for start, body in find_bodies(text):
-        # The prefix must describe THIS body only. A fixed 800-char lookback
-        # reaches into the previous function, so a `LANGUAGE sql` belonging to
-        # the one before it labelled this plpgsql body as sql -- and then the
-        # `SELECT ... INTO v` repair below was skipped and reported as a
-        # syntax error in valid SQL. Nine already-applied migrations were
-        # reported broken by that. The window is cut at the last statement
-        # boundary so the opening `LANGUAGE` line is the one that counts.
         prefix = text[max(0, start - 800):start]
         cut = max(prefix.rfind("$$"), prefix.rfind(";"))
         prefix = prefix[cut + 1:]
         sql_body = is_sql_body(prefix)
         if not sql_body and not is_plpgsql_body(prefix):
             continue
-        bodies += 1
+        yield start, prefix, body, sql_body
+
+
+def normalize_statement(stmt: str, sql_body: bool) -> str | None:
+    """The plain-SQL text to parse for one embedded statement, or None to skip.
+
+    Single source of truth for both the syntax gate and the column-scope gate.
+    A statement the allowlist skips must be skipped by both, and a statement
+    the INTO repair rewrites must be rewritten for both, or the two gates
+    disagree about what the database will actually run -- and the one that
+    keeps the un-repaired text reports a syntax error in working SQL.
+    """
+    if not stmt:
+        return None
+    # The allowlist exists to filter plpgsql NOISE -- assignment and control
+    # statements that are not SQL at all. A LANGUAGE sql body has no such
+    # noise: every statement in it is supposed to be SQL, so an unrecognised
+    # leading keyword there is precisely the finding. Filtering it out is what
+    # let `RETURN` inside a sql body go unreported.
+    if not sql_body and not SQL_COMMAND.match(stmt):
+        return None
+    if PLPGSQL_DYNAMIC.match(stmt):
+        return None
+    if sql_body:
+        # Plain SQL: parse it exactly as written. No plpgsql repair.
+        return stmt
+    if SELECT_START.match(stmt):
+        # `SELECT ... INTO v` -- the INTO is the assignment.
+        return INTO_TARGETS.sub("", stmt, count=1)
+    if HAS_RETURNING.search(stmt):
+        # `INSERT/UPDATE/DELETE ... RETURNING * INTO v`. The INTO to remove is
+        # the one AFTER RETURNING -- for an INSERT, the first INTO belongs to
+        # `INSERT INTO` and stripping it yields `INSERT public.t ...`, a
+        # syntax error in a good statement.
+        cut = stmt.upper().index("RETURNING")
+        return stmt[:cut] + INTO_TARGETS.sub("", stmt[cut:], count=1)
+    return stmt
+
+
+def iter_statements(text: str):
+    """Yield (line, body_start, sql_body, stmt, to_parse) per embedded statement.
+
+    `offset` advances only past statements this tool keeps, matching the
+    original inline loop exactly: a skipped statement does not shift the line
+    reported for the ones that follow.
+
+    `body_start` is the offset of the enclosing dollar-quoted body, so a
+    caller that needs the body's own text (column_scope.py, for its DECLARE
+    variables) does not have to re-derive which body a statement came from.
+    """
+    for start, _prefix, body, sql_body in iter_bodies(text):
         offset = 0
         for raw in split_statements(body):
             # Order matters: `BEGIN` may be followed by a comment before the
@@ -239,51 +291,35 @@ def check_file(path: pathlib.Path) -> list[str]:
             # the leading comments second. The other way round leaves the
             # statement starting with `--` and it matches no command.
             stmt = LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", raw))
-            # The allowlist exists to filter plpgsql NOISE -- assignment and
-            # control statements that are not SQL at all. A LANGUAGE sql body
-            # has no such noise: every statement in it is supposed to be SQL,
-            # so an unrecognised leading keyword there is precisely the
-            # finding. Filtering it out is what let `RETURN` inside a sql body
-            # go unreported.
-            if not stmt:
+            to_parse = normalize_statement(stmt, sql_body)
+            if to_parse is None:
                 continue
-            if not sql_body and not SQL_COMMAND.match(stmt):
-                continue
-            if PLPGSQL_DYNAMIC.match(stmt):
-                continue
-            if sql_body:
-                # Plain SQL: parse it exactly as written. No plpgsql repair.
-                to_parse = stmt
-            elif SELECT_START.match(stmt):
-                # `SELECT ... INTO v` -- the INTO is the assignment.
-                to_parse = INTO_TARGETS.sub("", stmt, count=1)
-            elif HAS_RETURNING.search(stmt):
-                # `INSERT/UPDATE/DELETE ... RETURNING * INTO v`. The INTO to
-                # remove is the one AFTER RETURNING -- for an INSERT, the
-                # first INTO belongs to `INSERT INTO` and stripping it yields
-                # `INSERT public.t ...`, a syntax error in a good statement.
-                cut = stmt.upper().index("RETURNING")
-                to_parse = stmt[:cut] + INTO_TARGETS.sub("", stmt[cut:], count=1)
-            else:
-                to_parse = stmt
-            try:
-                pglast.parse_sql(to_parse)
-            except Exception as exc:  # noqa: BLE001 - report, never raise
-                line = text[: start + offset].count("\n") + 1
-                kind = "a LANGUAGE sql body" if sql_body else "a plpgsql body"
-                problems.append(
-                    f"{path.name}:{line}: SQL inside {kind} does not "
-                    f"parse: {str(exc).splitlines()[0]}\n"
-                    f"      statement: {' '.join(stmt.split())[:140]}"
-                )
+            line = text[: start + offset].count("\n") + 1
+            yield line, start, sql_body, stmt, to_parse
             offset += len(raw) + 1
+
+
+def check_file(path: pathlib.Path) -> list[str]:
+    text = path.read_text()
+    problems: list[str] = []
+
+    for line, _start, sql_body, stmt, to_parse in iter_statements(text):
+        try:
+            pglast.parse_sql(to_parse)
+        except Exception as exc:  # noqa: BLE001 - report, never raise
+            kind = "a LANGUAGE sql body" if sql_body else "a plpgsql body"
+            problems.append(
+                f"{path.name}:{line}: SQL inside {kind} does not "
+                f"parse: {str(exc).splitlines()[0]}\n"
+                f"      statement: {' '.join(stmt.split())[:140]}"
+            )
 
     # The guard fires when the extractor found NO plpgsql body at all -- the
     # bug that made the first version report success over 200 unexamined
     # files. It must not fire merely because a body held no parseable SQL
     # (a body that is entirely dynamic `EXECUTE`, say): that file was read,
     # there was simply nothing in it this tool can judge.
-    if bodies == 0:
+    if not any(True for _ in iter_bodies(text)):
         problems.append(
             f"{path.name}: found 0 plpgsql bodies -- the body extractor "
             f"matched nothing, so this file was NOT checked"
