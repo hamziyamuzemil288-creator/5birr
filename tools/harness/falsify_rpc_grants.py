@@ -132,8 +132,8 @@ def main() -> int:
     #    the revoked overload behind PGRST202 for a client whose argument shape
     #    selects it. It is stated in the check's docstring rather than
     #    pretended away.
-    grant_line = ("      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s "
-                  "TO authenticated, service_role', v_sig);")
+    grant_line = ("    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s "
+                  "TO authenticated, service_role', r.sig);")
     assert grant_line in fees, "falsifier anchor missing: 0107 grant line"
     ok &= expect_red(
         "C: the fee readers lose their authenticated grant",

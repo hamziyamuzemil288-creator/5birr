@@ -81,37 +81,68 @@ def _patched(sql: str):
 REAL = _real_read(sc.MIGRATIONS / FEES)
 
 # The guard that repairs it: the loop consults pg_proc and skips a signature
-# nothing created. It must be removed before the file can express the bug --
-# and that is exactly the point. The fix is not "the arity happens to match",
-# it is "the loop can no longer name a function that does not exist".
-GUARD = """      IF v_oid IS NULL THEN
-        CONTINUE;
-      END IF;
-
-"""
-assert GUARD in REAL, "falsifier anchor missing: the pg_proc guard"
+# The fix: the privileges are DERIVED from pg_proc rather than written out, so
+# the loop cannot name a signature that does not exist.
+DERIVED = "    FROM pg_proc p"
+assert DERIVED in REAL, "falsifier anchor missing: the pg_proc-derived loop"
 
 # A. The real file, after the fix.
-expect_green("A: the real 0107, guarded against a missing overload", REAL)
+expect_green("A: the real 0107 derives its privileges from pg_proc", REAL)
 
-# B. The shipped defect: an unguarded loop that grants a 3-arg signature for
-#    functions that are only ever created with 2 args. This is run 2 exactly.
+# The shipped defect, reconstructed: a loop that hard-codes both signatures for
+# all ten readers. Only two of the ten take a third argument, so eight of those
+# GRANTs named a function that does not exist -- SQLSTATE 42883, run 2.
+HARDCODED = """  FOREACH v_fn IN ARRAY ARRAY[
+    'fee_ride_base_fare', 'fee_ride_per_km', 'fee_ride_minimum_fare',
+    'fee_booking_base_fare', 'fee_booking_per_km', 'fee_booking_minimum_fee',
+    'fee_commission_percent', 'fee_commission_min',
+    'fee_subscription', 'fee_activation']
+  LOOP
+    FOREACH v_args IN ARRAY ARRAY[
+      ARRAY['uuid', 'text'], ARRAY['uuid', 'text', 'boolean']]
+    LOOP
+      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s TO authenticated, service_role',
+                      v_fn || '(' || array_to_string(v_args, ', ') || ')');
+    END LOOP;
+  END LOOP;"""
+
+def _unguarded(sql: str) -> str:
+    """Replace the pg_proc-derived loop with the hard-coded one it replaced.
+
+    Every occurrence is removed, not just the first: the file mentions
+    `FROM pg_proc` twice (the loop's own query and the comment above it), so
+    replacing one left the guard detectable and every case below passed green
+    while proving nothing -- the same stale-anchor failure this file already
+    exists to catch, committed by me a second time.
+    """
+    out = sql.replace(DERIVED, HARDCODED.replace(DERIVED, ""))
+    # The assertion functions later in the file legitimately read pg_proc, so
+    # the guard that matters is the one inside the privilege loop. Asserting
+    # the file no longer mentions it would be wrong, and asserting nothing
+    # would let a silent no-op mutation pass -- which is what happened twice.
+    assert not sc._privilege_loop_is_derived(out), \
+        "falsifier: the privilege loop still reads pg_proc"
+    assert out != sql, "falsifier: the mutation did not change the file"
+    return out
+
+
+# B. The shipped defect, verbatim in shape.
 expect_red("B: an unguarded loop granting an arity nothing creates",
-           REAL.replace(GUARD, ""))
+           _unguarded(REAL))
 
-# C. A function name nobody creates at all -- the other shape of 42883, and
-#    one the arity check alone would miss.
+# C. A function name nobody creates at all -- the other shape of 42883, and one
+#    an arity-only check would miss.
 expect_red("C: a loop granting a function nothing creates",
-           REAL.replace(GUARD, "").replace(
+           _unguarded(REAL).replace(
                "'fee_commission_min',", "'fee_commission_min', 'fee_never_written',"))
 
-# D. A function that exists but with the wrong arity is the subtler case: the
-#    name is real, so a check that only asked "does this function exist?" would
-#    pass it.
+# D. A real function at an arity it was never created with: the subtler case,
+#    because the name resolves. A check that only asked "does this function
+#    exist?" would pass it.
 expect_red("D: a loop granting an existing function at the wrong arity",
-           REAL.replace(GUARD, "").replace(
-               "ARRAY['uuid', 'text', 'boolean']];",
-               "ARRAY['uuid', 'text', 'boolean'], ARRAY['uuid', 'text', 'numeric']];"))
+           _unguarded(REAL).replace(
+               "ARRAY['uuid', 'text', 'boolean']]",
+               "ARRAY['uuid', 'text', 'boolean'], ARRAY['uuid', 'text', 'numeric']]"))
 
 if not ok:
     print("\nFALSIFICATION FAILED")

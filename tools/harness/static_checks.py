@@ -4581,6 +4581,27 @@ def _names_near(src: str, pos: int) -> set[str]:
     return set(re.findall(r"'(fee_[a-z_]+)'", window))
 
 
+def _privilege_loop_is_derived(src: str) -> bool:
+    """Does the GRANT/REVOKE loop read its signatures from pg_proc?
+
+    Scoped to the block that actually issues the privilege statements, so an
+    assertion elsewhere in the file cannot vouch for a loop that hard-codes
+    its signatures. The block runs from the `DO $$` that opens the loop to the
+    end of that body; if pg_proc appears between them, the signatures came
+    from the catalog.
+    """
+    for m in re.finditer(r"\bDO\s+\$\$", src, re.IGNORECASE):
+        end = src.find("$$", m.end())
+        if end == -1:
+            continue
+        block = src[m.end():end]
+        if not re.search(r"(?:GRANT|REVOKE)[^']*ON\s+FUNCTION", block, re.IGNORECASE):
+            continue
+        if re.search(r"FROM\s+pg_proc", block, re.IGNORECASE):
+            return True
+    return False
+
+
 def check_dynamic_privileges_name_real_signatures() -> list[str]:
     """A GRANT/REVOKE built with format() can only name a signature that exists.
 
@@ -4650,30 +4671,47 @@ def check_dynamic_privileges_name_real_signatures() -> list[str]:
             sig = ", ".join(a.strip().lower() for a in m.group(1).split(","))
             named.setdefault(path.name, set()).add((m.start(), sig, 0))
 
-        # The loop in 0107 does not build the signature with %I inline; it
-        # assembles one from an array of arg types. So the shape to catch is
-        # the ARRAY[...] of type names plus the format() that consumes it.
+        # The other shape is a signature assembled from an array of argument
+        # types. The naive `ARRAY\[([^\]]*'uuid'[^\]]*)\]` cannot see it,
+        # because `[^\]]*` stops at the FIRST `]` -- which is the end of the
+        # inner `ARRAY['uuid', 'text']`, so the outer bracket pair never
+        # matched and the whole hard-coded loop read as absent. It has to
+        # tolerate one level of nesting.
         for m in re.finditer(
-                r"ARRAY\[([^\]]*'uuid'[^\]]*)\]", src, re.IGNORECASE):
+                r"ARRAY\[((?:[^\[\]]|\[[^\[\]]*\])*?'uuid'(?:[^\[\]]|\[[^\[\]]*\])*?)\]",
+                src, re.IGNORECASE):
             block = m.group(1)
-            args = re.findall(r"'(\w+)'", block)
-            if len(args) < 2:
-                continue
-            # Which functions does the enclosing FOREACH grant?
-            window = src[max(0, m.start() - 2000):m.start()]
-            names = re.findall(r"'(fee_[a-z_]+)'", window)
-            if not names:
-                continue
-            for n in names:
-                named.setdefault(path.name, set()).add(
-                    (m.start(), ", ".join(a.lower() for a in args), 1))
+            # Only the INNER list describes one signature; an outer list of
+            # signatures is handled by matching each inner list on its own.
+            inner = re.findall(r"\[([^\[\]]*'uuid'[^\[\]]*)\]", block)
+            for one in inner or ([block] if "'uuid'" in block else []):
+                args = re.findall(r"'(\w+)'", one)
+                if len(args) < 2:
+                    continue
+                window = src[max(0, m.start() - 2000):m.start()]
+                names = re.findall(r"'(fee_[a-z_]+)'", window)
+                if not names:
+                    continue
+                for n in names:
+                    named.setdefault(path.name, set()).add(
+                        (m.start(), ", ".join(a.lower() for a in args), 1))
 
     for path in migration_files():
         src = _read(path)
-        # A loop that checks pg_proc before granting cannot fail this way, so
-        # naming a missing overload inside one is deliberate, not a defect.
-        guarded = "IF v_oid IS NULL" in src and "CONTINUE;" in src
+        # A loop that derives its privileges FROM pg_proc cannot name a
+        # signature that does not exist, so a hard-coded signature list is
+        # either dead or belongs to a different loop.
+        #
+        # Scoped to the privilege loop, NOT to the file: 0107 mentions
+        # `FROM pg_proc` seven other times in its assertion functions, so a
+        # whole-file test exempts the hard-coded loop the moment any assertion
+        # reads a catalog -- which is exactly what happened, and it made three
+        # falsifier cases pass while proving nothing. Only the loop whose
+        # GRANTs are being judged counts.
+        guarded = _privilege_loop_is_derived(src)
         for _pos, sig, _kind in sorted(named.get(path.name, set())):
+            if guarded:
+                break
             # The loop grants a LIST of names against one signature. That is
             # only safe when every name in the list has that arity, so the
             # names are collected from the enclosing FOREACH and each is

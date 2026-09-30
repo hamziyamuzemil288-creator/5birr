@@ -1154,6 +1154,37 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0113` | the provider **fulfilment gate**: `provider_documents_verified()`, `provider_fulfilment_blockers()` (returns *why*, not just yes/no), `provider_can_fulfil()`; `provider_can_publish`, `claim_ride` and `transition_order_status` all routed through it; `provider_fulfilment_gate_report()`; the `enforce_verified_documents` setting; `assert_provider_fulfilment_gate_is_wired()` | **a provider with an unreviewed ID and an unpaid activation fee could take a rider's trip and accept an order.** The document half of the gate was satisfied by *uploading* a document, because the status a document is born in is one the old predicate accepted; and `claim_ride` / `transition_order_status` never consulted the gate at all, while the buyer-side checkout — which did — refused the same provider |
 | `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
 
+**Three deploys, three different questions none of the gates could ask.** The
+third was the instructive one: the *fix* for the second
+(`FOREACH … IN ARRAY ARRAY[[…],[…]]`) parses fine and fails at runtime with
+
+```
+ERROR: multidimensional arrays must have array expressions with matching
+dimensions (SQLSTATE 2202E)
+```
+
+because a nested `ARRAY[…]` constructor does not build a 2-D array in
+Postgres. `pglast` accepts it — verified, along with two alternatives that do
+build one. So the eventual form asks `pg_proc` for the overloads that exist and
+grants exactly those, with no signature list to be wrong about. It is also
+strictly more robust than the hand-written pair it replaced: adding a third
+argument to one of these readers later now changes nothing.
+
+**A guard anywhere in a file is not a guard on the loop.** The exemption that
+keeps this check quiet about a correct pg_proc-derived loop was first written
+as "does the file mention `FROM pg_proc`". 0107 mentions it **seven** times in
+its assertion functions, so the hard-coded loop was exempted by an unrelated
+catalog read and three falsifier cases passed green while proving nothing. It
+is now scoped to the `DO $$` block that issues the GRANTs.
+
+That was the third time in this session a falsifier passed for a structural
+reason rather than a testing one — twice from an anchor matching text a later
+edit deleted, once from an exemption matching something too broad. Every case
+that mutates a literal now asserts its anchor, and asserts that its mutation
+changed the file and removed the guard it meant to remove. **A falsifier that
+cannot prove it did anything is worse than no falsifier**, because it is
+counted in the number.
+
 **Parsing proves nothing about names.** Two deploys died on the same file,
 both after it had parsed clean as a whole *and* body by body:
 

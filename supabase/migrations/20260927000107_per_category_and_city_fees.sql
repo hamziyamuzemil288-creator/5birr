@@ -365,46 +365,35 @@ $$;
 -- `p_is_product` argument; the other eight are (uuid, text) only. Granting a
 -- signature that does not exist is not a no-op -- it is
 -- `ERROR: function public.fee_ride_base_fare(uuid, text, boolean) does not
--- exist (SQLSTATE 42883)`, which aborts the whole push. The loop therefore
--- asks pg_proc which overloads are really there and touches only those, so
--- adding a third argument to one of these readers later cannot silently break
--- the deploy the way the hard-coded pair did.
+-- exist (SQLSTATE 42883)`, which aborts the whole push.
+--
+-- So the privileges are derived from pg_proc rather than written out: every
+-- overload of these ten that actually exists is revoked and re-granted. That
+-- is correct for whatever arities exist today AND tomorrow, which a hard-coded
+-- list is not -- adding a third argument to one of these readers later would
+-- otherwise break the deploy again.
+--
+-- The signature is rebuilt from proname/proargtypes, which is what
+-- `to_regprocedure` parses, so the GRANT names exactly what was matched.
 DO $$
 DECLARE
-  v_fn text;
+  r record;
   v_sig text;
-  v_oid oid;
-  v_args text[];
 BEGIN
-  FOREACH v_fn IN ARRAY ARRAY[
-    'fee_ride_base_fare', 'fee_ride_per_km', 'fee_ride_minimum_fare',
-    'fee_booking_base_fare', 'fee_booking_per_km', 'fee_booking_minimum_fee',
-    'fee_commission_percent', 'fee_commission_min',
-    'fee_subscription', 'fee_activation']
+  FOR r IN
+    SELECT p.oid,
+           p.proname || '(' || pg_get_function_arguments(p.oid) || ')' AS sig
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = ANY (ARRAY[
+        'fee_ride_base_fare', 'fee_ride_per_km', 'fee_ride_minimum_fare',
+        'fee_booking_base_fare', 'fee_booking_per_km', 'fee_booking_minimum_fee',
+        'fee_commission_percent', 'fee_commission_min',
+        'fee_subscription', 'fee_activation'])
   LOOP
-    FOREACH v_args IN ARRAY ARRAY[
-      ARRAY['uuid', 'text'], ARRAY['uuid', 'text', 'boolean']]
-    LOOP
-      SELECT p.oid INTO v_oid
-      FROM pg_proc p
-      JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'public' AND p.proname = v_fn
-        AND p.pronargs = array_length(v_args, 1)
-        AND (
-          SELECT array_agg(pg_get_function_arguments(p.oid)
-                           || ' ' || t.typname ORDER BY x.ord)
-          FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY AS x(oid, ord)
-          JOIN pg_type t ON t.oid = x.oid
-        ) = v_args;
-
-      IF v_oid IS NULL THEN
-        CONTINUE;
-      END IF;
-
-      v_sig := format('%I(%s)', v_fn, array_to_string(v_args, ', '));
-      EXECUTE format('REVOKE ALL ON FUNCTION public.%s FROM PUBLIC, anon', v_sig);
-      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s TO authenticated, service_role', v_sig);
-    END LOOP;
+    EXECUTE format('REVOKE ALL ON FUNCTION public.%s FROM PUBLIC, anon', r.sig);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s TO authenticated, service_role', r.sig);
   END LOOP;
 END;
 $$;
