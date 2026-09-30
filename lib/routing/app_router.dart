@@ -68,6 +68,8 @@ import '../features/settings/account_deletion_screen.dart';
 import '../features/admin/admin_deletion_requests_screen.dart';
 import '../features/auth/change_password_screen.dart';
 import '../features/provider/provider_gallery_screen.dart';
+import '../features/auth/complete_profile_screen.dart';
+import '../features/user/edit_profile_screen.dart';
 import '../features/provider/become_partner_screen.dart';
 import '../features/user/rate_customer_screen.dart';
 import '../features/admin/admin_notification_send_screen.dart';
@@ -170,6 +172,31 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         return null;
       }
 
+      // ── Profile completeness (an extension of the gate above, not a
+      // replacement for it) ──
+      // A Google sign-in produces a profile row the app cannot verify:
+      // handle_new_user() fills full_name/phone/kebele/street_road from
+      // raw_user_meta_data, and Google supplies none of them, so the account
+      // arrives with full_name = 'New User' and no phone or address. The
+      // document upload still SUCCEEDS (user_documents needs only user_id,
+      // document_type, storage_path) — what fails is verification, because
+      // the admin reviewing it has no phone to call and no ID to match.
+      //
+      // Routed rather than warned, so it cannot be bypassed: there is no way
+      // to reach any other screen first, because this redirect runs on every
+      // navigation.
+      //
+      // Admins and staff gateway accounts are exempt. They are created by
+      // the app, not by a self-service signup, and are not verified against
+      // a national ID — gating them would lock the CEO out of their own
+      // dashboard over a phone number they never had a reason to enter.
+      if (!authState.isAdmin &&
+          !authState.isStaffMember &&
+          !authState.profile!.isVerifiable &&
+          loc != '/complete-profile') {
+        return '/complete-profile';
+      }
+
       // Staff gateway accounts are authenticated but intentionally land in
       // their own workspace, not the broad admin dashboard.
       if (authState.isStaffMember) {
@@ -232,6 +259,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/', builder: (_, __) => const SplashScreen()),
       GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
       GoRoute(path: '/role-select', builder: (_, __) => const RoleSelectionScreen()),
+      // Google sign-in lands here when the profile the trigger built is
+      // missing the fields verification needs. See the gate in redirect().
+      GoRoute(
+          path: '/complete-profile',
+          builder: (_, __) => const CompleteProfileScreen()),
       GoRoute(
         path: '/signup/:role',
         builder: (_, state) {
@@ -266,6 +298,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // just said "Coming soon". The screen already carries its own Scaffold
       // and AppBar, so it routes as-is.
       GoRoute(path: '/profile', builder: (_, __) => const UserProfileScreen()),
+      // The account screen's "Edit Profile" row pointed at nothing at all
+      // before this route existed -- the tile had no onTap.
+      GoRoute(path: '/profile/edit', builder: (_, __) => const EditProfileScreen()),
       GoRoute(path: '/pending-approval', builder: (_, __) => const PendingApprovalScreen()),
       GoRoute(path: '/rejected', builder: (_, __) => const RejectedScreen()),
       GoRoute(path: '/suspended', builder: (_, __) => const SuspendedScreen()),
@@ -479,5 +514,14 @@ String _getDashboardPath(AuthState auth) {
 }
 
 bool _isApprovalRoute(String path) {
-  return path == '/pending-approval' || path == '/rejected' || path == '/suspended';
+  // /complete-profile belongs here, not in isAuthRoute. An OAuth account is
+  // PENDING_APPROVAL, so the pending/rejected/suspended gates would bounce the
+  // user straight off the completion screen and the completeness gate would
+  // send them back — an infinite loop. Listing it as an approval route makes
+  // all three gates skip it in one place, and the "approval resolved" branch
+  // then correctly forwards a user who has finished it.
+  return path == '/pending-approval' ||
+      path == '/rejected' ||
+      path == '/suspended' ||
+      path == '/complete-profile';
 }

@@ -1252,6 +1252,60 @@ void main() {
       print('    bucket policies -> $detail');
     });
 
+    test('a provider can read their own gallery rows', () async {
+      // Migration 0104's assertion. The gallery's WRITE path was rebuilt
+      // post-baseline as SECURITY DEFINER functions and works; its READ path
+      // was assumed to be covered by provider_gallery_owner_read, which is
+      // defined only in 0014 -- below the baseline, so marked applied without
+      // executing. The consequence is the quietest failure in the app: the
+      // upload succeeds, the row is written, the screen's own SELECT returns
+      // zero rows, and the grid says "No photos yet".
+      //
+      // Every previously-reported gallery failure was a write or storage
+      // story. This asks about the read.
+      final (detail, error) = await rpcTextDiagnosed(
+          'assert_provider_can_read_their_own_gallery');
+      expect(detail, isNotNull,
+          reason: 'The gallery read policies could not be verified at all. '
+              'If this is null WITH the function deployed, read the error: '
+              'cache vs finding. Diagnostic: $error');
+      expect(detail, isNot(contains('GALLERY_')),
+          reason: 'A provider cannot read their own gallery: $detail');
+      // ignore: avoid_print
+      print('    gallery reads -> $detail');
+    });
+
+    test('the gallery read surface is reported, not just asserted', () async {
+      // A REPORT, so this run records what the live database actually has
+      // for provider_gallery rather than only whether it is currently valid.
+      // Without it, a later regression is indistinguishable from a
+      // database that was always correct, and the next session re-diagnoses
+      // from scratch -- which is what happened to the write path.
+      final (detail, error) =
+          await rpcTextDiagnosed('gallery_read_surface_report');
+      expect(detail, isNotNull,
+          reason: 'gallery_read_surface_report() did not run. '
+              'Diagnostic: $error');
+      // ignore: avoid_print
+      print('    gallery inventory -> $detail');
+    });
+
+    test('an OAuth account can be completed to a verifiable profile', () async {
+      // Migration 0104's other half. handle_new_user() builds the profile
+      // from raw_user_meta_data; Google supplies none of full_name, phone,
+      // kebele or street_road, so those accounts arrive unverifiable and
+      // the admin reviewing their document has nothing to check it against.
+      final (detail, error) = await rpcTextDiagnosed(
+          'assert_profile_completion_is_wired');
+      expect(detail, isNotNull,
+          reason: 'complete_profile() could not be verified. Diagnostic: '
+              '$error');
+      expect(detail, isNot(contains('PROFILE_COMPLETION_')),
+          reason: 'An OAuth account has no way to become verifiable: $detail');
+      // ignore: avoid_print
+      print('    oauth profile -> $detail');
+    });
+
     test('a provider can read their own wallet and submit a recharge', () async {
       // The other half of migration 0102, and the cause of the reported
       // "Sorry, we couldn't submit your recharge. That item could not be

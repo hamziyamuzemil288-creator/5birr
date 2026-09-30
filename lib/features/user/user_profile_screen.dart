@@ -131,19 +131,25 @@ class UserProfileScreen extends ConsumerWidget {
               child: Column(
                 children: [
                   _menuTile(Icons.person_outline, 'Edit Profile',
-                      AppTheme.primaryGreen),
+                      AppTheme.primaryGreen,
+                      onTap: () => context.push('/profile/edit')),
                   _divider(),
                   _menuTile(Icons.location_city_outlined, 'My City',
                       AppTheme.teal, onTap: () => _changeCity(context, ref)),
-                  _divider(),
-                  _menuTile(
-                      Icons.location_on_outlined, 'Addresses', AppTheme.teal),
+                  _divider(),                  // No address book exists yet. It says so on the tap rather
+                  // than doing nothing, because a row that looks tappable and
+                  // is not reads as a broken app.
+                  _menuTile(Icons.location_on_outlined, 'Addresses',
+                      AppTheme.teal,
+                      onTap: () => _notBuiltYet(context, 'Addresses')),
                   _divider(),
                   _menuTile(Icons.favorite_border, 'Favorites', AppTheme.error,
                       onTap: () => context.push('/user/favorites')),
                   _divider(),
                   _menuTile(Icons.notifications_outlined,
-                      'Notification Settings', AppTheme.info),
+                      'Notification Settings', AppTheme.info,
+                      onTap: () => _notBuiltYet(
+                          context, 'Notification Settings')),
                   _divider(),
                   // GPS / ride tracking: live map + directions to the driver.
                   _menuTile(Icons.map_outlined, 'My Rides (Live Tracking)',
@@ -193,7 +199,8 @@ class UserProfileScreen extends ConsumerWidget {
                       onTap: () => context.push('/account/deletion')),
                   _divider(),
                   _menuTile(Icons.info_outline, 'About Aliob',
-                      AppTheme.textSecondary),
+                      AppTheme.textSecondary,
+                      onTap: () => context.push('/terms')),
                 ],
               ),
             ),
@@ -281,6 +288,22 @@ class UserProfileScreen extends ConsumerWidget {
           const Icon(Icons.chevron_right, color: AppTheme.textMuted, size: 20),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(0)),
+    );
+  }
+
+  /// A menu row for a feature that is not built yet.
+  ///
+  /// The alternative — leaving the row with no `onTap` — is what "Edit
+  /// Profile" was doing: a tappable-looking row that swallowed the tap with
+  /// no feedback at all, which is indistinguishable from a broken app. Saying
+  /// so is honest, costs one line, and keeps the row from being a silent
+  /// dead end.
+  void _notBuiltYet(BuildContext context, String feature) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$feature is not available yet.'),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 

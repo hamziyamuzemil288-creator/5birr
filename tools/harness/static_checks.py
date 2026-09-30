@@ -2705,6 +2705,134 @@ def check_quick_action_shortcuts_are_wired() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 24. the gallery's READ path is in a migration the pipeline executes
+# ---------------------------------------------------------------------------
+# Reported fixed three times. The write path was rebuilt post-baseline as
+# SECURITY DEFINER functions; the read path was "already covered" by
+# provider_gallery_owner_read, which lives in 0014 -- below BASELINE, so the
+# deploy marks it applied without executing it. The 0102 assertion cannot see
+# this: it inspects storage.objects, not the table the rows live in.
+def check_gallery_read_path_is_migrated() -> list[str]:
+    problems: list[str] = []
+
+    # The policies must be created in a migration the pipeline runs, not only
+    # in one that is skipped.
+    for policy in ("provider_gallery_owner_read", "provider_gallery_public_read"):
+        defining = []
+        for p in _current_migrations():
+            src = _strip_comments(_read(p))
+            if src and f"CREATE POLICY {policy}" in src:
+                defining.append(p.name)
+        if not defining:
+            pre = [
+                p.name for p in migration_files()
+                # isdigit, not int(): 0022a is a real migration prefix and
+                # int() raises on it. Falsification caught this the hard way
+                # -- the ValueError aborted the whole harness instead of
+                # failing one check, which hides every other result.
+                if p.name.split("_", 1)[0].isdigit()
+                and int(p.name.split("_", 1)[0]) < BASELINE
+                and policy in (_strip_comments(_read(p)) or "")
+            ]
+            problems.append(
+                "%s is only defined in pre-baseline migrations (%s), which the "
+                "deploy workflow marks applied WITHOUT executing. A provider "
+                "reading their own gallery gets zero rows while their upload "
+                "succeeds -- migration 0104 restates it."
+                % (policy, ", ".join(pre) or "none found"))
+
+    screen = _strip_comments(
+        _read(LIB / "features" / "provider" / "provider_gallery_screen.dart"))
+    if "from('provider_gallery')" not in screen:
+        problems.append(
+            "the gallery screen no longer reads provider_gallery directly")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# 25. profile completion + no dead menu rows
+# ---------------------------------------------------------------------------
+# Two failures that look identical from the user's side -- a tap that does
+# nothing. "Edit Profile" was a _menuTile with no onTap at all, so a
+# tappable-looking row swallowed the tap silently, which is indistinguishable
+# from a broken app. Nothing asserted it, because nothing looked.
+def check_profile_completion_and_taps_are_wired() -> list[str]:
+    problems: list[str] = []
+
+    # -- The OAuth gate --
+    router = _strip_comments(_read(LIB / "routing" / "app_router.dart"))
+    if "CompleteProfileScreen" not in router:
+        problems.append("CompleteProfileScreen is not routed")
+    if "isVerifiable" not in router:
+        problems.append(
+            "the router no longer gates on profile.isVerifiable, so an OAuth "
+            "account can reach the app without a phone number")
+    # The gate must exempt the screen it sends people to, or the user
+    # ping-pongs between the app and the form forever.
+    if "'/complete-profile'" not in (function_body(router, "_isApprovalRoute")
+                                     or router):
+        problems.append(
+            "/complete-profile is not an approval route. An OAuth account is "
+            "PENDING_APPROVAL, so the pending gate would bounce it off the "
+            "completion screen and the completeness gate would send it back")
+
+    model = _strip_comments(_read(LIB / "core" / "models" / "user_profile.dart"))
+    if "isVerifiable" not in model:
+        problems.append(
+            "UserProfile.isVerifiable is gone, so the router gate has nothing "
+            "to test")
+    # 'New User' is the trigger's placeholder, not a name. A null check alone
+    # waves every Google account straight through.
+    if "'New User'" not in model:
+        problems.append(
+            "UserProfile no longer treats the trigger's 'New User' placeholder "
+            "as incomplete -- a Google account has a non-null name that is not "
+            "a name")
+
+    for screen, folder in (("complete_profile_screen.dart", "auth"),
+                           ("edit_profile_screen.dart", "user")):
+        src = _strip_comments(
+            _read(LIB / "features" / folder / screen))
+        if not src:
+            problems.append("%s is missing" % screen)
+            continue
+        if "complete_profile" not in src:
+            problems.append("%s no longer calls the complete_profile RPC"
+                            % screen)
+        # The RPC raises on empty values; the client must not be the only
+        # thing enforcing them, and the two must agree on which fields.
+        for field in ("p_full_name", "p_phone", "p_kebele", "p_street_road"):
+            if field not in src:
+                problems.append(
+                    "%s does not send %s, so the form and the RPC disagree "
+                    "about what is required" % (screen, field))
+
+    # -- No dead menu rows --
+    profile = _read(LIB / "features" / "user" / "user_profile_screen.dart")
+    if profile:
+        for m in re.finditer(r"_menuTile\(", profile):
+            i = m.end() - 1
+            depth = 0
+            for j in range(i, len(profile)):
+                if profile[j] == "(":
+                    depth += 1
+                elif profile[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            call = profile[m.start():j + 1]
+            if "onTap" not in call and "Navigator" not in call:
+                label = re.search(r"'([^']+)'", call)
+                problems.append(
+                    "the %r menu row on the account screen still has no onTap "
+                    "-- a tappable-looking row that does nothing when tapped"
+                    % (label.group(1) if label else "?"))
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------
 CHECKS = [
@@ -2758,6 +2886,10 @@ CHECKS = [
      check_provider_gallery_is_wired),
     ("every role's quick-action shortcut shares one pill and still resolves",
      check_quick_action_shortcuts_are_wired),
+    ("the gallery's READ path is in a migration the pipeline executes",
+     check_gallery_read_path_is_migrated),
+    ("an OAuth account can complete its profile, and no account menu row is dead",
+     check_profile_completion_and_taps_are_wired),
 ]
 
 

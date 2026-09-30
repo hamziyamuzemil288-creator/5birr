@@ -516,6 +516,41 @@ to **My Gallery** and the vehicle provider dashboard to **Ride Requests**;
 both are additive, and both tab entries remain.
 `check_quick_action_shortcuts_are_wired` holds all three to it.
 
+**OAuth accounts are gated on a verifiable profile, and the gate is
+routing, not advice.** `handle_new_user()` builds `profiles` entirely from
+`raw_user_meta_data`; the password flow passes `full_name`, `phone`, `city`,
+`kebele` and `street_road` through `signUp(data:)` (see
+`AuthNotifier.signUp`), and Google supplies none of them. An OAuth account
+therefore arrives with `full_name = 'New User'` and no phone or address.
+
+The `user_documents` INSERT is *not* what breaks — that table needs only
+`user_id`, `document_type` and `storage_path`, so the upload succeeds. What
+breaks is **verification**: `admin_user_management_screen.dart` renders
+`phone ?? ''` as a blank line and hides the national-ID row entirely when it
+is null, so the reviewer is handed a document with no identity to check it
+against. The account is unverifiable, not blocked — which is why it went
+unreported.
+
+`UserProfile.isVerifiable` is therefore true only when the name is neither
+empty nor the trigger's `'New User'` placeholder, and phone, kebele and
+street_road are all present. `national_id` is deliberately **not** required:
+no sign-up collects it, it is proven by the uploaded document, and demanding
+it would bounce every user to a form the app cannot check.
+
+The router sends anyone failing that test to `/complete-profile`, which saves
+through the `complete_profile()` RPC (SECURITY DEFINER, self-scoped — the
+`profiles` owner UPDATE policy is 0014-only and the 20260927000050 write
+closure leaves no grant to rely on). Admins and staff gateway accounts are
+exempt; they are created by the app and are not verified against a national
+ID. The gate runs on *every* navigation, so it cannot be bypassed, and
+`/complete-profile` is registered in `_isApprovalRoute` — without that, an
+OAuth account (which is `PENDING_APPROVAL`) is bounced off the form by the
+pending gate and sent straight back, forever.
+
+`/complete-profile` is deliberately **not** in `isAuthRoute`: that branch
+redirects away to the dashboard, which would ping-pong with the completeness
+gate.
+
 There is deliberately **no booking-provider dashboard**: `app_role` is
 exactly `(USER, VEHICLE_PROVIDER, SERVICE_PROVIDER, ADMIN)` and
 `provider_profiles.provider_type` is constrained to the two provider values.
@@ -571,6 +606,27 @@ RPC):
   green. (`check_routes_resolve` still caught that one, so nothing shipped
   broken — but a check that cannot see its own subject is the pattern this
   file exists to end.) It now reads the route out of the pill's own call.
+
+  And a sixteenth, the worst of the set, in the gallery: the downscale check,
+  the bucket assertions and three separate sessions all inspected
+  `storage.objects` and the write RPCs. Nobody had ever looked at the
+  `provider_gallery` **table's** read policies, which exist only in 0014 —
+  pre-baseline, marked applied without executing. The upload path is
+  `SECURITY DEFINER` and therefore immune to that, so uploads succeeded, rows
+  were written, and the screen's own `SELECT` returned nothing. The reported
+  symptom was always the write; the fault was always the read.
+  `check_gallery_read_path_is_migrated` now requires the read policies to be
+  created *at or after the baseline*, and
+  `gallery_read_surface_report()` prints the live inventory every run so the
+  next session starts from evidence rather than from a hunch.
+
+  Falsifying that last check also caught a bug in the check itself:
+  `int(migration.split("_")[0])` raises on `0022a`, a real migration prefix.
+  The `ValueError` escaped `main()` and aborted the **whole** harness, so
+  every other check's result was lost too. It now uses the same `isdigit`
+  guard as `_current_migrations`, and the lesson generalises: a check that
+  crashes the suite is worse than one that fails, because it hides the
+  results of the twenty-four checks that would have told you what to fix.
 
 **The pattern across five live rounds is worth stating plainly:** of the ten
 failures, **one** was a defect in the notifications and **nine** were defects
@@ -710,6 +766,8 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0101` | `assert_payment_screenshot_uploads_are_accepted()` — the two payment-proof buckets stay private, keep accepting JPEG and are not lowered below the limit the app quotes | a payment screenshot upload fails with a bucket error the client cannot explain, or a proof bucket is left public |
 | `0102` | the `user-documents` / `payment-proofs` `storage.objects` policies and the `wallets` / `wallet_recharge_requests` owner policies, restated after the baseline; plus `assert_client_buckets_have_write_and_read_policies()` and `assert_owner_can_read_and_write_their_money()` | **a document upload is refused by storage and a recharge reports "That item could not be found"** — both policies existed only in `0012`/`0009`/`0021`/`0022`, which the workflow marks applied without executing, so the only policies that reached production on those tables were `00042`'s UPDATE-only pair and `20260922000010`'s staff-scoped reads, which no provider can satisfy |
 
+| `0104` | the `provider_gallery` owner + public **read** policies, restated after the baseline; `complete_profile()` for OAuth accounts; `gallery_read_surface_report()` (a report, not an assertion) and `assert_provider_can_read_their_own_gallery()` / `assert_profile_completion_is_wired()` | **the gallery upload succeeds and the gallery is always empty.** `provider_gallery_owner_read` is defined only in `0014`/`0021`/`0022`, which the workflow marks applied without executing. The write path is `SECURITY DEFINER`, so it bypassed both the `20260927000050` revoke and any missing RLS — the upload worked, the row was written, and the screen's own `SELECT` returned zero rows. Every prior gallery report blamed a write, because every prior check inspected `storage.objects` and never the table the rows live in |
+
 **0080 before any build that ships the liveness client.** The client inserts
 the new columns; if they are absent, every document upload fails.
 
@@ -800,7 +858,7 @@ the dashboard survives a deploy.
 
 ### 7.5 After a deploy
 
-1. Connectivity CI green (72 tests). If it is red, the failure message names
+1. Connectivity CI green (75 tests). If it is red, the failure message names
    the assertion — read the `Diagnostic:` line before changing anything.
 2. Flutter CI green.
 3. `select public.assert_signup_otp_toggle_is_consistent();` returns a string,
