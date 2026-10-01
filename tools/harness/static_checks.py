@@ -5229,6 +5229,7 @@ _DETACH_VALUES = re.compile(
     r"FROM\s*\(VALUES(.*?)\)\s*AS\s+v\(([^)]*)\)", re.IGNORECASE | re.DOTALL)
 _DETACH_TUPLE = re.compile(
     r"'\s*([A-Za-z0-9_]+)\s*',\s*'\s*([A-Za-z0-9_]+)\s*',\s*'\s*([A-Za-z0-9_.]+)\s*'")
+_DETACH_PAIR = re.compile(r"'\s*([A-Za-z0-9_]+)\s*',\s*'\s*([A-Za-z0-9_]+)\s*'")
 _DO_BLOCK = re.compile(r"DO\s+\$\$(.*?)\$\$\s*;", re.IGNORECASE | re.DOTALL)
 
 
@@ -5257,14 +5258,13 @@ def _detached_by_values_block(sql: str):
     for body in _detach_block_bodies(sql):
         for m in _DETACH_VALUES.finditer(body):
             aliases = [a.strip().lower() for a in m.group(2).split(",")]
-            if len(aliases) != 3:
-                # 0118 also has a two-column `AS v(tbl, col)` list in its
-                # verification block. Reading that as a detach would null out
-                # keys the block never touches.
-                continue
-            for t in _DETACH_TUPLE.finditer(m.group(1)):
-                out.append((t.group(1).lower(), t.group(2).lower(),
-                            t.group(3).lower()))
+            if len(aliases) == 3:
+                for t in _DETACH_TUPLE.finditer(m.group(1)):
+                    out.append((t.group(1).lower(), t.group(2).lower(),
+                                t.group(3).lower()))
+            elif len(aliases) == 2:
+                for t in _DETACH_PAIR.finditer(m.group(1)):
+                    out.append((t.group(1).lower(), t.group(2).lower(), None))
     return out
 
 
@@ -5281,10 +5281,11 @@ def _unreadable_detach_blocks(sql: str) -> list[str]:
     unreadable = []
     for body in _detach_block_bodies(sql):
         candidates = [m for m in _DETACH_VALUES.finditer(body)
-                      if len([a for a in m.group(2).split(",")]) == 3]
+                      if len([a for a in m.group(2).split(",")]) in (2, 3)]
         if not candidates:
             continue
-        if not any(_DETACH_TUPLE.search(m.group(1)) for m in candidates):
+        if not any(_DETACH_TUPLE.search(m.group(1))
+                   or _DETACH_PAIR.search(m.group(1)) for m in candidates):
             unreadable.append(body.strip().splitlines()[0][:80])
     return unreadable
 
@@ -5420,7 +5421,17 @@ def _foreign_key_actions() -> dict[str, dict[str, str]]:
         put(table, "auth.users", column, "SET NULL")
     for table, column, parent in _detached_by_values_block(
             "\n".join(_read(p) for p in migration_files())):
-        put(table, parent, column, "SET NULL")
+        if parent is not None:
+            put(table, parent, column, "SET NULL")
+            continue
+        # The pair form: detach every parent this column already points at. The
+        # migration looks the key up by column and never names a parent, so
+        # this is the same set it would touch.
+        parents = {k[1] for k in columns if k[0] == table and k[2] == column.lower()}
+        if not parents:
+            continue
+        for p in sorted(parents):
+            put(table, p, column, "SET NULL")
 
     edges: dict[str, dict[str, str]] = {}
     _FK_COLUMNS.clear()

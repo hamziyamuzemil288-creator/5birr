@@ -103,15 +103,23 @@
 -- two blocking columns each and 0054's `c := CASE t` shape silently handles
 -- only one.
 --
--- The lookup matches on (child relation, child column, parent relation), not on
--- the column alone as 0054 did. `admin_notification_broadcasts` has TWO keys to
--- auth.users -- `admin_id` (NO ACTION) and `target_user_id` (SET NULL) -- and a
--- column-only match would have picked whichever the catalog returned first.
+-- The lookup matches on the child's own single-column key and takes the parent
+-- from the catalog, which is how 0054 did it and for the same reason: the
+-- migration connection's search_path does not resolve the `auth` schema, so
+-- naming it -- `'auth.users'::regclass` -- aborts the whole push with
 --
--- It also only acts on confdeltype 'a' (NO ACTION) and 'r' (RESTRICT). A key
--- that is already CASCADE or SET NULL is left alone, so re-running this file,
--- or running it after some later migration has already done the work, is a
--- no-op rather than a re-drop of a correct constraint.
+--   ERROR: relation "auth.users" does not exist (SQLSTATE 42P01)
+--
+-- which is exactly what run 36870164815 did. Nothing in this file says
+-- `auth.users`; the parent is whatever the existing constraint already points
+-- at. `admin_notification_broadcasts` has two keys to it (`admin_id` NO ACTION,
+-- `target_user_id` SET NULL) and they are on different columns, so matching on
+-- the column still picks exactly one.
+--
+-- The action filter is part of the lookup rather than a second query after it:
+-- 'a' is NO ACTION, 'r' is RESTRICT, 'c' CASCADE, 'n' SET NULL. A key that is
+-- already CASCADE or SET NULL yields no row, so the loop leaves the good
+-- constraint alone and re-running this file is a no-op.
 DO $$
 DECLARE
   target record;
@@ -120,51 +128,41 @@ BEGIN
   FOR target IN
     SELECT * FROM (VALUES
       -- ---- the business side: everything under provider_profiles -------
-      ('orders',                'provider_id',             'provider_profiles'),
-      ('order_items',           'product_id',              'products'),
-      ('ride_requests',         'claimed_by_provider_id',  'provider_profiles'),
-      ('ride_requests',         'claimed_vehicle_id',      'vehicles'),
-      ('ride_ratings',          'ratee_provider_id',       'provider_profiles'),
-      ('admin_wallet_actions',  'provider_id',             'provider_profiles'),
-      ('admin_wallet_actions',  'wallet_id',               'wallets'),
+      ('orders',                'provider_id'),
+      ('order_items',           'product_id'),
+      ('ride_requests',         'claimed_by_provider_id'),
+      ('ride_requests',         'claimed_vehicle_id'),
+      ('ride_ratings',          'ratee_provider_id'),
+      ('admin_wallet_actions',  'provider_id'),
+      ('admin_wallet_actions',  'wallet_id'),
       -- ---- the account side 0054 left blocking -------------------------
-      ('audit_logs',                        'actor_id',      'auth.users'),
-      ('admin_history',                     'actor_id',      'auth.users'),
-      ('approval_history',                  'performed_by',  'auth.users'),
-      ('order_status_history',              'changed_by',    'auth.users'),
-      ('ride_status_history',               'changed_by',    'auth.users'),
-      ('payment_methods',                   'created_by',    'auth.users'),
-      ('payment_proofs',                    'verified_by',   'auth.users'),
-      ('admin_expenses',                    'admin_id',      'auth.users'),
-      ('admin_notification_broadcasts',     'admin_id',      'auth.users'),
+      ('audit_logs',                        'actor_id'),
+      ('admin_history',                     'actor_id'),
+      ('approval_history',                  'performed_by'),
+      ('order_status_history',              'changed_by'),
+      ('ride_status_history',               'changed_by'),
+      ('payment_methods',                   'created_by'),
+      ('payment_proofs',                    'verified_by'),
+      ('admin_expenses',                    'admin_id'),
+      ('admin_notification_broadcasts',     'admin_id'),
       -- ---- keyed on somebody ELSE's record, so the row survives --------
       -- A staff member's deletion leaves the rows they touched behind, and
       -- these three are the ones that would refuse to let them go.
-      ('referral_codes',                    'created_by',    'auth.users'),
-      ('wallet_recharge_requests',          'approved_by',   'auth.users'),
-      ('staff_task_completions',            'completed_by',  'auth.users')
-    ) AS v(tbl, col, parent)
+      ('referral_codes',                    'created_by'),
+      ('wallet_recharge_requests',          'approved_by'),
+      ('staff_task_completions',            'completed_by')
+    ) AS v(tbl, col)
   LOOP
-    IF to_regclass(format('public.%I', target.tbl)) IS NULL
-       OR (CASE WHEN target.parent = 'auth.users'
-            THEN 'auth.users'::regclass
-            ELSE to_regclass(format('public.%I', target.parent)) END) IS NULL THEN
+    IF to_regclass(format('public.%I', target.tbl)) IS NULL THEN
       -- Dropped since this list was written. Nothing to detach. (This is the
       -- `appeals` lesson from 0054, where a stale name in a regclass cast
       -- aborted the whole push on every attempt.)
       CONTINUE;
     END IF;
 
-    -- The action filter is part of the lookup rather than a second query after
-    -- it: 'a' is NO ACTION, 'r' is RESTRICT, 'c' CASCADE, 'n' SET NULL. A key
-    -- that is already CASCADE or SET NULL yields no row, so the loop leaves
-    -- the good constraint alone and re-running this file is a no-op.
     SELECT c.conname INTO v_fk
       FROM pg_constraint c
      WHERE c.conrelid   = to_regclass(format('public.%I', target.tbl))
-       AND c.confrelid  = (CASE WHEN target.parent = 'auth.users'
-            THEN 'auth.users'::regclass
-            ELSE to_regclass(format('public.%I', target.parent)) END)
        AND c.contype    = 'f'
        AND c.confdeltype IN ('a', 'r')
        AND c.conkey     = ARRAY[
@@ -173,7 +171,8 @@ BEGIN
                  AND a.attname  = target.col)];
 
     IF v_fk IS NULL THEN
-      -- No blocking single-column foreign key on that pair. Nothing to detach.
+      -- No blocking single-column foreign key on that column. Nothing to
+      -- detach.
       CONTINUE;
     END IF;
 
@@ -187,8 +186,8 @@ BEGIN
     EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I DROP NOT NULL',
                    target.tbl, target.col);
 
-    RAISE NOTICE 'detached %.% from % (was blocking account deletion)',
-      target.tbl, target.col, target.parent;
+    RAISE NOTICE 'detached %.% (was blocking account deletion)',
+      target.tbl, target.col;
   END LOOP;
 END;
 $$;
@@ -208,47 +207,41 @@ BEGIN
   SELECT string_agg(format('%I.%I', target.tbl, target.col), ', ')
     INTO v_bad
     FROM (VALUES
-      ('orders',                'provider_id',            'provider_profiles'),
-      ('order_items',           'product_id',             'products'),
-      ('ride_requests',         'claimed_by_provider_id', 'provider_profiles'),
-      ('ride_requests',         'claimed_vehicle_id',     'vehicles'),
-      ('ride_ratings',          'ratee_provider_id',      'provider_profiles'),
-      ('admin_wallet_actions',  'provider_id',            'provider_profiles'),
-      ('admin_wallet_actions',  'wallet_id',              'wallets'),
-      ('audit_logs',            'actor_id',               'auth.users'),
-      ('admin_history',         'actor_id',               'auth.users'),
-      ('approval_history',      'performed_by',           'auth.users'),
-      ('order_status_history',  'changed_by',             'auth.users'),
-      ('ride_status_history',   'changed_by',             'auth.users'),
-      ('payment_methods',       'created_by',             'auth.users'),
-      ('payment_proofs',        'verified_by',            'auth.users'),
-      ('admin_expenses',        'admin_id',               'auth.users'),
-      ('admin_notification_broadcasts', 'admin_id',         'auth.users'),
-      ('referral_codes',        'created_by',             'auth.users'),
-      ('wallet_recharge_requests',      'approved_by',     'auth.users'),
-      ('staff_task_completions',        'completed_by',    'auth.users')
-    ) AS v(tbl, col, parent)
+      ('orders',                'provider_id'),
+      ('order_items',           'product_id'),
+      ('ride_requests',         'claimed_by_provider_id'),
+      ('ride_requests',         'claimed_vehicle_id'),
+      ('ride_ratings',          'ratee_provider_id'),
+      ('admin_wallet_actions',  'provider_id'),
+      ('admin_wallet_actions',  'wallet_id'),
+      ('audit_logs',            'actor_id'),
+      ('admin_history',         'actor_id'),
+      ('approval_history',      'performed_by'),
+      ('order_status_history',  'changed_by'),
+      ('ride_status_history',   'changed_by'),
+      ('payment_methods',       'created_by'),
+      ('payment_proofs',        'verified_by'),
+      ('admin_expenses',        'admin_id'),
+      ('admin_notification_broadcasts', 'admin_id'),
+      ('referral_codes',        'created_by'),
+      ('wallet_recharge_requests',      'approved_by'),
+      ('staff_task_completions',        'completed_by')
+    ) AS v(tbl, col)
     JOIN pg_constraint c
-      ON c.conrelid  = to_regclass(format('public.%I', target.tbl))
-     AND c.contype   = 'f'
-     AND c.confrelid = (CASE WHEN target.parent = 'auth.users'
-            THEN 'auth.users'::regclass
-            ELSE to_regclass(format('public.%I', target.parent)) END)
-     AND c.conkey    = ARRAY[
+      ON c.conrelid = to_regclass(format('public.%I', target.tbl))
+     AND c.contype  = 'f'
+     AND c.conkey   = ARRAY[
            (SELECT a.attnum FROM pg_attribute a
              WHERE a.attrelid = to_regclass(format('public.%I', target.tbl))
                AND a.attname  = target.col)]
    WHERE c.confdeltype NOT IN ('c', 'n')
-     AND to_regclass(format('public.%I', target.tbl)) IS NOT NULL
-     AND (CASE WHEN target.parent = 'auth.users'
-            THEN 'auth.users'::regclass
-            ELSE to_regclass(format('public.%I', target.parent)) END) IS NOT NULL;
+     AND to_regclass(format('public.%I', target.tbl)) IS NOT NULL;
 
   IF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
       'ACCOUNT_DELETION_STILL_BLOCKED: these columns still hold a NO ACTION or '
       'RESTRICT key onto something that dies with the account, so deleting the '
-      'auth.users row will fail: %', v_bad;
+      'account row will fail: %', v_bad;
   END IF;
 END;
 $$;
@@ -275,14 +268,25 @@ DECLARE
   v_rows text;
 BEGIN
   WITH RECURSIVE gone(rel) AS (
-      SELECT 'auth.users'::regclass
+      -- The account table is never named. It is discovered from the key
+      -- `profiles.id` already carries, because a migration/function that says
+      -- 'auth.users' fails on a connection whose search_path does not include
+      -- the auth schema -- which is how run 36870164815 died on 0118.
+      SELECT c.confrelid::regclass
+        FROM pg_constraint c
+       WHERE c.conrelid = to_regclass('public.profiles')
+         AND c.contype  = 'f'
+         AND c.conkey   = ARRAY[
+               (SELECT a.attnum FROM pg_attribute a
+                 WHERE a.attrelid = to_regclass('public.profiles')
+                   AND a.attname  = 'id')]
 
       UNION
 
       SELECT c.conrelid::regclass
         FROM pg_constraint c
        WHERE c.contype = 'f'
-         AND c.confrelid = 'auth.users'::regclass
+         AND c.confrelid = (SELECT rel FROM gone LIMIT 1)
          AND c.confdeltype = 'c'
 
       UNION

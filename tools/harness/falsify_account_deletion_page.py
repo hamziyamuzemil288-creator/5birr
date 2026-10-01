@@ -254,10 +254,27 @@ MIG_0118 = "supabase/migrations/20260927000118_nothing_blocks_the_account_deleti
 #: One tuple out of the VALUES list the migration detaches. Removing it is
 #: "the business-side fix was lost" -- the exact regression the check exists for,
 #: and the one that shipped as 0054's silent under-coverage.
-_ORDERS_DETACH = "      ('orders',                'provider_id',             'provider_profiles'),\n"
+#:
+#: The tuples are PAIRS, not (table, column, parent) triples, and that is not
+#: cosmetic: run 36870164815 died on 0118 with
+#: `relation "auth.users" does not exist`, because a migration that names the
+#: auth schema aborts on the push connection's search_path. The migration now
+#: looks each key up by column and never names a parent. These anchors were
+#: the triple form and went stale on that edit -- which the falsifier reported
+#: as [BROKEN] rather than passing green, which is the only acceptable outcome
+#: for a stale anchor.
+_ORDERS_DETACH = "      ('orders',                'provider_id'),\n"
 
 #: And one out of the account side, which is the half 0054 never did at all.
-_AUDIT_DETACH = "      ('audit_logs',                        'actor_id',      'auth.users'),\n"
+#:
+#: The exact spacing matters and this file learned that the hard way. 0118
+#: carries the same pair TWICE -- once in the block that detaches, once in the
+#: block that verifies -- and the two are aligned differently. The first anchor
+#: matched the VERIFICATION copy, so `replace_in` succeeded, the anchor
+#: assertion passed, the case went green, and it had mutated a list that
+#: changes nothing. A falsifier that lands in the wrong list is worse than one
+#: with a missing anchor, because it reports a result.
+_AUDIT_DETACH = "      ('audit_logs',                        'actor_id'),\n"
 
 
 def _unblocked(mutate):
@@ -313,7 +330,7 @@ SCHEMA_CASES: list[tuple[str, str, object, bool]] = [
         "derivation reverts to 'every key is NO ACTION'. It must report that it "
         "found a block it could not read rather than answering from a blind "
         "pattern",
-        replace_in(MIG_0118, "AS v(tbl, col, parent)", "AS v"),
+        replace_in(MIG_0118, "AS v(tbl, col)", "AS v"),
         False,
     ),
 ]
