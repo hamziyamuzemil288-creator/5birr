@@ -3790,6 +3790,116 @@ def check_transaction_documents_are_wired() -> list[str]:
     return problems
 
 
+def check_grantable_permissions_open_something() -> list[str]:
+    """A permission a CEO can hand a staff member must gate something.
+
+    `staff_jobs` is the catalogue a CEO assigns from, and `staff_assignment`
+    refuses a key the catalogue does not hold -- so every key in it is a real,
+    grantable promise. `document_verification` was seeded in 20260927000034 with
+    the label "Review identity documents and record a verified or rejected
+    decision" and sat in the admin staff screen's checklist for the whole life of
+    the feature, granting **nothing**: no screen consulted it, because the only
+    way to reach `review_user_document()` was a dialog inside one user row on the
+    Users page, behind the `registrations` key instead. Two keys for one action,
+    and the specific one dead.
+
+    This reads the seeded keys out of the migrations, then requires each one to
+    be used as an actual gate somewhere in `lib/`. Displaying a key in the
+    checklist that offers it is not a use: `admin_staff_screen._permissionOptions`
+    names all ten, which is exactly why the dead one was invisible.
+    """
+    problems: list[str] = []
+
+    seeded: dict[str, str] = {}
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        sql = _strip_comments(_read(path))
+        # ONLY the catalogue insert. A bare `('x', 'y', ...)` scan over the
+        # whole file matched every VALUES tuple in 220 migrations -- fee names,
+        # category slugs, trigger names, GRANT roles -- and reported 63 dead
+        # "permissions" that do not exist. The INSERT keyword and the VALUES
+        # block are both required, and the block is bounded by its closing
+        # semicolon so nothing after it leaks in.
+        for stmt in re.finditer(
+                r"INSERT\s+INTO\s+(?:public\.)?staff_jobs\b[^;]*?;",
+                sql, re.S | re.I):
+            block = stmt.group(0)
+            vm = re.search(r"VALUES\b(.*)$", block, re.S | re.I)
+            if not vm:
+                continue
+            for m in re.finditer(
+                    r"\(\s*'([a-z_][a-z_0-9]{2,40})'\s*,\s*'([^']{2,200})'",
+                    vm.group(1)):
+                seeded.setdefault(m.group(1), m.group(2))
+
+    if not seeded:
+        return ["no staff_jobs keys could be read from the migrations, so this "
+                "check cannot tell a live permission from a dead one"]
+
+    # Narrowed to what the app's OWN staff checklist offers. `staff_jobs` also
+    # holds fixture and future keys (`probe_customer_orders`, `password_reset`)
+    # that the CEO interface never lists and so cannot hand out from the app;
+    # holding those to the same standard would report keys no user can assign.
+    offered_keys: set[str] = set()
+    for p in sorted(LIB.rglob("*staff*.dart")):
+        for m in re.finditer(r"'([a-z_][a-z_0-9]{2,40})'\s*:\s*'[^']+'",
+                             _read(p)):
+            offered_keys.add(m.group(1))
+    seeded = {k: v for k, v in seeded.items() if k in offered_keys}
+    if not seeded:
+        return ["the staff checklist in lib/ offers no staff_jobs key this "
+                "check recognises, so it cannot compare the catalogue against "
+                "the permissions the app actually grants"]
+
+    # Where a key is merely OFFERED, versus where it GATES something.
+    gates: dict[str, list[str]] = {}
+    for p in sorted(LIB.rglob("*.dart")):
+        src = _read(p)
+        for key in seeded:
+            # A gate is the key compared against a permission list, not the key
+            # quoted as a checklist entry.
+            for pat in (r"_can\(\s*'%s'" % re.escape(key),
+                        r"_hasPermission\(\s*'%s'" % re.escape(key),
+                        r"permissions\.contains\(\s*'%s'" % re.escape(key),
+                        r"perms\.contains\(\s*'%s'" % re.escape(key),
+                        r"hasPermission\(\s*'%s'" % re.escape(key),
+                        r"perm\s*==\s*'%s'" % re.escape(key)):
+                if re.search(pat, src):
+                    gates.setdefault(key, []).append(p.name)
+
+    for key, label in sorted(seeded.items()):
+        if key in gates:
+            continue
+        if key in _UNSERVED_PERMISSIONS:
+            continue
+        problems.append(
+            "staff_jobs offers the permission '%s' (\"%s\"), so a CEO can "
+            "assign it to a staff member, but no Dart file gates anything on "
+            "it -- it grants access to nothing. Either wire a screen to it or "
+            "take it out of the catalogue; leaving it there makes the staff "
+            "screen promise a permission that does not exist."
+            % (key, label))
+
+    return problems
+
+
+# Catalogue keys the app offers but cannot yet serve, each with the reason.
+#
+# An allowlist with reasons, not a suppression list: a NEW ungated key still
+# fails this check, and a key can only be excused by naming why here. Removing
+# these keys from `staff_jobs` instead would delete a promise the CEO interface
+# already shows.
+_UNSERVED_PERMISSIONS = {
+    # There is no auth-event table anywhere in the schema: no sign-in log, no
+    # failed-attempt counter, no session table. `admin_history_screen` reads
+    # `audit_logs`, whose action types are all administrative acts and contain
+    # nothing about a sign-in. So there is nothing for this permission to
+    # reveal. Gating a screen on it today would be a card that opens to an
+    # empty list -- which is the failure mode this check exists to prevent, not
+    # a fix for it. Needs a data source first.
+    "view_auth_logs": "no auth-event table exists in the schema to read",
+}
+
+
 def check_admin_rpc_argv_is_transcribed() -> list[str]:
     """0124's expected argument names must match the Dart call sites.
 
@@ -6266,6 +6376,8 @@ CHECKS = [
      check_income_readers_count_every_fee_type),
     ("the activation fee is written where an income reader can see it",
      check_activation_fee_is_recorded_as_income),
+    ("a grantable staff permission actually opens something",
+     check_grantable_permissions_open_something),
     ("CEO -> staff -> admin -> provider -> user routing and permissions agree",
      check_role_permission_wiring),
     ("controllers, focus nodes, timers and subscriptions are released",

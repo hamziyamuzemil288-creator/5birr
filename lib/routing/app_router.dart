@@ -47,6 +47,7 @@ import '../features/admin/admin_account_directory_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
 import '../features/admin/admin_payment_methods_screen.dart';
 import '../features/admin/admin_payment_verification_screen.dart';
+import '../features/admin/admin_document_verification_screen.dart';
 import '../features/admin/admin_cash_recharge_screen.dart';
 import '../features/admin/admin_provider_wallet_screen.dart';
 import '../features/admin/admin_transaction_history_screen.dart';
@@ -462,6 +463,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/users', builder: (_, __) => const AdminUserManagementScreen()),
       GoRoute(path: '/admin/payment-methods', builder: (_, __) => const AdminPaymentMethodsScreen()),
       GoRoute(path: '/admin/payments', builder: (_, __) => const AdminPaymentVerificationScreen()),
+      // The queue of identity documents waiting for a decision.
+      // review_user_document() existed since 20260927000030 but was only
+      // reachable from a dialog inside one user row, so the only way to work
+      // the queue was to already know whose document to open. Admin-only by
+      // construction: the RPC re-checks is_admin() server-side, and the SELECT
+      // policy is `user_id = auth.uid() OR is_admin()`.
+      GoRoute(
+          path: '/admin/document-verification',
+          builder: (_, __) => const AdminDocumentVerificationScreen()),
       GoRoute(path: '/admin/order-payments', builder: (_, __) => const AdminOrderPaymentsScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/admin/providers/:id/wallet/recharge', builder: (_, s) => AdminCashRechargeScreen(providerId: s.pathParameters['id']!)),

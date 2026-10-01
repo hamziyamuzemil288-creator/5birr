@@ -428,6 +428,19 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                             _menuCard(Icons.approval, 'Provider Approvals', '$_pendingProviders pending', () => context.push('/admin/approvals')),
                           if (_can('registrations'))
                             _menuCard(Icons.storefront_outlined, 'All Providers', '$_totalProviders total', () => context.push('/admin/providers')),
+                          // Gated on 'document_verification' — a staff_jobs key
+                          // that has existed since 20260927000034, seeded with
+                          // the label "Review identity documents and record a
+                          // verified or rejected decision", and on which NO
+                          // screen consulted it. A CEO could assign that job
+                          // to a staff member and it would have granted access
+                          // to nothing at all, because the only way to reach
+                          // review_user_document() was a dialog inside one user
+                          // row on the Users page, behind the 'registrations'
+                          // key instead. Two different permissions for one
+                          // action, and the specific one dead.
+                          if (_can('document_verification'))
+                            _menuCard(Icons.badge_outlined, 'Document Verification', 'ID documents awaiting review', () => context.push('/admin/document-verification')),
                           if (_can('payment_verification'))
                             _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
                           if (_can('payment_verification'))
@@ -572,7 +585,16 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           // Ababa differs from Hawassa. Without this card the
                           // per-category rates exist in the schema with no way
                           // to reach them.
-                          if (ref.read(authProvider).isAdmin)
+                          // OR'd with isAdmin rather than replaced by
+                          // _can('category_management'): `category_management`
+                          // is a grantable staff job that gated NOTHING for its
+                          // whole life, so this adds access for staff who hold
+                          // it without taking any away from an admin who does
+                          // not. The writes behind it are still refused
+                          // server-side by is_fee_editor()/is_ceo(), so the card
+                          // is navigation, not permission.
+                          if (ref.read(authProvider).isAdmin ||
+                              _can('category_management'))
                             _menuCard(Icons.price_change_outlined,
                                 'Category & City Fees',
                                 'Bajaj vs truck · per-city rates',

@@ -676,14 +676,21 @@ class _AdminStaffAssignmentScreenState
             onChanged: isCeo ? null : (v) => _toggleSuperAdmin(v),
           ),
           if (staffId != null && !isCeo) ...[
-            Row(
+            // A Wrap, not a Row: two chips are short enough to sit side by side
+            // at the default text scale and not at 2.0x, which is Android's
+            // maximum and a setting real accounts have. This is the same shape
+            // that put a striped banner under the income screen's filter row
+            // (test/income_filter_chips_overflow_test.dart), and the same fix:
+            // let the row break onto a second line instead of clipping.
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
                 ChoiceChip(
                   label: const Text('Admin team'),
                   selected: branch == 'ADMIN',
                   onSelected: (_) => _setBranch('ADMIN'),
                 ),
-                const SizedBox(width: 8),
                 ChoiceChip(
                   label: const Text('Owner team'),
                   selected: branch == 'ME',

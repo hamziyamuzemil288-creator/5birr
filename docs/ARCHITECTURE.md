@@ -1980,6 +1980,88 @@ no control.
 one of which reproduces the shipped `p_booking_base_fare` defect exactly. Two
 of the eight were red on their first run for defects in the falsifier itself.
 
+### 7.1.7 The permission that granted nothing, and the queue behind it
+
+A second audit: "the document verification page is not there at the admin
+portal, there are too many missing buttons in the sidebar, most of them have
+bottom overflow, and others are dead."
+
+**The missing page was real, and so was the reason it was missing.**
+`review_user_document()` has existed since 20260927000030 — admin-only
+server-side, writes an audit row, notifies the account, idempotent on a double
+tap. It was reachable from exactly one place: a dialog inside one user row on
+`AdminUserManagementScreen`. So working the queue meant already knowing whose
+document to open, and the user list is paginated by name. The question an
+administrator actually opens the portal with — *whose documents am I waiting
+on?* — had no answer, and `SUSPECTED_FRAUD`, the one time-critical state, was
+the hardest to reach of all.
+
+**And the permission behind it was dead.** `staff_jobs` has carried
+`document_verification` since 20260927000034, labelled *"Review identity
+documents and record a verified or rejected decision"*, listed in the admin
+staff screen's own checklist. No Dart file gated anything on it. A CEO could
+assign it and the assignee would see no difference whatever, because the route
+to the RPC sat behind `registrations` instead. **Two keys for one action, and
+the specific one connected to nothing** — which is why the missing page was not
+an oversight but a wiring gap.
+
+`AdminDocumentVerificationScreen` closes both ends: the queue, and a sidebar
+card gated on the key that was already being handed out. The same audit found
+`category_management` was grantable and ungated too; the Category & City Fees
+card now honours it **OR**ed with `isAdmin`, so staff who hold it gain access
+and no admin loses any. That OR is deliberate: replacing `isAdmin` would have
+been the tidier-looking edit and would have taken the section away from the
+accounts that use it today.
+
+**`view_auth_logs` is a real gap and is deliberately left alone.** It is
+grantable, offered in the checklist, and there is **no auth-event table
+anywhere in the schema** — no sign-in log, no failed-attempt counter, no
+session table. `admin_history_screen` reads `audit_logs`, whose action types are
+all administrative acts and contain nothing about a sign-in. So there is nothing
+for the permission to reveal, and gating a screen on it today would produce
+exactly the failure this check exists to catch: a card that opens to an empty
+list. It is on a reasoned allowlist in
+`check_grantable_permissions_open_something()` rather than deleted, because
+deleting it would remove a promise the CEO interface already shows. **It needs
+a data source before it needs a screen.**
+
+**The first version of that check reported 63 dead permissions**, every one of
+them false: fee names, category slugs, trigger names, `GRANT` roles. It scanned
+every `('x', 'y', …)` tuple across 220 migrations instead of the `staff_jobs`
+INSERTs. A check that reports everything is as useless as one that reports
+nothing, and it would have been deleted on first sight — which is how the real
+`document_verification` finding would have been thrown away with it. The
+narrowing is now part of what the check claims, and case C of
+`falsify_grantable_permission.py` exists only to keep it narrow.
+
+**Overflow.** The harness cannot lay out a screen: every admin screen reads
+`Supabase.instance` in `_load`, so pumping one without credentials renders the
+error state and proves nothing about its content. What it can do is test a row.
+`DocumentReviewCard` is therefore public and data-free — plain strings and a
+thumbnail slot — following `IncomeFilterChips` in the income screen, which was
+extracted for the same reason after the filter row put a striped banner under
+it. `test/document_review_card_overflow_test.dart` pumps it at **320×480 across
+1.0, 1.3, 1.8 and 2.0 text scale** (Android's "Large" is 1.3× and its maximum
+is 2.0×), for all five document statuses, with a 70-character account name, and
+**the pump is the guard**: a RenderFlex overflow is a FlutterError, so there is
+nothing to assert.
+
+Two mutations prove it can fail. Reverting the action row from `Wrap` to `Row`
+gives 24 overflow reports; removing `Flexible` from the status pill and the
+ellipsis from the account name gives 12 — and those only from scale 1.3
+upward, which is what shows the test is genuinely scale-sensitive rather than
+merely width-sensitive.
+
+One genuine at-risk row was found by reading rather than guessing: two
+`ChoiceChip`s in a plain `Row` on the staff assignment screen. Short enough at
+the default scale, not at 2.0×. Now a `Wrap`, which changes no behaviour.
+
+**What the audit did NOT find**, recorded because a clean result is a result:
+every sidebar-able `/admin` route is linked from the dashboard; there is not one
+`onPressed: null` literal in `lib/features/admin/`; `/admin-notifications` looks
+orphaned from the admin side but is reached from three user and provider
+dashboards; and both appeal types (`GENERAL`, `PASSWORD_RESET`) are handled.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.
