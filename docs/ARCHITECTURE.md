@@ -2417,6 +2417,129 @@ now pads the sheet from **outside**, the map drops to 120dp while the keyboard
 is up, and the confirm button is a direct child of the column rather than a
 descendant of the scrollable list.
 
+### 7.1.13 The gallery nobody could see, and the document nobody was told about
+
+Two reports, and both turned out to be "the thing exists and nothing reaches
+it".
+
+#### A gallery with no page to be seen on
+
+"I tried the photo upload section with both verified, and wallet charged
+provider but still the posting page and the price attaching with it is missing
+on gallery after uploading the image 2."
+
+`provider_gallery` was read in **exactly one place**: the provider's own
+upload screen. `grep -rn provider_gallery lib/` returned the model, the
+provider screen, and nothing else.
+
+`user_provider_detail_screen.dart` — the page a customer actually sees — had a
+section called "Photos". Every tile in it came from `product_images`, the
+**marketplace listing imagery**. The provider's own gallery was never queried.
+A provider who paid to upload photographs, whose wallet was charged, saw
+nothing change anywhere a customer could look, and there was no error to
+explain it: nothing failed, the query was simply never made.
+
+Two changes:
+
+- the page now reads `provider_gallery` through the same RLS the rest of the
+  page uses (`provider_gallery_public_read`: `is_active` **and** an APPROVED
+  provider), so a hidden photo is absent here for the same reason it is absent
+  everywhere rather than being un-hidden by a second query that disagrees. The
+  read is non-fatal: a gallery that fails to load must not take the provider's
+  name, products and reviews down with it;
+- `product_images` is now labelled **"Listing photos"**, so the two are not
+  presented as the same thing.
+
+**The price.** `provider_profiles.price_range` has existed since the first
+schema snapshot and is projected by the public view. No screen in the app read
+it and no screen let a provider set it, so it was always NULL and always
+would have been. It now renders in the provider page header — **only when it is
+set**, because an empty pill reads as "this provider charges nothing", which is
+the opposite of what "not set" means — and it is editable in Business Profile.
+
+#### A submitted document told nobody anything
+
+"when people sent their documents let notifications appear both at front
+dashboard and in apps notifications at the same time ... for all parties".
+
+`DocumentUploadService.uploadAndRecord` does exactly two things: upload the
+file, and `insert` a `user_documents` row. There is no third statement, and
+**no trigger on `user_documents` exists anywhere in the schema**. So:
+
+- the person who uploaded an ID was told nothing, and a silent upload is
+  indistinguishable from a failed one;
+- nobody holding `document_verification` was told a document arrived, so the
+  review queue was filled by people who happened to go and look.
+
+Migration 0127 adds one `AFTER INSERT` trigger and one `AFTER UPDATE`. "All
+parties" means all parties: a submission is a message **to** the reviewer and
+an acknowledgement **to** the submitter.
+
+Why a trigger and not a function call: the write is a direct client `INSERT`,
+from two different places, and both are on paths that must keep working when a
+notification fails. There was no trigger, so every caller had to remember to
+notify — and one did not. A trigger cannot be forgotten by the next caller.
+
+`notify_user_once()` rather than `notify_user()`, because the key is derived
+from the **row id**: a retried write of the same document collapses, and two
+genuinely different documents each notify, because a reviewer must hear about
+both.
+
+#### The recipient set, and the two bugs the replay found in it
+
+`document_review_recipients()` answers "who could open the review screen". Two
+defects, both found by replaying the migration and **counting the rows** — the
+only thing that can see either:
+
+1. **The account owner was excluded.** The first version matched
+   `'document_verification' = ANY(staff.permissions)` and then excluded anyone
+   with a staff row from the `ADMIN` branch. A CEO has a staff row, so they
+   matched neither branch and were told nothing — while the comment above the
+   function claimed administrators were always included.
+2. **The account owner got two notices for every document.** The function
+   returned `(user_id, is_admin)`; a CEO who is both an `is_ceo` staff member
+   and an `ADMIN` in `user_roles` produced two rows that `UNION` cannot
+   collapse, because they differ in the boolean. Both notices "worked", the
+   trigger did not raise, and the report said ok.
+
+It now returns one column, and says why in the function.
+
+#### The swallow that was too good
+
+`notify_user_safe()` exists so a notification can never roll back the write
+that triggered it. While building the fixture, `notify_user_once` was declared
+with `p_type text` instead of `public.notification_type`. **An enum has no
+implicit cast to text**, so every call raised — and the `EXCEPTION WHEN OTHERS
+THEN RETURN false` swallowed it. The outcome was indistinguishable from "no
+notifications were sent": no error, no warning, a green report.
+
+That is what a swallow buys, and also the danger: **a notification path can be
+completely dead and still report success.** So the wiring report now asserts
+the exact signature of `notify_user_once` and `notify_user`, by
+`to_regprocedure`. One signature the whole chain rests on, checked where a
+mismatch is loud.
+
+The same lesson shaped the trigger's shape: `notify_user_safe` has a
+**top-level** `EXCEPTION`, the shape 0092 already uses, rather than a nested
+`BEGIN ... EXCEPTION` block inside the trigger. The SQL-body scanner in
+`plpgsql_body_syntax.py` splits on semicolons at paren depth 0 and has no idea
+about plpgsql block structure, so a nested `BEGIN` reads as a bare `BEGIN`
+statement followed by `PERFORM ...` — a syntax error in a trigger that is
+perfectly valid. The harness is blunt rather than wrong, and matching the shape
+that already passes it was the right answer, not weakening the check.
+
+The dashboard card for Document Verification is the only actionable card that
+carried no number; it now shows the pending count from
+`admin_pending_document_count()`, which checks the asker's own permission
+server-side rather than running a client `COUNT` that RLS does not scope for
+reviewers.
+
+`scratch/db/document_probe.sql` exercises all of it as the right actor and the
+wrong one: submitter notified once, reviewer notified once, uninvolved third
+party notified **zero** times, a repeated key producing one notice, a second
+document producing a second notice, each of the three verdicts reaching the
+person, and a non-reviewer refused the count with `ADMIN_ONLY`.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.

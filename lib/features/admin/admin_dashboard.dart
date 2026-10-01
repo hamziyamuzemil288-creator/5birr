@@ -26,6 +26,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   int _openAppeals = 0;
   int _openDisputes = 0;
   int _pendingOrderPayments = 0;
+
+  /// Identity documents waiting on a reviewer. Shown on the Document
+  /// Verification card, and folded into the header badge so a queue nobody
+  /// opens is still visible.
+  int _pendingDocuments = 0;
   double _totalIncome = 0;
   // my_admin_permissions() returns ['*'] for the true Admin/CEO — i.e. every
   // card visible — and the explicit list for staff, who then see only their
@@ -77,6 +82,15 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
           .select('id')
           .eq('status', 'PAYMENT_VERIFICATION')
           .count(CountOption.exact)),
+      // Identity documents waiting for a verdict. Every other actionable card
+      // on this dashboard carries a number and this one carried only the words
+      // "ID documents awaiting review", so "are there any?" was answered by
+      // opening the page. The count comes from a server function that checks
+      // the reviewer's own permission, rather than a client COUNT against
+      // `user_documents`, which RLS does not scope for reviewers -- so a
+      // non-reviewer sees 0 rather than a permission error, and a reviewer
+      // sees their real queue.
+      count(() async => await client.rpc('admin_pending_document_count')),
     ]);
 
     // Section visibility for the signed-in principal (fail-open to '*' is
@@ -134,6 +148,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         _openAppeals = results[7];
         _openDisputes = results[8];
         _pendingOrderPayments = results[9];
+        _pendingDocuments = results[10];
         _totalIncome = income;
         _loading = false;
       });
@@ -170,7 +185,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
-    final hasPending = _pendingProviders > 0 || _pendingUsers > 0 || _pendingRecharges > 0;
+    final hasPending = _pendingProviders > 0 ||
+        _pendingUsers > 0 ||
+        _pendingRecharges > 0 ||
+        _pendingDocuments > 0;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
@@ -192,7 +210,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
             ),
           if (hasPending)
             Badge(
-              label: Text('${_pendingProviders + _pendingUsers + _pendingRecharges}',
+              label: Text('${_pendingProviders + _pendingUsers + _pendingRecharges + _pendingDocuments}',
                   style: const TextStyle(fontSize: 10, color: Colors.white)),
               backgroundColor: AppTheme.error,
               child: IconButton(
@@ -440,7 +458,13 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           // key instead. Two different permissions for one
                           // action, and the specific one dead.
                           if (_can('document_verification'))
-                            _menuCard(Icons.badge_outlined, 'Document Verification', 'ID documents awaiting review', () => context.push('/admin/document-verification')),
+                            _menuCard(
+                                Icons.badge_outlined,
+                                'Document Verification',
+                                _pendingDocuments > 0
+                                    ? '$_pendingDocuments waiting to review'
+                                    : 'No documents waiting',
+                                () => context.push('/admin/document-verification')),
                           if (_can('payment_verification'))
                             _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
                           if (_can('payment_verification'))

@@ -20,6 +20,21 @@ class UserProviderDetailScreen extends StatefulWidget {
 class _State extends State<UserProviderDetailScreen> {
   Map<String, dynamic>? _provider;
   List<Map<String, dynamic>> _products = [];
+
+  /// The provider's OWN gallery, i.e. `provider_gallery`.
+  ///
+  /// This page had a "Photos" section and no gallery in it. Every tile came
+  /// from `product_images` -- the marketplace listings -- so a provider who
+  /// spent real money on the gallery upload screen saw none of it here. The
+  /// report was "the posting page is missing on gallery after uploading the
+  /// image 2", and it was missing because nothing ever queried the table this
+  /// screen is about.
+  ///
+  /// Read through the same RLS policy the rest of the page uses
+  /// (`provider_gallery_public_read`: is_active AND an APPROVED provider), so a
+  /// hidden photo is absent here for the same reason it is absent everywhere,
+  /// rather than being un-hidden by a second query that disagrees.
+  List<Map<String, dynamic>> _gallery = [];
   List<Map<String, dynamic>> _reviews = [];
   ProviderTrustStats? _trust;
   bool _loading = true;
@@ -53,6 +68,19 @@ class _State extends State<UserProviderDetailScreen> {
           .limit(50);
       final fav = await FavoritesService.instance
           .isFavorited('PROVIDER', widget.providerId);
+      // Non-fatal by design. A gallery that fails to load must not take the
+      // whole provider page down with it -- the name, the products and the
+      // reviews are all still worth showing, and an empty gallery reads as
+      // "this provider has no photos" rather than "we could not ask".
+      List<Map<String, dynamic>> gallery = const [];
+      try {
+        gallery = List<Map<String, dynamic>>.from(await client
+                .from('provider_gallery')
+                .select('id, storage_path, caption, display_order')
+                .eq('provider_id', widget.providerId)
+                .eq('is_active', true)
+                .order('display_order') as List);
+      } catch (_) {}
       List<Map<String, dynamic>> reviews = [];
       try {
         reviews = await ReviewService.instance
@@ -65,6 +93,7 @@ class _State extends State<UserProviderDetailScreen> {
         setState(() {
           _provider = prov;
           _products = List<Map<String, dynamic>>.from(prods as List);
+          _gallery = gallery;
           _reviews = reviews;
           _trust = trust;
           _fav = fav;
@@ -358,6 +387,21 @@ class _State extends State<UserProviderDetailScreen> {
             .getPublicUrl(path),
       ));
     }
+    // The provider's own gallery, first. `provider-gallery` is a public bucket,
+    // so `getPublicUrl` is right and `PhotoGridItem.url` avoids the per-tile
+    // createSignedUrl round trip that `stored` would otherwise cost.
+    final galleryPhotos = <({String? id, String url, String? caption})>[];
+    for (final g in _gallery) {
+      final path = g['storage_path'] as String?;
+      if (path == null || path.isEmpty) continue;
+      galleryPhotos.add((
+        id: g['id'] as String?,
+        url: Supabase.instance.client.storage
+            .from('provider-gallery')
+            .getPublicUrl(path),
+        caption: g['caption'] as String?,
+      ));
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -460,18 +504,81 @@ class _State extends State<UserProviderDetailScreen> {
                               fontSize: 13)),
                     ],
                   ),
+                  // The price, which the public view has always exposed as
+                  // `price_range` and which no screen in the app ever
+                  // rendered. A provider who set a price range and a customer
+                  // who is choosing between two providers both had no way to
+                  // see it. Shown only when it is actually set: an empty pill
+                  // reads as "this provider charges nothing", which is the
+                  // opposite of what "not set" means.
+                  if (_priceRange.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: Colors.white.withOpacity(0.35)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.payments_outlined,
+                              size: 14, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              _priceRange,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
             // Trust & quality summary — real aggregated stats
             ProviderTrustSection(stats: _trust),
+            // The provider's OWN gallery. Shown before the product photos
+            // because it is the one they paid to upload and the one that was
+            // invisible from here; `product_images` below is the marketplace
+            // listing imagery, which is a different thing.
+            if (galleryPhotos.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Text('Photos (${galleryPhotos.length})',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: PhotoGrid(
+                  items: [
+                    for (final g in galleryPhotos)
+                      PhotoGridItem.url(
+                        g.url,
+                        onTap: () => _openPhoto(context, g.url, g.caption),
+                      ),
+                  ],
+                ),
+              ),
+            ],
             // Gallery grid — one tile per product photo, read-only, tapping a
             // tile opens that product. Uses product_images, which the products
             // query already fetched, so this costs no extra round trip.
             if (photoProducts.isNotEmpty) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                child: Text('Photos (${photoProducts.length})',
+                child: Text('Listing photos (${photoProducts.length})',
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.w700)),
               ),
@@ -565,6 +672,54 @@ class _State extends State<UserProviderDetailScreen> {
   /// First photo path on a product, or null when it has none. Sorted by
   /// `sort_order` the way product_card.dart expects, so a product whose
   /// cover was deliberately ordered first still shows that one.
+  /// The price this provider asks for, or '' when they have not set one.
+  String get _priceRange {
+    final raw = _provider?['price_range'] as String?;
+    return (raw ?? '').trim();
+  }
+
+  /// Full-screen a gallery photo, with its caption.
+  ///
+  /// A grid tile the size of a thumb is not enough to judge whether a photograph
+  /// is of this provider's actual work, which is the entire reason the gallery
+  /// exists.
+  void _openPhoto(BuildContext context, String url, String? caption) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: InteractiveViewer(
+                maxScale: 4,
+                child: Image.network(url, fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                        Icons.broken_image_outlined,
+                        size: 48,
+                        color: Colors.white)),
+              ),
+            ),
+            if ((caption ?? '').trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text((caption ?? '').trim(),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ],
+            const SizedBox(height: 6),
+            IconButton(
+              onPressed: () => Navigator.pop(ctx),
+              icon: const Icon(Icons.close, color: Colors.white),
+              tooltip: 'Close',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String? _firstImagePath(Map<String, dynamic> product) {
     final raw = product['product_images'];
     if (raw is! List || raw.isEmpty) return null;

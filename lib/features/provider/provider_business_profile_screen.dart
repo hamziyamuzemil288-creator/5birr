@@ -30,12 +30,22 @@ class _State extends State<ProviderBusinessProfileScreen> {
   final _phoneCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
 
+  /// The price this provider asks for, e.g. "50 - 200 ETB".
+  ///
+  /// `provider_profiles.price_range` has existed since the first schema
+  /// snapshot, is projected by the PUBLIC view, and had no editor anywhere in
+  /// the app -- so it was always NULL and nothing could ever set it. That is
+  /// the "price attaching with it is missing" half of the report: the column
+  /// was there, the column was public, and no screen read or wrote it.
+  final _priceCtrl = TextEditingController();
+
   @override
   void dispose() {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _phoneCtrl.dispose();
     _addressCtrl.dispose();
+    _priceCtrl.dispose();
     super.dispose();
   }
   String? _selectedCategoryId;
@@ -90,6 +100,7 @@ class _State extends State<ProviderBusinessProfileScreen> {
             _descCtrl.text = prov['address_text'] ?? '';
             _phoneCtrl.text = '';
             _addressCtrl.text = prov['business_address'] ?? prov['address_text'] ?? '';
+            _priceCtrl.text = prov['price_range'] ?? '';
             _selectedCategoryId = prov['category_id'];
             _photoPath = prov['photo_storage_path'] as String?;
             _lat = (prov['location_lat'] as num?)?.toDouble();
@@ -123,6 +134,12 @@ class _State extends State<ProviderBusinessProfileScreen> {
         'category_id': _selectedCategoryId,
         'location_lat': _lat,
         'location_lng': _lng,
+        // Empty means "not set", and the public page renders nothing in that
+        // case rather than an empty pill. Writing NULL rather than '' keeps the
+        // column honest for anything that groups on it.
+        'price_range': _priceCtrl.text.trim().isEmpty
+            ? null
+            : _priceCtrl.text.trim(),
       }).eq('id', _profile!['id']);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -346,6 +363,21 @@ class _State extends State<ProviderBusinessProfileScreen> {
                       label: 'Address',
                       controller: _addressCtrl,
                       maxLines: 2,
+                    ),
+                    const SizedBox(height: 12),
+                    BirrTextField(
+                      label: 'Price range',
+                      controller: _priceCtrl,
+                      hint: 'e.g. 50 - 200 ETB',
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4, left: 4),
+                      child: Text(
+                        'Shown on your public page. Leave blank if you charge '
+                        'case by case.',
+                        style: const TextStyle(
+                            fontSize: 11, color: AppTheme.textMuted),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     // Business GPS capture row

@@ -21,8 +21,10 @@ cp "$ROOT/scratch/db/fee_pre.sql" "$TMP/fee_pre.sql"
 cp "$ROOT/supabase/migrations/20260927000062_fees_are_data.sql" "$TMP/0062.sql"
 cp "$ROOT/supabase/migrations/20260927000107_per_category_and_city_fees.sql" "$TMP/0107.sql"
 cp "$ROOT/supabase/migrations/20260927000126_the_fee_editor_never_worked.sql" "$TMP/0126.sql"
+cp "$ROOT/supabase/migrations/20260927000127_a_document_tells_both_sides.sql" "$TMP/0127.sql"
 cp "$ROOT/scratch/db/fee_probe.sql" "$TMP/fee_probe.sql"
 cp "$ROOT/scratch/db/image_probe.sql" "$TMP/image_probe.sql"
+cp "$ROOT/scratch/db/document_probe.sql" "$TMP/document_probe.sql"
 chmod 644 "$TMP"/*.sql
 
 su postgres -c "cd $TMP && $PGBIN/psql -h $SOCK -p $PORT -d postgres -q -c 'DROP DATABASE IF EXISTS $DB'" 2>/dev/null
@@ -31,10 +33,10 @@ su postgres -c "cd $TMP && $PGBIN/psql -h $SOCK -p $PORT -d postgres -q -c 'CREA
 # `sh tools/harness/replay_fee.sh --without-fix` replays 0107 alone. That is
 # the falsification of this file's central claim: the fee probe MUST come back
 # red for CASE 1 and CASE 2b when the corrected restatement is not applied.
-MIGRATIONS="0062.sql 0107.sql"
+MIGRATIONS="0062.sql 0107.sql 0127.sql"
 [ "${1:-}" = "--without-fix" ] || MIGRATIONS="$MIGRATIONS 0126.sql"
 
-for f in fee_pre.sql $MIGRATIONS fee_probe.sql image_probe.sql; do
+for f in fee_pre.sql $MIGRATIONS fee_probe.sql image_probe.sql document_probe.sql; do
   echo "== $f"
   su postgres -c "cd $TMP && $PGBIN/psql -h $SOCK -p $PORT -d $DB -q -v ON_ERROR_STOP=1 -f $TMP/$f" || exit 1
 done

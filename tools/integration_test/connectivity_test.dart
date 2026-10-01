@@ -1586,6 +1586,24 @@ void main() {
       print('    gallery visibility -> $detail');
     });
 
+    test('a submitted document tells both sides', () async {
+      final (detail, error) =
+          await rpcTextDiagnosed('document_notification_wiring_report');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'A submitted identity document does not reach both sides. '
+              'DocumentUploadService writes user_documents directly and there '
+              'was no trigger on the table at all, so the person who uploaded '
+              'an ID was told nothing and nobody who could review it was told '
+              'anything. This also asserts the signature of notify_user_once '
+              'that the send depends on, because the send swallows its own '
+              'errors: a mismatch there means every notice fails silently and '
+              'still reports ok. $detail');
+      // ignore: avoid_print
+      print('    document notifications -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole
