@@ -2030,6 +2030,22 @@ void main() {
       print('    provider field write outcome -> $outcome');
     });
 
+    test('the field tables are NOT writable by a client', () async {
+      // Supabase grants INSERT/UPDATE/DELETE to the client roles by DEFAULT on
+      // every new public table, and both field tables carry a FOR ALL policy,
+      // so on the first live run after 0128 they counted as client-writable
+      // tables outside the expected list and the write-surface assertion
+      // refused them. The app writes them only through SECURITY DEFINER RPCs;
+      // 0129 revokes the default grant. This pins it: a later migration that
+      // re-grants, or an ALTER DEFAULT PRIVILEGES, fails here instead of
+      // silently re-opening the surface.
+      expect(await ok('assert_field_tables_are_not_client_writable'), isTrue,
+          reason: 'category_profile_fields or provider_profile_field_values '
+              'is writable by anon or authenticated, so any client can file '
+              'or edit a provider field answer directly, bypassing '
+              'save_provider_profile_field and its category-membership check.');
+    });
+
     test('the combined assertion passes on the live database', () async {
       // assert_ranking_and_category_fields EXERCISES the paths and returns
       // jsonb with an `ok` flag plus the evidence. A schema that parses and a
