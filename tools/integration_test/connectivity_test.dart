@@ -1490,6 +1490,38 @@ void main() {
       print('    admin RPC reachability -> $detail');
     });
 
+    test('every ride and order RPC a CUSTOMER calls is callable', () async {
+      // The reported failure was a rider's: "when user try to order ride its
+      // saying that function may have been removed". That sentence was
+      // friendly_error's not-found branch rendering PGRST202, which means
+      // PostgREST could not RESOLVE the call -- never that a record was
+      // deleted. The client half is fixed in friendly_error.dart and
+      // failure_mapper.dart; THIS is the half that says which of the four
+      // causes it is, read from the live catalog.
+      //
+      // create_ride_request was checked by hand before the migration was
+      // written: its eight parameter names match ride_service.dart exactly and
+      // 0114 grants it to authenticated. So a red line here means the deployed
+      // catalog differs from every migration in the repository -- which no
+      // static check can see.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_customer_write_paths_are_reachable');
+      expect(detail, isNotNull,
+          reason: 'The check could not be run at all. If this is null WITH '
+              '0125 deployed, the function is missing or PostgREST has not '
+              'reloaded — read the error before changing anything. '
+              'Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'At least one ride or order RPC a customer calls is missing, '
+              'has the wrong arity, is not executable by authenticated (which '
+              'PostgREST reports as PGRST202), declares different parameter '
+              'names than the client sends, or shares its name with another '
+              'overload in public (PGRST203). This is what a rider saw as '
+              '"that function may have been removed": $detail');
+      // ignore: avoid_print
+      print('    customer ride RPC reachability -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole

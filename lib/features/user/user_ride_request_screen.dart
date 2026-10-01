@@ -13,6 +13,7 @@ import '../../core/services/geocoding_service.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/location_prompt.dart';
+import '../../core/widgets/where_to_picker.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -498,6 +499,32 @@ class _State extends State<UserRideRequestScreen>
     _destCtrl.text = place.label;
     _suppressDestSearch = false;
     _refreshFare();
+  }
+
+  /// "Where to?" — the full-screen picker with a search bar, the nearby-area
+  /// locator and the GPS animation.
+  ///
+  /// Added beside "Pick on map" rather than replacing it. The map route is the
+  /// right tool when the rider already knows roughly where they are going; the
+  /// picker is the right tool when the answer is a kebele name, which on this
+  /// platform is most of the time, and which is what the inline suggestion row
+  /// above was already trying and failing to do well.
+  ///
+  /// Opens on the destination when one is already set, so re-picking does not
+  /// throw away where the rider had got to.
+  Future<void> _openWhereTo() async {
+    final picked = await WhereToPicker.open(
+      context,
+      title: 'Where to?',
+      initialCenter: _destLatLng == null
+          ? _searchBias()
+          : GeoPoint(_destLatLng!.latitude, _destLatLng!.longitude),
+    );
+    if (picked == null || !mounted) return;
+    // The one method that turns a PlaceResult into a destination. The inline
+    // suggestion tiles and this sheet both go through it, so a destination set
+    // either way re-quotes the fare identically.
+    _selectDestSuggestion(picked);
   }
 
   /// Search bias: the latest GPS fix when available (proximity ranking);
@@ -1041,6 +1068,16 @@ class _State extends State<UserRideRequestScreen>
                   const SizedBox(height: 4),
                   Row(
                     children: [
+                      // The primary destination action: search bar + kebele
+                      // chips + the GPS animation, in one sheet.
+                      TextButton.icon(
+                        onPressed: _openWhereTo,
+                        icon: const Icon(Icons.travel_explore, size: 16),
+                        label: const Text('Where to?'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.primaryGreenDark,
+                        ),
+                      ),
                       TextButton.icon(
                         onPressed: _geocoding ? null : _pickDestinationOnMap,
                         icon: const Icon(Icons.map_outlined, size: 16),

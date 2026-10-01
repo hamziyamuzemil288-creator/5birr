@@ -2143,11 +2143,103 @@ is off for every product unless a provider opts in — which is why a buyer neve
 sees it. Not a wiring gap; a default.
 
 **The "where" button and the GPS pulse are not missing either.** "Use current
-location", "Pick on map" and the map-picker recenter FAB are all present, and
-the pulse is a `Ticker` created in `initState` — which is the correct place, and
-the thing that was wrong in §7.1.5. Both depend on a resolved GPS fix, so with
-location denied there is nothing to show. Which screen is not showing them was
-not established here, and guessing at it would be the wrong move.
+location", "Pick on map", the new "Where to?" picker (§7.1.9) and the map-picker
+recenter FAB are all present, and the pulse is a `Ticker` created in `initState`
+— which is the correct place, and the thing that was wrong in §7.1.5. Both
+depend on a resolved GPS fix, so with location denied there is nothing to show.
+Which screen is not showing them was not established here, and guessing at it
+would be the wrong move.
+
+### 7.1.9 The "Where to?" picker, and what a ListTile will not tell you
+
+`lib/core/widgets/where_to_picker.dart` is a full-screen destination picker
+opened from the ride-request screen by a **"Where to?"** `TextButton.icon` in
+the Destination row, beside "Pick on map". Both routes end at the same place:
+`_openWhereTo()` feeds the result into `_selectDestSuggestion(picked)`, so the
+fare re-quotes through exactly the code path a map pin takes. Two entry points
+to one destination, not two destinations.
+
+What it does:
+
+- **A search bar** over `GeocodingService.instance.searchPlaces(query,
+  biasPoint:, limit: 8)` on a 320ms debounce, with a `_searchGeneration`
+  counter so a slow response for "Bole" cannot overwrite a fast one for
+  "Bole Lemi".
+- **Nearby areas** from `GeocodingService.instance.nearbyAreas(at)` —
+  kebeles via Overpass (`place=…|admin_level=9|10`), shown in their own group
+  above the search results, so a rider with no landmark in mind still has
+  something to tap.
+- **A map** (`FlutterMap` + OSM tiles, `userAgentPackageName:
+  'app.aliob.birr5'`) with a `CircleLayer` halo and a `MarkerLayer`. The halo
+  is a fixed 60m because `LocationResult` carries **no accuracy** — inventing
+  an accuracy figure the service did not report would draw a confident circle
+  the app cannot justify.
+- **A fixed 48x48 round action** beside the field that swaps a spinner for a
+  crosshair icon, and calls `LocationService.instance
+  .getCurrentPositionDetailed()`.
+- **A confirm button that is disabled but visible** when nothing is chosen:
+  "Pick a place to continue". Hiding it would read as a broken app; a greyed
+  button that explains itself does not.
+- **One pulse**, driven by a `Ticker` created in `initState` and disposed with
+  the state — the same rule §7.1.5 got wrong.
+
+#### The measurement that came out wrong
+
+`test/where_to_picker_overflow_test.dart` was first written to assert that
+these rows do not overflow, with the labels capped at one line. **Deleting
+every `maxLines: 1` left all nineteen tests green.** The file claimed to guard
+something it was not guarding.
+
+The reason is worth writing down, because it is not specific to this widget:
+
+> A `ListTile` bounds its own height. Its title is laid out with a max height,
+> so a label that does not fit **clips** — the row never grows, and
+> `tester.getSize` on the label reports one line's height whether `maxLines` is
+> set or not.
+
+Measured directly, crossing `dense` true/false with `maxLines` set/unset on
+the *longest label OpenStreetMap actually returns*:
+
+| `dense` | `maxLines` | short label | long label |
+|---|---|---|---|
+| `true` | `1` | 64dp | 64dp |
+| `true` | none | 64dp | 64dp |
+| `false` | `1` | 72dp | 72dp |
+| `false` | none | 72dp | 72dp |
+
+Row height is a function of `dense` **alone**. The label's length is not
+visible to layout at all. Any assertion of the form "the row is under N line
+heights" was reading a constant.
+
+The same probe killed the parallel claim for the confirm button: a `FilledButton`
+has no height bound of its own, but it did not grow either, so its height
+assertion was equally vacuous.
+
+So the promise is now guarded **where it is actually made — on the widget**:
+
+- `ListTile.dense` is asserted directly on every result tile. This is real: it
+  goes red on `dense: true` → `dense: false`, and it is worth asserting, because
+  `dense` is what makes the row 64dp instead of 72dp and therefore what fits
+  more results above the confirm button.
+- `Text.maxLines == 1` **and** `Text.overflow == TextOverflow.ellipsis` are
+  asserted on the title, the subtitle and the confirm label. The ellipsis is
+  the point, not the decoration: without the cap a ListTile chops a place name
+  at an arbitrary pixel and the user is given nothing to show it was cut; with
+  it, the truncation is visible.
+- The search row is asserted by **pumping**, not by measuring: a `Row` whose
+  children exceed its width raises a `RenderFlex` overflow in a widget test, so
+  those eight cases are a genuine guard at 320x480 across every text scale
+  Android offers. Both states are pumped, because the action button swaps a
+  48dp spinner for a 20dp icon on every GPS fix and the field beside it must
+  not shift when it does.
+
+All four assertions were then **proven red** by mutation — `dense: true` →
+`dense: false`, and `maxLines`/`ellipsis` deleted from the title and from the
+confirm label — and restored. 19 tests.
+
+The `Where to?` button was verified to be **unconditional**: it is not behind a
+flag, a feature gate or a role check, so there is no configuration in which a
+rider cannot reach it.
 
 ### 7.2 Edge Functions
 
