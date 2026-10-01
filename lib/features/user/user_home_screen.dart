@@ -153,6 +153,29 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
           .order('sort_order')
           .limit(40);
       categories = (catData as List).map((j) => AppCategory.fromJson(j)).toList();
+      // Rank the rail by how much trade actually happens under each category,
+      // from the most to the least, so the busiest trade leads instead of
+      // whichever row an administrator happened to type first. Non-fatal: a
+      // failed ranking leaves the sort_order the query already returned, which
+      // is the order this screen shipped with.
+      try {
+        final ranked = await client.rpc('ranked_categories', params: {
+          'p_limit': 100,
+          'p_offset': 0,
+        });
+        final order = <String, int>{};
+        var i = 0;
+        for (final row in List<Map<String, dynamic>>.from(ranked as List)) {
+          final id = row['category_id'];
+          if (id is String) order[id] = i++;
+        }
+        if (order.isNotEmpty) {
+          categories.sort((a, b) =>
+              (order[a.id] ?? 1 << 30).compareTo(order[b.id] ?? 1 << 30));
+        }
+      } catch (_) {
+        // Keep the sort_order the categories query already gave us.
+      }
       _cachedCategories = categories;
       _categoriesFetchedAt = DateTime.now();
     }
@@ -196,12 +219,13 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     //    a directory — the full list is behind the "All providers" pill.
     List<Map<String, dynamic>> providers = const [];
     try {
-      final provData = await client
-          .from('public_provider_profiles')
-          .select('id, business_name, photo_storage_path, city, provider_type')
-          .eq('is_active', true)
-          .order('created_at', ascending: false)
-          .limit(12);
+      // Ranked by completed transactions, not by who signed up last. Read
+      // through the server so the rail, the "All providers" sheet and the
+      // category screen cannot disagree about the order.
+      final provData = await client.rpc('ranked_providers', params: {
+        'p_limit': 12,
+        'p_offset': 0,
+      });
       providers = List<Map<String, dynamic>>.from(provData as List);
     } catch (_) {
       // No gallery section. The feed below it is unaffected.
@@ -527,6 +551,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                 city: ((p['city'] as String?) ?? '').trim(),
                 photoPath: p['photo_storage_path'] as String?,
                 photoCount: counts[(p['id'] ?? '') as String] ?? 0,
+                transactions:
+                    (p['completed_transactions'] as num?)?.toInt() ?? 0,
               );
             },
           ),
@@ -541,6 +567,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     required String city,
     required String? photoPath,
     required int photoCount,
+    required int transactions,
   }) {
     // An id is the only thing the route needs; a row without one would push a
     // path matching no route at all, so it is dropped rather than rendered
@@ -551,9 +578,16 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         : Supabase.instance.client.storage
             .from('provider-photos')
             .getPublicUrl(photoPath);
-    final subtitle = photoCount > 0
-        ? '$photoCount photo${photoCount == 1 ? '' : 's'}'
-        : (city.isEmpty ? 'No photos yet' : city);
+    // Completed work outranks a photo count as the thing a customer reads on
+    // a card that is now ordered by that work -- leading with "3 photos" on
+    // the busiest provider in the city says the wrong thing about why it is
+    // first. A provider with no completed job keeps the old subtitle.
+    final subtitle = transactions > 0
+        ? '$transactions completed job${transactions == 1 ? '' : 's'}${
+            photoCount > 0 ? ' · $photoCount photo${photoCount == 1 ? '' : 's'}' : ''}'
+        : (photoCount > 0
+            ? '$photoCount photo${photoCount == 1 ? '' : 's'}'
+            : (city.isEmpty ? 'No photos yet' : city));
 
     return SizedBox(
       width: 152,
@@ -647,12 +681,13 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         // sheet and opens a new one, so it gets a fresh query -- which is why
         // there is no StatefulBuilder here to rebuild: a retry that reuses the
         // same Future would immediately re-show the same error.
+        // Ordered the same way the rail is, and by the same server: most
+        // transacted first, best to least. Ordering this one by
+        // `business_name` was the only reason two lists of the same
+        // providers could disagree about who is biggest.
         final future = client
-            .from('public_provider_profiles')
-            .select('id, business_name, photo_storage_path, city, provider_type')
-            .eq('is_active', true)
-            .order('business_name')
-            .limit(200);
+            .rpc('ranked_providers', params: {'p_limit': 200, 'p_offset': 0})
+            .then((rows) => List<Map<String, dynamic>>.from(rows as List));
         return DraggableScrollableSheet(
           expand: false,
           initialChildSize: 0.7,
@@ -706,6 +741,9 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                             ((row['business_name'] as String?) ?? '').trim();
                         final city = ((row['city'] as String?) ?? '').trim();
                         final count = counts[id] ?? 0;
+                        final transactions =
+                            (row['completed_transactions'] as num?)?.toInt() ??
+                                0;
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: CircleAvatar(
@@ -726,11 +764,15 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                                 : null,
                           ),
                           title: Text(name.isEmpty ? 'Unnamed provider' : name),
-                          subtitle: Text(count > 0
-                              ? '$count photo${count == 1 ? '' : 's'}'
-                              : (city.isEmpty
-                                  ? 'No photos yet'
-                                  : city)),
+                          subtitle: Text(transactions > 0
+                              ? '$transactions completed job'
+                                  '${transactions == 1 ? '' : 's'}${
+                                      count > 0 ? ' · $count photo${count == 1 ? '' : 's'}' : ''}'
+                              : (count > 0
+                                  ? '$count photo${count == 1 ? '' : 's'}'
+                                  : (city.isEmpty
+                                      ? 'No photos yet'
+                                      : city))),
                           onTap: () {
                             // sheetContext, not the State's context: the sheet
                             // is being popped, and using its context afterwards

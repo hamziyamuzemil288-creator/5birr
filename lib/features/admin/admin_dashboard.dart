@@ -623,6 +623,17 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                 'Category & City Fees',
                                 'Bajaj vs truck · per-city rates',
                                 () => context.push('/admin/fees/categories')),
+                          // What a provider of each trade is asked for and what
+                          // it costs. Its own guard, not a sibling of the
+                          // card above: in a Dart list literal an element
+                          // written after another element's `if` becomes
+                          // unconditional, which is how a money screen once
+                          // reached every staff member.
+                          if (ref.read(authProvider).isAdmin ||
+                              _can('category_management'))
+                            _menuCard(Icons.tune, 'Category Fields',
+                                'Hotel rooms, doctor rates, delivery fees',
+                                () => context.push('/admin/category-fields')),
                           // The authority section: take one uploaded image down,
                           // suspend an account, and read the append-only record
                           // of what has been done. Nothing else in this

@@ -34,6 +34,10 @@ class SignupDraft {
   // Task 10: the signup CAPTCHA id is reused for the first OTP request so the
   // user solves one challenge at the start of registration.
   final String? captchaId;
+  // The trade a provider picked at the signup gate. Parked through OTP
+  // verification like every other field, then claimed server-side once the
+  // account exists (it selects the provider's whole settings form).
+  final String? categoryId;
 
   const SignupDraft({
     required this.rolePath,
@@ -47,6 +51,7 @@ class SignupDraft {
     this.nationalIdNumber,
     this.referralCode,
     this.captchaId,
+    this.categoryId,
   });
 }
 

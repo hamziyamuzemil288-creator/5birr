@@ -51,6 +51,21 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
   final _referralController = TextEditingController();
   String? _referralHint; // live lookup result: "Referred by: <name>"
 
+  // The trade a provider is registering as. REQUIRED for providers, because it
+  // is what decides the whole settings form they get afterwards: a hotel is
+  // asked for room types, a doctor for an hourly rate, a restaurant for a
+  // delivery fee. Asking it after approval would mean every provider fills in
+  // the wrong form first and then has to redo it.
+  String? _selectedCategoryId;
+  List<Map<String, dynamic>> _providerCategories = const [];
+  bool _loadingCategories = false;
+
+  /// SERVICE for a service provider, VEHICLE for a vehicle provider. The server
+  /// refuses a mismatch (provider_claim_category), so the list offered and the
+  /// list accepted cannot drift apart.
+  String get _categorySector =>
+      widget.role == SignupRole.vehicleProvider ? 'VEHICLE' : 'SERVICE';
+
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
@@ -121,6 +136,38 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       _otpRequired = otpRequired;
       _captchaRequired = results[0] && otpRequired;
     });
+    if (_isProvider) await _loadProviderCategories();
+  }
+
+  /// The trades a provider may register as, for their own sector only.
+  ///
+  /// A failed load is NOT fatal and does not block the form: the picker simply
+  /// renders empty and the submit button reports that a trade is needed. The
+  /// alternative -- locking registration behind a catalogue read -- would turn
+  /// a slow query into "you cannot sign up today".
+  Future<void> _loadProviderCategories() async {
+    setState(() => _loadingCategories = true);
+    try {
+      final rows = await Supabase.instance.client
+          .from('categories')
+          .select('id, name')
+          .eq('sector', _categorySector)
+          .isFilter('parent_id', null)
+          .eq('is_active', true)
+          .order('name');
+      if (!mounted) return;
+      setState(() {
+        _providerCategories =
+            List<Map<String, dynamic>>.from(rows as List);
+        _loadingCategories = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _providerCategories = const [];
+        _loadingCategories = false;
+      });
+    }
   }
 
   @override
@@ -448,6 +495,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
       nationalIdNumber: null,
       referralCode: _isProvider ? _referralController.text.trim() : null,
       captchaId: _captchaId,
+      // Parked through OTP verification like every other field, then claimed
+      // server-side once the account exists.
+      categoryId: _isProvider ? _selectedCategoryId : null,
     );
 
     // Ask for a code only while the server is asking for one. When the OTP
@@ -474,6 +524,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               password: draft.password,
               businessName: draft.name,
               providerType: _providerType,
+              categoryId: draft.categoryId,
               city: draft.city,
               kebele: draft.kebele,
               streetRoad: draft.streetRoad,
@@ -667,6 +718,54 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           // Task 8: optional referral code — identifies the sales/staff
           // person who registered this provider. Empty = self-registered;
           // an unknown code never blocks registration (kept as "Other").
+          // The trade gate. Rendered BEFORE the referral code because it is
+          // the answer that shapes everything after signup; the referral code
+          // is bookkeeping about who brought them.
+          DropdownButtonFormField<String>(
+            value: _selectedCategoryId,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText:
+                  widget.role == SignupRole.vehicleProvider
+                      ? 'Vehicle Category *'
+                      : 'Service Category *',
+              hintText: _loadingCategories
+                  ? 'Loading categories...'
+                  : 'What do you provide?',
+              prefixIcon: const Icon(Icons.category_outlined),
+            ),
+            items: _providerCategories
+                .map((c) => DropdownMenuItem<String>(
+                      value: c['id'] as String,
+                      child: Text(c['name']?.toString() ?? '',
+                          overflow: TextOverflow.ellipsis),
+                    ))
+                .toList(),
+            // When the catalogue could not be read, the picker is disabled
+            // rather than empty-and-enabled: an enabled dropdown with no
+            // options reads as "there are no categories", which is not true.
+            onChanged: _providerCategories.isEmpty
+                ? null
+                : (v) => setState(() => _selectedCategoryId = v),
+            validator: (v) {
+              if (!_isProvider) return null;
+              if (_providerCategories.isEmpty) {
+                return 'Could not load categories — check your connection';
+              }
+              if (v == null || v.isEmpty) {
+                return 'Please choose what you provide';
+              }
+              return null;
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 4),
+            child: Text(
+              'This decides the settings and pricing form you will get.',
+              style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+            ),
+          ),
+          const SizedBox(height: 16),
           BirrTextField(
             label: 'Referral Code (optional)',
             hint: 'From the sales person who signed you up',

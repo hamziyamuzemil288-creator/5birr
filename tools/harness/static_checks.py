@@ -6545,6 +6545,386 @@ def check_account_deletion_is_unblocked() -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# every trade ranks its best and prices on its own terms (migration 0128)
+# ---------------------------------------------------------------------------
+# The migration that introduces the ranked readers and the per-category
+# provider fields. Named, not located by "the last migration that mentions the
+# name", because that file's own reports mention every function -- so a
+# membership test over the string would point at whichever file happened to be
+# later, not the file that defines anything.
+CATEGORY_FIELD_MIGRATION = (
+    "20260927000128_every_trade_ranks_its_best_and_prices_its_own.sql")
+
+# function name -> the exact parameter names it declares. A rename on the SQL
+# side (p_category_id -> p_cat) is a PostgREST 202 at runtime with no compiler
+# error anywhere, and the user reads it as "not found". This is the comparison
+# that pins it.
+CATEGORY_FIELD_PARAMS: dict[str, list[str]] = {
+    "ranked_providers": ["p_category_id", "p_city", "p_limit", "p_offset"],
+    "ranked_categories": ["p_limit", "p_offset"],
+    "save_provider_profile_field": [
+        "p_field_key", "p_value_text", "p_value_number", "p_value_boolean"],
+    "admin_save_category_profile_field": [
+        "p_category_id", "p_field_key", "p_label", "p_input_type",
+        "p_unit_label", "p_help_text", "p_is_required", "p_is_price",
+        "p_sort_order", "p_is_active"],
+    "admin_delete_category_profile_field": ["p_field_id"],
+    "provider_claim_category": ["p_category_id"],
+    "provider_public_profile_fields": ["p_provider_id"],
+    "provider_effective_profile_fields": ["p_category_id"],
+}
+
+# The six sectors the seed must cover, so no active category is left with an
+# empty form just because nobody wrote rows for its marketplace_sector.
+CATEGORY_FIELD_SEED_SECTORS = (
+    "ACCOMMODATION", "FOOD", "RETAIL", "SERVICES", "TRANSPORT", "OTHER")
+
+# rpc -> the Dart file (basename) that must call it. A screen with no caller is
+# a feature with no door, which is the defect this repository has shipped more
+# than once.
+CATEGORY_FIELD_CALLERS: dict[str, tuple[str, ...]] = {
+    "ranked_providers": ("user_home_screen.dart", "user_category_screen.dart"),
+    "ranked_categories": ("user_home_screen.dart",),
+    "provider_profile_fields": ("provider_category_settings_screen.dart",),
+    "save_provider_profile_field": ("provider_category_settings_screen.dart",),
+    "provider_public_profile_fields": ("user_provider_detail_screen.dart",),
+    "admin_category_profile_fields": ("admin_category_fields_screen.dart",),
+    "admin_save_category_profile_field": ("admin_category_fields_screen.dart",),
+    "admin_delete_category_profile_field": ("admin_category_fields_screen.dart",),
+    "provider_claim_category": (
+        "auth_provider.dart", "provider_category_settings_screen.dart"),
+}
+
+# rpc -> the keys its LITERAL `params: { ... }` map sends. save_provider_
+# profile_field is absent on purpose: it is called with a `params` VARIABLE, so
+# _sent_keys cannot read its keys, and the screen is asserted by its literal
+# map-key tokens in the check body instead.
+CATEGORY_FIELD_SENT_KEYS: dict[str, tuple[str, ...]] = {
+    "ranked_providers": ("p_category_id", "p_limit", "p_offset"),
+    "ranked_categories": ("p_limit", "p_offset"),
+    "provider_public_profile_fields": ("p_provider_id",),
+    "admin_save_category_profile_field": (
+        "p_category_id", "p_field_key", "p_label", "p_input_type",
+        "p_unit_label", "p_help_text", "p_is_required", "p_is_price",
+        "p_sort_order", "p_is_active"),
+    "admin_delete_category_profile_field": ("p_field_id",),
+    "provider_claim_category": ("p_category_id",),
+}
+
+
+def _sql_function_params(name: str) -> list[str]:
+    """The parameter names of the LAST declaration of public.<name>().
+
+    Paren-matched rather than a `\(([^)]*)\)` regex, so a DEFAULT that ever
+    grows a parenthesis cannot truncate the list; a truncated list would drop
+    exactly the names this check exists to compare.
+    """
+    latest = ""
+    pat = re.compile(
+        r"CREATE OR REPLACE FUNCTION\s+(?:public\.)?%s\s*\(" % re.escape(name),
+        re.I)
+    for path in migration_files():
+        src = _read(path)
+        for m in pat.finditer(src):
+            depth, i = 1, m.end()
+            while i < len(src) and depth:
+                if src[i] == "(":
+                    depth += 1
+                elif src[i] == ")":
+                    depth -= 1
+                i += 1
+            latest = src[m.end():i - 1]
+    if not latest:
+        return []
+    raw, cur, depth = [], "", 0
+    for ch in latest:
+        if ch == "(":
+            depth += 1
+        if ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            raw.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    raw.append(cur)
+    names: list[str] = []
+    for piece in raw:
+        piece = re.sub(r"--[^\n]*", "", piece).strip()
+        m = re.match(r"(p_\w+)\b", piece)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def _literal_param_keys(site: str, fn: str) -> set[str] | None:
+    """The keys in the literal `params: { ... }` map of the first call to fn.
+
+    Brace-matched rather than regex-bounded. The older `_sent_keys` closes the
+    map with `\\}\s*\\)`, which only matches when the closing brace is
+    immediately followed by `)`; a call formatted with a trailing comma
+    (`params: {'p_field_id': field['id']},` then `);` on the next line) has a
+    `,` there, so the bound never matches and the key scan runs on into the
+    widget tree -- reporting `decoration`, `padding` and `color` as arguments
+    of the RPC. Brace matching has no such shape dependence.
+
+    Returns None when there is no literal map at all (a call with no params, or
+    one that passes a variable), which is a finding the caller decides on.
+    """
+    idx = site.find("'%s'" % fn)
+    if idx < 0:
+        return None
+    at = site.find("params:", idx)
+    if at < 0:
+        return None
+    brace = site.find("{", at)
+    if brace < 0:
+        return None
+    depth, i = 0, brace
+    while i < len(site):
+        if site[i] == "{":
+            depth += 1
+        elif site[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    tail = site[brace + 1:i]
+    keys = set(re.findall(r"'([a-z_0-9]+)'\s*:", tail))
+    keys |= set(re.findall(r"^\s*([a-z_0-9]+)\s*:", tail, re.M))
+    return keys
+
+
+def check_category_fields_are_wired() -> list[str]:
+    """Every trade ranks its best, and prices on its own terms.
+
+    Two features, one migration, and neither is a compile error if it rots:
+
+      1. the ranked readers (`ranked_providers`, `ranked_categories`) order by
+         real completed transactions, and the screens read them. A revert to
+         `ORDER BY created_at` still parses and still returns rows -- it just
+         stops being a ranking, and a customer sees the newest signup first.
+      2. per-category provider fields. The customer page must only ever see an
+         APPROVED provider's declared values, the provider's save must pick
+         the column from the field's declared type, the admin editor must
+         exist AND be reachable, and signup must ask the category. Each has
+         its own quiet failure mode.
+
+    The parameter-name comparison is the load-bearing part: a renamed SQL
+    parameter yields PGRST202 at runtime, which reads to a user as "not
+    found", and nothing in the Dart compiler can see it.
+    """
+    problems: list[str] = []
+
+    mig = MIGRATIONS / CATEGORY_FIELD_MIGRATION
+    if not mig.is_file():
+        return ["%s is missing -- ranking and per-category provider fields "
+                "have no schema to stand on" % CATEGORY_FIELD_MIGRATION]
+    sql = _read(mig)
+    body = _strip_comments(sql)
+
+    # 1. the storage both features need.
+    for table in ("category_profile_fields", "provider_profile_field_values"):
+        if not re.search(
+                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.%s\b"
+                % table, sql, re.I):
+            problems.append("%s: public.%s is never created" % (mig.name, table))
+
+    # 2. every function exists and declares exactly the parameters the client
+    #    contract names. Exact equality as a set, both directions: a missing
+    #    name breaks the call, an extra one means the two sides have drifted.
+    for fn, expected in CATEGORY_FIELD_PARAMS.items():
+        declared = _sql_function_params(fn)
+        if not declared:
+            problems.append("%s: public.%s() is not defined" % (mig.name, fn))
+            continue
+        if set(declared) != set(expected):
+            problems.append(
+                "%s: public.%s() declares %s, the client contract is %s -- a "
+                "difference here is a PGRST202 no compiler can see"
+                % (mig.name, fn, sorted(declared), sorted(expected)))
+
+    # 2b. the ranking is a ranking: order by real completed work, and expose a
+    #     position a screen can print. A revert to `ORDER BY created_at` still
+    #     parses and still returns rows -- it just stops ordering from the most
+    #     transacted to the least, which is the whole feature.
+    ranking_readers = {
+        "ranked_providers": ("completed_transactions DESC", "row_number() OVER",
+                             "rank_position"),
+        "ranked_categories": ("row_number() OVER", "rank_position",
+                              "sales_count"),
+    }
+    for fn, needles in ranking_readers.items():
+        rb = function_body(sql, fn)
+        if not rb:
+            problems.append("%s: %s() has no body" % (mig.name, fn))
+            continue
+        for needle in needles:
+            if needle not in rb:
+                problems.append(
+                    "%s: %s() no longer contains %r -- the list is no longer "
+                    "ranked from the most transacted to the least"
+                    % (mig.name, fn, needle))
+
+    # 3. the customer reader only answers for an APPROVED provider, and only
+    #    rows that actually carry a value. Dropping the status gate would put a
+    #    pending provider's answers on the public page.
+    reader = function_body(sql, "provider_public_profile_fields")
+    if not reader:
+        problems.append("%s: provider_public_profile_fields() has no body"
+                        % mig.name)
+    else:
+        if "APPROVED" not in reader:
+            problems.append(
+                "%s: provider_public_profile_fields() no longer filters on "
+                "APPROVED -- a pending provider's declared values would be "
+                "visible to every customer" % mig.name)
+        for col in ("value_text", "value_number", "value_boolean"):
+            if col not in reader:
+                problems.append(
+                    "%s: provider_public_profile_fields() does not consider "
+                    "%s -- a value stored in that column would never be shown"
+                    % (mig.name, col))
+
+    # 4. the saver picks the column from the declared input type, and refuses a
+    #    key the category does not define instead of storing it nowhere.
+    saver = function_body(sql, "save_provider_profile_field")
+    if not saver:
+        problems.append("%s: save_provider_profile_field() has no body"
+                        % mig.name)
+    else:
+        for token in ("input_type", "value_text", "value_number",
+                      "value_boolean",
+                      "THAT_FIELD_IS_NOT_PART_OF_YOUR_CATEGORY"):
+            if token not in saver:
+                problems.append(
+                    "%s: save_provider_profile_field() no longer mentions %s "
+                    "-- the save path cannot file a typed value correctly"
+                    % (mig.name, token))
+
+    # 5. the seed reaches every sector, so no active category is seeded empty.
+    for sector in CATEGORY_FIELD_SEED_SECTORS:
+        if "'%s'" % sector not in body:
+            problems.append(
+                "%s: the field seed has no '%s' rows -- a provider in that "
+                "sector gets an empty settings form" % (mig.name, sector))
+
+    # 6. the reads go through the ranked reader, and the customer page reads
+    #    the declared fields. A screen reverted to a plain select still works,
+    #    it just stops being ranked.
+    home = _strip_comments(_read(LIB / "features" / "user"
+                                 / "user_home_screen.dart"))
+    if "'ranked_providers'" not in home:
+        problems.append(
+            "user_home_screen.dart no longer reads ranked_providers -- the "
+            "home rail is back to signup order")
+    cat = _strip_comments(_read(LIB / "features" / "user"
+                                / "user_category_screen.dart"))
+    if "'ranked_providers'" not in cat:
+        problems.append(
+            "user_category_screen.dart no longer reads ranked_providers -- the "
+            "category screen has no top providers")
+    detail = _strip_comments(_read(LIB / "features" / "user"
+                                   / "user_provider_detail_screen.dart"))
+    if "'provider_public_profile_fields'" not in detail:
+        problems.append(
+            "user_provider_detail_screen.dart no longer reads "
+            "provider_public_profile_fields -- the customer cannot see what "
+            "the provider declared")
+
+    # 7. the provider settings screen builds the save map with the field key
+    #    and the two value shapes it can send.
+    settings = _strip_comments(_read(
+        LIB / "features" / "provider" / "provider_category_settings_screen.dart"))
+    if "'save_provider_profile_field'" not in settings:
+        problems.append(
+            "provider_category_settings_screen.dart never calls "
+            "save_provider_profile_field -- the settings form cannot save")
+    else:
+        for token in ("'p_field_key'", "'p_value_text'", "'p_value_boolean'"):
+            if token not in settings:
+                problems.append(
+                    "provider_category_settings_screen.dart does not build the "
+                    "save map with %s" % token)
+
+    # 8. the admin editor exists and both doors are open.
+    screen = LIB / "features" / "admin" / "admin_category_fields_screen.dart"
+    if not screen.is_file():
+        problems.append(
+            "lib/features/admin/admin_category_fields_screen.dart is missing -- "
+            "the per-category field catalogue has no editor")
+    router = _read(LIB / "routing" / "app_router.dart")
+    for route in ("'/admin/category-fields'", "'/provider/category-settings'"):
+        if route not in router:
+            problems.append("app_router.dart has no %s route" % route)
+    dash = _strip_comments(_read(LIB / "features" / "admin"
+                                 / "admin_dashboard.dart"))
+    if "/admin/category-fields" not in dash:
+        problems.append(
+            "admin_dashboard.dart has no sidebar card for "
+            "/admin/category-fields -- the admin editor exists with no way in")
+    pdash = _strip_comments(_read(LIB / "features" / "provider"
+                                  / "service_provider_dashboard.dart"))
+    if "/provider/category-settings" not in pdash:
+        problems.append(
+            "service_provider_dashboard.dart has no way into "
+            "/provider/category-settings -- a provider cannot reach their own "
+            "field editor")
+
+    # 9. the signup gate actually asks, and carries the answer through.
+    signup = _strip_comments(_read(LIB / "features" / "auth"
+                                   / "signup_screen.dart"))
+    for token in ("_selectedCategoryId", "_providerCategories",
+                  "categoryId: draft.categoryId"):
+        if token not in signup:
+            problems.append(
+                "signup_screen.dart no longer carries %s -- the signup gate no "
+                "longer asks the provider's category" % token)
+
+    # 10. every rpc has the caller it is supposed to have, and the keys a
+    #     literal call site sends are exactly the ones the function declares.
+    called_in: dict[str, set[str]] = {}
+    for path in dart_sources():
+        src = _read(path)
+        for fn in CATEGORY_FIELD_CALLERS:
+            if "'%s'" % fn in src:
+                called_in.setdefault(fn, set()).add(path.name)
+    for fn, files in CATEGORY_FIELD_CALLERS.items():
+        callers = called_in.get(fn, set())
+        if not callers:
+            problems.append("no Dart file calls %s()" % fn)
+            continue
+        for fname in files:
+            if fname not in callers:
+                problems.append(
+                    "%s no longer calls %s() -- that screen's use of it was "
+                    "removed or renamed" % (fname, fn))
+    for fn, keys in CATEGORY_FIELD_SENT_KEYS.items():
+        sent = _literal_param_keys(_rpc_call_sites(fn), fn)
+        if sent is None:
+            problems.append(
+                "the call to %s() has no readable literal argument map -- a "
+                "transcription nobody can check" % fn)
+            continue
+        declared = set(CATEGORY_FIELD_PARAMS.get(fn, ()))
+        optional = _declared_defaults(fn)
+        for key in keys:
+            if key not in sent and key not in optional:
+                problems.append(
+                    "the call to %s() does not send %s, which the function "
+                    "declares and does not default -- that argument is missing "
+                    "at the call site" % (fn, key))
+        for key in sent:
+            if key not in declared:
+                problems.append(
+                    "the call to %s() sends %s, which the function does not "
+                    "declare -- PostgREST resolves a function by its argument "
+                    "names, so this call cannot resolve" % (fn, key))
+
+    return problems
+
+
 CHECKS = [
     ("the public account-deletion page is reachable and matches the schema",
      check_account_deletion_page_is_public_and_true),
@@ -6654,6 +7034,9 @@ CHECKS = [
      check_dynamic_privileges_name_real_signatures),
     ("every RPC the app calls is executable by the role that calls it",
      check_client_rpcs_are_executable),
+    ("every trade ranks its best and prices on its own terms (ranking + "
+     "per-category fields reach end to end)",
+     check_category_fields_are_wired),
 ]
 
 

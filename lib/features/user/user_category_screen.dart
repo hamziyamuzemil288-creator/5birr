@@ -19,6 +19,10 @@ class _State extends State<UserCategoryScreen> {
   Map<String, dynamic>? _category;
   List<Map<String, dynamic>> _subcategories = [];
   List<Map<String, dynamic>> _products = [];
+  /// The busiest APPROVED providers in this category, best to least, straight
+  /// from the server. The screen previously listed only products, so the
+  /// people a customer is choosing BETWEEN were not on it at all.
+  List<Map<String, dynamic>> _providers = [];
   bool _loading = true;
   String? _error;
 
@@ -46,6 +50,14 @@ class _State extends State<UserCategoryScreen> {
         'p_category_id': widget.categoryId,
       });
       final prodsRaw = List<Map<String, dynamic>>.from(prods as List);
+      // Non-fatal: the products below are still the reason most customers open
+      // this screen, and a failed ranking must not blank it.
+      List<Map<String, dynamic>> ranked = const [];
+      try {
+        ranked = List<Map<String, dynamic>>.from(await client.rpc(
+            'ranked_providers',
+            params: {'p_category_id': widget.categoryId, 'p_limit': 10}) as List);
+      } catch (_) {}
       // Hydrate images (the RPC returns product columns only).
       final imgs = prodsRaw.isEmpty
           ? <Map<String, dynamic>>[]
@@ -63,6 +75,7 @@ class _State extends State<UserCategoryScreen> {
           _category = cat;
           _subcategories = List<Map<String, dynamic>>.from(subs as List);
           _products = prodsRaw;
+          _providers = ranked;
           _loading = false;
           _error = null;
         });
@@ -115,6 +128,47 @@ class _State extends State<UserCategoryScreen> {
                               ))
                           .toList(),
                     ),
+                    const SizedBox(height: 20),
+                  ],
+                  // The people, ranked by completed work.
+                  if (_providers.isNotEmpty) ...[
+                    const Text('Top providers',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    ..._providers.map((p) {
+                      final jobs =
+                          (p['completed_transactions'] as num?)?.toInt() ?? 0;
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        onTap: () =>
+                            context.push('/user/provider/${p['id']}'),
+                        leading: CircleAvatar(
+                          backgroundColor: AppTheme.primaryGreen,
+                          child: Text(
+                            '#${p['rank_position']}',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
+                          ),
+                        ),
+                        title: Text(p['business_name']?.toString() ?? ''),
+                        subtitle: Text(
+                          jobs > 0
+                              ? '$jobs completed job${jobs == 1 ? '' : 's'}'
+                              : ((p['city'] as String?) ?? ''),
+                          style: const TextStyle(
+                              fontSize: 12, color: AppTheme.textMuted),
+                        ),
+                        trailing: (p['price_range'] as String?)?.isNotEmpty ==
+                                true
+                            ? Text(p['price_range'] as String,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.primaryGreen))
+                            : null,
+                      );
+                    }),
                     const SizedBox(height: 20),
                   ],
                   // Products

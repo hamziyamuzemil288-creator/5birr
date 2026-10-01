@@ -29,6 +29,8 @@ import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
 import '../features/provider/provider_orders_screen.dart';
 import '../features/provider/provider_business_profile_screen.dart';
+import '../features/provider/provider_category_settings_screen.dart';
+import '../features/admin/admin_category_fields_screen.dart';
 import '../features/provider/provider_subscription_screen.dart';
 import '../features/provider/provider_product_list_screen.dart';
 import '../features/provider/provider_product_form_screen.dart';
@@ -411,6 +413,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // ── Service Provider ──
       GoRoute(path: '/provider', builder: (_, __) => const ServiceProviderDashboard()),
       GoRoute(path: '/provider/business', builder: (_, __) => const ProviderBusinessProfileScreen()),
+      // The trade-specific settings and pricing form. The fields are defined
+      // per category by an administrator; this is where a provider fills them
+      // in.
+      GoRoute(
+          path: '/provider/category-settings',
+          builder: (_, __) => const ProviderCategorySettingsScreen()),
       GoRoute(path: '/provider/orders', builder: (_, __) => const ProviderOrdersScreen()),
       GoRoute(path: '/provider/products', builder: (_, __) => const ProviderProductListScreen()),
       // Read-only billing view. The charge itself is performed server-side by
@@ -510,6 +518,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/admin/fees/categories',
           builder: (_, __) => const CategoryFeeSettingsScreen()),
+
+      // What each trade's provider is asked for, and what it costs. The
+      // control surface for the provider's own settings form: a hotel is
+      // asked for room types and a nightly rate, a doctor for an hourly price.
+      GoRoute(
+          path: '/admin/category-fields',
+          builder: (_, __) => const AdminCategoryFieldsScreen()),
 
       // Content control: the report queue, the moderation log, and the two
       // actions nothing else could do — remove one uploaded image, suspend an

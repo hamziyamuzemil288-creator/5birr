@@ -376,6 +376,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     // registered this provider. Resolved server-side by handle_new_user()
     // against referral_codes; blank/unknown codes never block registration.
     String? referralCode,
+    // The trade this provider is registering as. Asked at the signup gate
+    // (20260927000128) because it selects their whole settings form: a hotel
+    // is asked for room types, a doctor for an hourly rate. Recorded right
+    // after the account exists, through a definer RPC that validates the
+    // sector against the provider type.
+    String? categoryId,
   }) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
@@ -411,6 +417,23 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
       // Session available — load the profile + provider profile created
       // by the triggers.
+      //
+      // The trade the provider picked at the signup gate is recorded first, so
+      // the dashboard and the settings screen already know which form to show.
+      // Best-effort and never fatal: the provider_profiles row exists already
+      // (created by the trigger, with no category), and a failure here leaves
+      // it NULL rather than stranding an account that was already made. The
+      // category settings screen offers the same picker, so the provider is
+      // one tap from fixing it.
+      if (categoryId != null && categoryId.isNotEmpty) {
+        try {
+          await _svc.client.rpc('provider_claim_category',
+              params: {'p_category_id': categoryId});
+        } catch (e) {
+          debugPrint('provider_claim_category failed (non-fatal): $e');
+        }
+      }
+
       await _loadUserProfile(response.user!);
     } catch (e) {
 // Keep the raw exception in the console for debugging; only the

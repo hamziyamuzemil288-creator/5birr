@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
+import '../../core/utils/category_field_value.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/photo_grid.dart';
@@ -35,6 +36,9 @@ class _State extends State<UserProviderDetailScreen> {
   /// hidden photo is absent here for the same reason it is absent everywhere,
   /// rather than being un-hidden by a second query that disagrees.
   List<Map<String, dynamic>> _gallery = [];
+  /// The provider's trade-specific declared fields (a hotel's room types, a
+  /// doctor's hourly rate) as returned by `provider_public_profile_fields`.
+  List<Map<String, dynamic>> _declared = [];
   List<Map<String, dynamic>> _reviews = [];
   ProviderTrustStats? _trust;
   bool _loading = true;
@@ -81,6 +85,20 @@ class _State extends State<UserProviderDetailScreen> {
                 .eq('is_active', true)
                 .order('display_order') as List);
       } catch (_) {}
+      // What this provider's trade lets them declare -- a hotel's room types
+      // and nightly rate, a doctor's hourly price and services. Read through a
+      // definer RPC that returns nothing at all for a provider that is not
+      // approved, so a pending business cannot publish a price here.
+      //
+      // Non-fatal for the same reason as the gallery: the page is still worth
+      // showing without it, and an empty list reads as "this provider has
+      // declared nothing" rather than "we could not ask".
+      List<Map<String, dynamic>> declared = const [];
+      try {
+        declared = List<Map<String, dynamic>>.from(await client
+            .rpc('provider_public_profile_fields',
+                params: {'p_provider_id': widget.providerId}) as List);
+      } catch (_) {}
       List<Map<String, dynamic>> reviews = [];
       try {
         reviews = await ReviewService.instance
@@ -94,6 +112,7 @@ class _State extends State<UserProviderDetailScreen> {
           _provider = prov;
           _products = List<Map<String, dynamic>>.from(prods as List);
           _gallery = gallery;
+          _declared = declared;
           _reviews = reviews;
           _trust = trust;
           _fav = fav;
@@ -548,6 +567,66 @@ class _State extends State<UserProviderDetailScreen> {
             ),
             // Trust & quality summary — real aggregated stats
             ProviderTrustSection(stats: _trust),
+            // What this provider's TRADE declares, with their own answers:
+            // room types and a nightly rate for a hotel, an hourly price and
+            // the services offered for a doctor. Defined per category by an
+            // administrator, so this section is never a generic key/value
+            // dump -- every row is a field someone decided this trade needs.
+            if (_declared.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Text('Details & pricing',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppTheme.cardBorder),
+                  ),
+                  child: Column(
+                    children: [
+                      for (final d in _declared)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text('${d['label']}',
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        color: AppTheme.textSecondary)),
+                              ),
+                              const SizedBox(width: 12),
+                              Flexible(
+                                child: Text(
+                                  _declaredValue(d),
+                                  textAlign: TextAlign.right,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: d['is_price'] == true
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    color: d['is_price'] == true
+                                        ? AppTheme.primaryGreen
+                                        : AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             // The provider's OWN gallery. Shown before the product photos
             // because it is the one they paid to upload and the one that was
             // invisible from here; `product_images` below is the marketplace
@@ -677,6 +756,17 @@ class _State extends State<UserProviderDetailScreen> {
     final raw = _provider?['price_range'] as String?;
     return (raw ?? '').trim();
   }
+
+  /// One declared field's value.
+  ///
+  /// The formatting lives in `categoryFieldValue` (core/utils) so it is
+  /// unit-tested directly rather than through this widget.
+  static String _declaredValue(Map<String, dynamic> d) => categoryFieldValue(
+        valueText: d['value_text'] as String?,
+        valueNumber: d['value_number'] as num?,
+        valueBoolean: d['value_boolean'] as bool?,
+        unitLabel: d['unit_label'] as String?,
+      );
 
   /// Full-screen a gallery photo, with its caption.
   ///

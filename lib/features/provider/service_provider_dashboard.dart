@@ -284,6 +284,13 @@ class _ServiceProviderDashboardState
                             _action(Icons.storefront_outlined,
                                 'Business Profile',
                                 () => context.push('/provider/business')),
+                            // The trade-specific form: the fields and prices
+                            // this provider's own category defines, set by an
+                            // administrator. Sits beside Business Profile
+                            // rather than replacing it -- that one is who they
+                            // are, this one is what they sell.
+                            _action(Icons.tune, 'Settings & Pricing',
+                                () => context.push('/provider/category-settings')),
                             // Only rendered once a profile row exists. The
                             // route is /provider/gallery/:id, so a null id
                             // here would push a path matching no route at all.

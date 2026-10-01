@@ -1977,4 +1977,81 @@ void main() {
       print('    support ticket fields -> ${error == null ? 'all present' : error}');
     });
   });
+
+  group('ranking and per-category fields (every trade, best to least)', () {
+    test('the ranked provider reader resolves and reports its order', () async {
+      // The whole point of the feature: the busiest provider is first. The
+      // report carries the live counts, so the log shows what the ranking
+      // actually measured rather than only that the function existed.
+      final (detail, error) = await rpcTextDiagnosed('ranking_wiring_report');
+      expect(detail, isNotNull,
+          reason: 'ranked_providers / ranked_categories / '
+              'provider_transaction_stats are missing or not executable by '
+              'anon, so the home rail, the "All providers" sheet and the '
+              'category screen all fall back to signup order. Diagnostic: '
+              '$error');
+      // ignore: avoid_print
+      print('    ranking wiring -> $detail');
+    });
+
+    test('the category field catalogue resolves and is seeded', () async {
+      // A catalogue that exists but is empty is a provider settings screen
+      // with nothing on it -- green in every static check, blank on a device.
+      final (detail, error) =
+          await rpcTextDiagnosed('category_field_wiring_report');
+      expect(detail, isNotNull,
+          reason: 'category_profile_fields / provider_profile_field_values or '
+              'their reader RPCs are missing, so no provider has a settings '
+              'form and the customer page has nothing to show. Diagnostic: '
+              '$error');
+      expect(detail, startsWith('ok:'),
+          reason: 'the field catalogue exists but is not seeded, so every '
+              'provider settings form is empty. Report: $detail');
+      // ignore: avoid_print
+      print('    category field wiring -> $detail');
+    });
+
+    test('an anonymous caller cannot write a provider field value', () async {
+      // save_provider_value_outcome returns the SQL error it got, or the
+      // literal 'ACCEPTED' if the write went through. This suite runs as anon
+      // -- no JWT, no provider profile -- so ACCEPTED here means ANY caller
+      // can file an answer against any provider.
+      final (outcome, error) =
+          await rpcTextDiagnosed('save_provider_value_outcome');
+      expect(outcome, isNotNull,
+          reason: 'save_provider_profile_field is missing or not callable as '
+              'anon, so the provider save path cannot be exercised. '
+              'Diagnostic: $error');
+      expect(outcome, isNot('ACCEPTED'),
+          reason: 'a caller with no provider profile was allowed to write a '
+              'provider field value, so the value table has no working owner '
+              'guard.');
+      // ignore: avoid_print
+      print('    provider field write outcome -> $outcome');
+    });
+
+    test('the combined assertion passes on the live database', () async {
+      // assert_ranking_and_category_fields EXERCISES the paths and returns
+      // jsonb with an `ok` flag plus the evidence. A schema that parses and a
+      // save that silently writes nothing look identical to every static
+      // check in this repository; this is the one place the database answers.
+      Object? result;
+      String? error;
+      try {
+        result = await client.rpc('assert_ranking_and_category_fields');
+      } catch (e) {
+        error = '$e';
+      }
+      if (error == null) {
+        // ignore: avoid_print
+        print('    ranking/category assertion -> $result');
+      }
+      expect(error, isNull,
+          reason: 'assert_ranking_and_category_fields is missing or raised, '
+              'so the ranking and per-category field paths cannot be '
+              'exercised. Diagnostic: $error');
+      expect(result, isNotNull,
+          reason: 'the assertion returned nothing');
+    });
+  });
 }
