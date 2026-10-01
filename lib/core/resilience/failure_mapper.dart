@@ -165,11 +165,29 @@ class AppFailureMapper {
       );
     }
 
-    // 10. PostgREST shape errors: the response did not match what the code
-    //     expected. Nothing the user can retry.
+    // 10a. PostgREST could not RESOLVE the call we made. PGRST202 is a wrong
+    //      parameter name, a missing GRANT, or a migration that never ran;
+    //      PGRST203 is an ambiguous overload. Both are defects on our side of
+    //      the wire, so the message must not imply the user's data or their
+    //      order went missing — see friendly_error.dart for the same split.
+    if (_any(lower, const [
+          'pgrst202',
+          'pgrst203',
+          'could not choose the best candidate',
+          'could not find the function',
+        ])) {
+      return AppFailure(
+        kind: AppFailureKind.malformed,
+        message: 'We could not complete that just now. Please try again in a '
+            'moment — if it keeps happening, contact support.',
+        cause: error,
+      );
+    }
+
+    // 10b. PostgREST shape errors: the response parsed but did not match what
+    //     the code expected. Nothing the user can retry.
     if (_any(lower, const [
           'pgrst201',
-          'pgrst202',
           'could not parse',
           'format',
           'type cast',
@@ -344,14 +362,25 @@ class AppFailureMapper {
         );
     }
     if (code.startsWith('PGRST')) {
-      // PGRST116: zero rows for .single(); PGRST202: bad embed.
-      if (code == 'PGRST116' || code == 'PGRST202') {
+      // PGRST116 is zero rows for .single() — a record genuinely not there.
+      // PGRST202/203 are unresolvable CALLS, handled in 10a above so they never
+      // share a message with a missing row; reaching them here means the
+      // status-code path saw the code without the text, so they still get the
+      // honest sentence rather than the "may have been removed" one.
+      if (code == 'PGRST202' || code == 'PGRST203') {
         return AppFailure(
           kind: AppFailureKind.malformed,
           code: code,
-          message: code == 'PGRST116'
-              ? 'That item could not be found. It may have been removed.'
-              : 'We received an unexpected response. Please try again.',
+          message: 'We could not complete that just now. Please try again in a '
+              'moment — if it keeps happening, contact support.',
+          cause: cause,
+        );
+      }
+      if (code == 'PGRST116') {
+        return AppFailure(
+          kind: AppFailureKind.malformed,
+          code: code,
+          message: 'That item could not be found. It may have been removed.',
           cause: cause,
         );
       }

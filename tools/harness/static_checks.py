@@ -3900,6 +3900,62 @@ _UNSERVED_PERMISSIONS = {
 }
 
 
+def _declared_defaults(fn: str) -> set[str]:
+    """Parameter names of `fn` that carry a DEFAULT in its latest declaration.
+
+    A client that omits an OPTIONAL argument is correct; PostgREST fills the
+    default. A client that omits a REQUIRED one cannot call the function at
+    all. So "the keys the Dart sends" and "the parameters the function
+    declares" are only required to agree once the defaulted names are removed
+    from the declared side.
+
+    Needed because `search_products` is called with nine of its fourteen
+    parameters and `update_driver_location` with three of its five. Demanding
+    exact equality -- as 0124's rows do, and correctly, because the client
+    sends all of them -- would report every optional omission as drift.
+    """
+    latest: tuple[str, ...] = ()
+    best: str = ""
+    pat = re.compile(
+        r"CREATE OR REPLACE FUNCTION\s+(?:public\.)?%s\s*\(" % re.escape(fn),
+        re.I)
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        sql = _read(path)
+        for m in pat.finditer(sql):
+            depth, i = 1, m.end()
+            while i < len(sql) and depth:
+                if sql[i] == "(":
+                    depth += 1
+                elif sql[i] == ")":
+                    depth -= 1
+                i += 1
+            body = sql[m.end():i - 1]
+            best = body
+    if not best:
+        return set()
+    raw, cur, depth = [], "", 0
+    for ch in best:
+        if ch == "(":
+            depth += 1
+        if ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            raw.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    raw.append(cur)
+    optional: set[str] = set()
+    for piece in raw:
+        p = re.sub(r"--[^\n]*", "", piece).strip()
+        if not p:
+            continue
+        pm = re.match(r"(p_\w+)\b", p)
+        if pm and re.search(r"\bDEFAULT\b|\bdefault\b", p):
+            optional.add(pm.group(1))
+    return optional
+
+
 def check_admin_rpc_argv_is_transcribed() -> list[str]:
     """0124's expected argument names must match the Dart call sites.
 
@@ -3993,6 +4049,81 @@ def check_admin_rpc_argv_is_transcribed() -> list[str]:
     return problems
 
 
+def check_customer_rpc_argv_is_transcribed() -> list[str]:
+    """0125's expected argument names must match what the customer call sites
+    send, allowing for parameters that carry a DEFAULT.
+
+    Same failure modes as `check_admin_rpc_argv_is_transcribed`, plus one that
+    is specific to the customer path: a call site may legitimately OMIT an
+    optional argument, which PostgREST fills from the function's DEFAULT. So the
+    rule is not equality:
+
+      * a key the function does NOT declare is PGRST202, always a failure --
+        this is the `p_booking_base_fare` bug's exact shape;
+      * a required parameter the client omits means the call cannot succeed;
+      * an optional parameter the client omits is fine, and is why the
+        defaulted names are subtracted before the comparison.
+
+    It also has to look at Edge Functions, not just `lib/`: `create_order_secure`
+    is called from supabase/functions/order-create/index.ts in TypeScript with
+    unquoted object keys, so a Dart-only search reports it as uncalled by
+    anything.
+    """
+    problems: list[str] = []
+
+    mig = ROOT / "supabase" / "migrations" / (
+        "20260927000125_the_customer_ride_path_is_reachable_too.sql")
+    if not mig.is_file():
+        return ["%s is missing -- no customer RPC reachability assertion"
+                % mig.name]
+
+    body = _strip_comments(_read(mig))
+    rows = re.findall(
+        r"\('([a-z_]+)',\s*'public\.[a-z_]+\([^']*\)',\s*'\{([^}]*)\}'\)", body)
+    if not rows:
+        return ["0125 transcribes no customer RPC argument names, so "
+                "customer_rpc_signature_report() is asserting nothing"]
+
+    for fn, arglist in rows:
+        declared = {a.strip() for a in arglist.split(",") if a.strip()}
+
+        call = _rpc_call_sites(fn)
+        if not call:
+            problems.append(
+                "0125 lists %s but no Dart file and no Edge Function calls it "
+                "-- the report has drifted out of date with the app" % fn)
+            continue
+
+        sent = _sent_keys(call, fn)
+        if sent is None:
+            problems.append(
+                "0125 lists %s but the call site's argument map could not be "
+                "read, so its names cannot be verified against the client"
+                % fn)
+            continue
+
+        undeclared = sent - declared
+        if undeclared:
+            problems.append(
+                "0125's %s does not declare %s, but the call site sends them. "
+                "PostgREST matches named arguments by name, so an undeclared "
+                "key is PGRST202 -- the call fails at runtime, and it used to "
+                "reach the customer as \"it may have been removed\"."
+                % (fn, sorted(undeclared)))
+            continue
+
+        optional = _declared_defaults(fn)
+        omitted_required = declared - sent - optional
+        if omitted_required:
+            problems.append(
+                "0125 expects %s to be called with %s, but the call site omits "
+                "them and the function gives them no DEFAULT -- the call "
+                "cannot succeed."
+                % (fn, sorted(omitted_required)))
+
+    return problems
+
+
 def _rpc_call_chunk(site: str, fn: str) -> str | None:
     """The single `rpc('fn', params: {...})` chunk belonging to `fn`.
 
@@ -4042,25 +4173,59 @@ def _dynamic_param_names(site: str, fn: str) -> set[str]:
 
 
 def _rpc_call_sites(fn: str) -> str:
-    """The concatenated source of every Dart file that calls `fn`.
+    """The concatenated source of every Dart or Edge Function file that calls
+    `fn`.
 
     Matches the two shapes the app actually uses -- `.rpc('name')` and
     `.rpc(\n  'name',\n  params: {...},\n)`. A `rpc(\n` anchor alone matched
     nothing, and a check that cannot see its own subject is worse than no
     check: it reported all fourteen functions as uncalled.
+
+    Two details that are not optional:
+
+      * COMMENT LINES between `rpc(` and the name. The ride screen quotes the
+        five-argument wrapper and names the city-aware one several lines below
+        it, and an anchor that requires the name immediately after `rpc(`
+        silently misses that call. Nothing here assumes adjacency, so the
+        existing lookahead over the whole file is kept deliberately.
+      * EDGE FUNCTIONS, and DOUBLE QUOTES. `create_order_secure` is called from
+        supabase/functions/order-create/index.ts as `admin.rpc("...", {...})`,
+        in TypeScript with double quotes. Searching only `lib/` for a
+        single-quoted name reported it as uncalled by every Dart file, which
+        read as "the report has drifted" rather than "you looked in the wrong
+        tree".
     """
     out = []
-    needle = "'%s'" % fn
     # A lookahead, NOT `\b`. The closing quote and whatever follows it are
     # both non-word characters, so there is no word boundary there and
     # `rpc\(\s*'name'\b` matches nothing at all -- which made this report all
     # fourteen functions as uncalled while every one of them was called.
-    for path in sorted(LIB.rglob("*.dart")):
+    needles = ["'%s'" % fn, '"%s"' % fn]
+    files = list(LIB.rglob("*.dart"))
+    edge = ROOT / "supabase" / "functions"
+    if edge.is_dir():
+        files += list(edge.rglob("*.ts"))
+    for path in sorted(files):
         src = _read(path)
-        if needle not in src:
+        if not any(n in src for n in needles):
             continue
-        if re.search(r"rpc\(\s*%s(?=[\s,)\]])" % re.escape(needle), src):
-            out.append(src)
+        # LINE COMMENTS ARE STRIPPED BEFORE THE SEARCH, and this is not
+        # cosmetic. The ride screen's comment says
+        # "calculate_fare_estimate(): that wrapper was kept for older clients"
+        # -- so a `[^)]*?` walk between `rpc(` and the name stops at the `)`
+        # INSIDE that comment, four lines before the real call, and reports a
+        # function the screen calls on every fare quote as uncalled. Comments
+        # are not code and must not be able to satisfy or block an anchor.
+        code = re.sub(r"//[^\n]*", "", src)
+        if not any(n in code for n in needles):
+            continue
+        for n in needles:
+            # `\s*` between `rpc(` and the name is NOT enough: the ride screen
+            # puts four comment lines in between. `[^)]*?` does, and stops at
+            # the closing paren so it cannot run past this call into another.
+            if re.search(r"rpc\([^)]*?%s(?=[\s,)\]])" % re.escape(n), code):
+                out.append(src)
+                break
     return "\n".join(out)
 
 
@@ -4076,6 +4241,7 @@ def _sent_keys(site: str, fn: str) -> set[str] | None:
     right: a transcription nobody can check is not a transcription.
     """
     needle = "'%s'" % fn
+    alt = '"%s"' % fn
     # Split on `rpc(` rather than matching to the next `;`: a screen that makes
     # two calls inside one `Future.wait([...])` separates them with a COMMA,
     # so a `.*?;` chunk swallowed the first call's arguments and attributed
@@ -4083,13 +4249,37 @@ def _sent_keys(site: str, fn: str) -> set[str] | None:
     # sending `p_status` because of it.
     chunks = [c for c in re.split(r"(?=rpc\()", site) if c.startswith("rpc(")]
     for chunk in chunks:
-        head = chunk[:chunk.find("params:") if "params:" in chunk else len(chunk)]
-        if needle not in head:
+        # Comments stripped for the same reason as in _rpc_call_sites: a
+        # comment mentioning `rpc()` or a sibling function name must not decide
+        # which argument map belongs to this call.
+        code = re.sub(r"//[^\n]*", "", chunk)
+        cut = code.find("params:")
+        head = code[:cut] if cut >= 0 else code
+        # Both quote styles, and the name may sit BELOW comment lines (see
+        # _rpc_call_sites), so `head` is searched rather than anchored at 0.
+        if needle not in head and alt not in head:
             continue
-        pm = re.search(r"params:\s*\{", chunk)
-        if not pm:
-            return set()          # called with no argument map at all
-        tail = chunk[pm.end():]
+        pm = re.search(r"params:\s*\{", code)
+        if pm is None:
+            # TYPESCRIPT PASSES THE OBJECT AS THE SECOND ARGUMENT, with no
+            # `params:` key: `admin.rpc("create_order_secure",\n  {\n
+            #    p_user_id: user.id, … })`. Dart always names it. Without this
+            # branch the Edge Function call site reads as "called with no
+            # argument map at all", so create_order_secure was reported as
+            # sending nothing.
+            #
+            # The object is simply the first `{` AFTER the function name, which
+            # is unambiguous because the name is the last thing before it.
+            at = code.find(needle if needle in code else alt)
+            if at < 0:
+                return set()
+            map_start = code.find("{", at)
+            if map_start < 0:
+                return set()      # genuinely called with no argument map
+        else:
+            map_start = pm.end()
+        chunk = code
+        tail = chunk[map_start:]
         # Bound the map. Without this the tail runs on into the NEXT rpc()
         # call in the same expression, so `admin_clear_category_fee` was
         # reported as sending a `category` key that belongs to a different
@@ -4097,7 +4287,12 @@ def _sent_keys(site: str, fn: str) -> set[str] | None:
         close = re.search(r"\}\s*\)", tail)
         if close:
             tail = tail[:close.start()]
+        # Dart quotes every key ('p_user_id': …); TypeScript does not have to
+        # (p_user_id: …). Both are call sites for the same function, and the
+        # bare form is the only one `create_order_secure` uses -- it is called
+        # from supabase/functions/order-create/index.ts.
         keys = set(re.findall(r"'([a-z_0-9]+)'\s*:", tail))
+        keys |= set(re.findall(r"^\s*([a-z_0-9]+)\s*:", tail, re.M))
         return keys
     return None
 
@@ -6432,6 +6627,9 @@ CHECKS = [
     ("the admin RPC reachability report is transcribed from the Dart, not "
      "guessed",
      check_admin_rpc_argv_is_transcribed),
+    ("the customer's ride RPC report is transcribed from the Dart and the "
+     "Edge Functions, not guessed",
+     check_customer_rpc_argv_is_transcribed),
     ("every order and every ride leaves a document both parties can read",
      check_transaction_documents_are_wired),
     ("staff creation stays in the sidebar, and a staff city stops something",

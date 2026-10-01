@@ -218,12 +218,39 @@ String friendlyError(Object error, {String? context}) {
             'the CEO if you need access to it.'
         : 'You do not have permission to do that.';
   }
+  // ── PostgREST could not resolve the call the app made ──
+  //
+  // PGRST202 and PGRST203 are NOT missing records, and this branch exists
+  // because they were lumped in with 404 for the whole life of the app.
+  //
+  // PGRST202 means PostgREST cannot find a function matching the argument
+  // names it was given, or cannot see one the caller may execute. PGRST203
+  // means it found several and cannot choose between them. Every cause is on
+  // our side of the wire: a misspelt parameter (`p_booking_base_fare` for
+  // `p_booking_base_fee` — §7.1.6), a GRANT that names a signature the
+  // function does not have, a migration that was never applied, or two
+  // overloads left behind by `CREATE OR REPLACE` changing arity.
+  //
+  // Telling a customer their ride "may have been removed" when the real cause
+  // is a misspelt parameter is not just wrong, it is actively harmful: it
+  // blames the user for a deployment defect, invites them to retry something
+  // that will never work, and hides the cause from everyone reading the
+  // screen. So this branch says what is actually true — we could not complete
+  // it — and `isNotFound()` no longer treats it as a missing record.
+  else if (_any(lower, [
+    'pgrst202',
+    'pgrst203',
+    'could not choose the best candidate',
+    'could not find the function',
+  ])) {
+    message = 'We could not complete that just now. Please try again in a '
+        'moment — if it keeps happening, contact support.';
+  }
   // ── Missing rows / removed records ──
   else if (_any(lower, [
     '404',
     'not found',
     'pgrst116',
-    'pgrst202',
     'does not exist',
   ])) {
     // PGRST116 is what `.single()` raises on zero rows, with the message
@@ -231,6 +258,12 @@ String friendlyError(Object error, {String? context}) {
     // neither "not found" nor a 404, so without this it would fall through
     // to the malformed-data branch and tell the user the response was
     // unexpected when the real answer is simply "there is no such record".
+    //
+    // PGRST202 was removed from this list on purpose: it means the CALL could
+    // not be resolved, not that the ROW is absent. Keeping it here is what
+    // produced "the category may have been removed" for a fee editor whose
+    // category was never touched, and a "Ride not found" screen for a rider
+    // whose ride could not be created.
     message = 'That item could not be found. It may have been removed.';
   }
   // ── Duplicate / constraint violations ──
@@ -303,11 +336,18 @@ bool _any(String lower, List<String> needles) {
 /// it, a dropped connection on a detail page and a deleted record produce
 /// the same user-visible screen, and the user is told the thing they were
 /// looking for does not exist when it very much does.
+///
+/// PGRST202 is NOT in this list, and that is the whole point of the note. It
+/// means PostgREST could not resolve the call — a wrong parameter name, a
+/// missing GRANT, an ambiguous overload. Rendering the not-found screen for it
+/// tells the user their ride, product or provider does not exist, when in fact
+/// the request never reached the point of asking. It was in this list, and a
+/// rider whose ride failed to be created was shown a "not found" page for a
+/// ride that was never made.
 bool isNotFound(Object error) {
   final lower = error.toString().toLowerCase();
   return _any(lower, [
     'pgrst116',
-    'pgrst202',
     'not found',
     'does not exist',
     '404',

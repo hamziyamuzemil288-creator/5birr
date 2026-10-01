@@ -2062,6 +2062,93 @@ every sidebar-able `/admin` route is linked from the dashboard; there is not one
 orphaned from the admin side but is reached from three user and provider
 dashboards; and both appeal types (`GENERAL`, `PASSWORD_RESET`) are handled.
 
+### 7.1.8 PGRST202 is not a missing record, and never was
+
+A third audit, opening with "when user try to order ride its saying that
+function may have be removed" and "1st of user is not supposed to see error txt
+like this".
+
+**First, the removal claim.** `git log --diff-filter=D --name-only --all` is
+**empty for the entire repository history**: no file has ever been deleted.
+Across the five commits that produced the previous two audits, exactly **14
+lines** were removed from `lib/`, and every one is accounted for — the
+`_canEdit` reorder, the `onStatus`→`onResolve` swap, the
+`p_booking_base_fare`→`_fee` fix, the `isAdmin ||` guard, and one `Row`→`Wrap`.
+The ride flow, the "where" button, the GPS pulse and the availability flow were
+never removed. Checking this took two minutes and should have been the first
+thing done.
+
+**The real defect, and it is the same one as §7.1.6.** `PGRST202` and `PGRST203`
+mean PostgREST could not **resolve the call** — a misspelt parameter, a GRANT
+naming a signature the function does not have, a migration that never ran, or
+an overload it cannot choose between. Every cause is on our side of the wire.
+Neither mappers had them in the missing-record branch:
+
+- `friendly_error.dart` said *"That item could not be found. It may have been
+  removed."* — the sentence that made the fee editor's typo read as a deleted
+  category, and that a rider would read for a ride that was never created;
+- `isNotFound()` returned **true**, so detail screens rendered their not-found
+  state — a "not found" page for a ride that did not exist because the request
+  never got as far as asking;
+- `failure_mapper.dart` did the same in two places.
+
+All four sites now say what is actually true, and `PGRST116` and `404` keep
+saying "may have been removed" — a fix that stopped reporting missing records
+would be a regression in the other direction, so
+`test/pgrst202_is_not_a_missing_record_test.dart` pins both directions and
+proves it goes red by re-absorbing `PGRST202` into `isNotFound()`.
+
+**0125 — the same instrument aimed at the customer's path.** 0124 asks whether
+every **admin** write path is callable. The ride failure is a **customer**
+failure, so 0125 reports thirteen ride and order RPCs against the live catalog.
+`create_ride_request` was checked by hand first: its eight parameter names match
+the Dart exactly and 0114 grants it to `authenticated`. So either the live
+catalog differs from every migration, or the failure is upstream of that
+function — and only the catalog can say which. Four faults are proven to turn it
+red: a missing GRANT, a drifted parameter name, an overload, and a dropped
+function. Green on a clean database with all thirteen present.
+
+Two of those controls were wrong before they were right, and both are worth
+recording:
+
+- The **GRANT** control revoked a direct grant from `authenticated` and the
+  report stayed **green**. That was correct, not broken: PostgreSQL grants
+  EXECUTE to `PUBLIC` by default, `PUBLIC` includes `authenticated`, and
+  PostgREST switches to that role — so the call really does work. The realistic
+  fault also removes the `PUBLIC` default, which is what every migration here
+  does. The first control was testing nothing.
+- Each `psql -c` is its **own transaction**, so a `BEGIN;` in one `-c` is
+  discarded before the next runs and three controls silently "passed". They had
+  to be single scripts.
+
+**The check caught its own author twice.** `platform_transaction_fee_for` was
+transcribed as three arguments and is four; `get_order_delivery_location`,
+`set_order_delivery_location` and `release_order_contact` were given a
+`p_actor` that does not exist and takes one, three and one arguments. Both
+mistakes are the exact rot 0124 was written about, and
+`check_customer_rpc_argv_is_transcribed` found them by noticing the call sites
+send keys the transcription does not declare. That check also had to learn three
+shapes it could not see: a call split across **comment lines**
+(`calculate_fare_estimate()` inside a comment broke the anchor four lines
+before the real call), an **Edge Function** written in TypeScript with **unquoted
+object keys** and no `params:` key (`create_order_secure`), and parameters the
+client legitimately **omits** because the function defaults them — so the rule
+is "no undeclared key, and no omitted required argument", not equality.
+
+**Availability is not missing.** It exists, and it is wired end to end: the
+provider product form toggle writes `products.requires_availability_confirmation`,
+the checkout swaps the payment screenshot for the availability notice, and the
+provider confirms or refuses in the order detail. It **defaults to false**, so it
+is off for every product unless a provider opts in — which is why a buyer never
+sees it. Not a wiring gap; a default.
+
+**The "where" button and the GPS pulse are not missing either.** "Use current
+location", "Pick on map" and the map-picker recenter FAB are all present, and
+the pulse is a `Ticker` created in `initState` — which is the correct place, and
+the thing that was wrong in §7.1.5. Both depend on a resolved GPS fix, so with
+location denied there is nothing to show. Which screen is not showing them was
+not established here, and guessing at it would be the wrong move.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.
