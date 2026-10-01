@@ -4080,6 +4080,188 @@ def check_server_refusal_codes_reach_the_user() -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# The publish path
+# ---------------------------------------------------------------------------
+#
+# PROVIDER_CREATE_FUNCS is derived from what the app CALLS, not curated. The
+# earlier version of this check held a hand-written list of three refusal
+# codes, and that is precisely how `PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED`
+# shipped: a provider filled in a whole listing, the server refused, and the
+# app showed them a machine token. The check was green the whole time because
+# nobody remembered to add the new code to the list.
+#
+# A hand-maintained list of "the codes that matter" is a list that decays in
+# exactly one direction. The functions below are found by scanning the Dart for
+# the RPC names, so a screen that starts calling a new create function is
+# covered the day it is written.
+
+#: app file -> the RPCs that file calls, discovered by name below
+_PUBLISH_SCREENS = (
+    "features/provider/provider_product_form_screen.dart",
+    "features/provider/provider_product_list_screen.dart",
+    "features/provider/service_provider_dashboard.dart",
+)
+
+#: The gate code that carries its reasons, and the bare code it replaced.
+REASON_CARRYING = "provider_not_fulfilment_ready"
+BARE_PUBLISH_CODE = "provider_not_activated_or_documents_required"
+
+
+def _latest_defining(fn: str) -> tuple[Path, str] | None:
+    """The newest migration that defines `fn`, and its body."""
+    head = re.compile(
+        r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+(?:public\.)?"
+        + re.escape(fn) + r"\s*\(",
+        re.IGNORECASE,
+    )
+    found: tuple[Path, str] | None = None
+    for p in sorted(MIGRATIONS.glob("*.sql")):
+        text = _read(p)
+        m = head.search(text)
+        if m:
+            rest = text[m.end():]
+            end = rest.find("$$;")
+            found = (p, rest[:end] if end != -1 else rest)
+    return found
+
+
+def check_publish_refusal_is_actionable() -> list[str]:
+    """A provider who cannot publish must be told WHY, and where to fix it.
+
+    The reported bug, in full: a provider opens the dashboard, taps
+    Catalogue -> Add Product, fills in the form, taps Save, and is shown
+
+        PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED
+
+    The gate is CORRECT -- an unapproved, unpaid, unfunded or unverified
+    provider must not publish. The failure is that the refusal named no
+    reason, carried no next step, and the dashboard showed nothing before the
+    form either, so the button simply looked broken.
+
+    Three separate things have to hold, and each is checked because each has
+    been false independently:
+
+    1. the create functions raise the REASON-CARRYING code, not a bare one;
+    2. every code those functions can raise is translated by
+       `friendly_error()`, so no refusal from this path reaches a provider as a
+       machine token; and
+    3. the provider can SEE the state before typing anything -- the dashboard
+       reads the SERVER's blockers rather than the client's more permissive
+       `ProviderDocGate`, which counts a document awaiting review as good
+       enough and is the reason the form accepted input the server would
+       refuse.
+    """
+    problems: list[str] = []
+
+    err = _read(LIB / "core" / "utils" / "friendly_error.dart")
+    if not err:
+        return ["lib/core/utils/friendly_error.dart is missing"]
+    code = _dart_without_comments(err).lower()
+
+    needles: set[str] = set()
+    for m in re.finditer(r"_any\(\s*lower\s*,\s*\[(.*?)\]\s*\)", code, re.DOTALL):
+        before = code[max(0, m.start() - 24):m.start()]
+        if "message =" in before:
+            continue
+        needles |= set(re.findall(r"'([^']*)'", m.group(1)))
+
+    # --- 1 + 2: the create functions ---------------------------------------
+    # Which functions count is read off the app, not written here.
+    create_fns: set[str] = set()
+    for rel in _PUBLISH_SCREENS:
+        dart = _read(LIB / rel)
+        if not dart:
+            problems.append(f"lib/{rel} is missing")
+            continue
+        for fn in re.findall(r"rpc\(\s*'([a-z0-9_]+)'", dart):
+            if fn.startswith("create_provider_"):
+                create_fns.add(fn)
+
+    if not create_fns:
+        problems.append(
+            "no create_provider_* RPC call site was found in "
+            f"{list(_PUBLISH_SCREENS)} -- this check has nothing to inspect, "
+            "which means it is passing vacuously")
+    else:
+        for fn in sorted(create_fns):
+            d = _latest_defining(fn)
+            if d is None:
+                problems.append(f"{fn} is called by the app but no migration defines it")
+                continue
+            path, body = d
+            raises = {r.lower() for r in
+                      re.findall(r"RAISE EXCEPTION '([A-Z][A-Z0-9_]{3,})", body)}
+            if not raises:
+                problems.append(
+                    f"{fn} ({path.name}) raises no refusal, but the app calls "
+                    f"it on the publish path -- has the gate been removed?")
+                continue
+            if REASON_CARRYING not in raises:
+                problems.append(
+                    f"{fn} ({path.name}) does not raise "
+                    f"{REASON_CARRYING.upper()}, so a provider who cannot "
+                    f"publish is told '{BARE_PUBLISH_CODE.upper()}' with no "
+                    f"reason and no way to act on it. It raises: "
+                    f"{sorted(r.upper() for r in raises)}")
+            for r in sorted(raises):
+                if r not in needles:
+                    problems.append(
+                        f"{fn} ({path.name}) can raise {r.upper()} and "
+                        f"friendly_error.dart does not recognise it, so that "
+                        f"refusal reaches the provider as a raw code")
+
+    # --- 3: the provider can see it before typing --------------------------
+    readiness = _read(LIB / "core" / "services" / "provider_readiness.dart")
+    if not readiness:
+        problems.append(
+            "lib/core/services/provider_readiness.dart is missing, so nothing "
+            "asks the server what is outstanding before a provider publishes")
+    else:
+        # The CALL, not the string. A falsifier case proved the difference:
+        # matching the bare name was satisfied by the RPC name surviving as a
+        # plain argument after the call itself had been replaced, so a
+        # readiness path that asked the client instead of the server passed.
+        if not re.search(r"rpc\(\s*'provider_fulfilment_blockers'",
+                         _dart_without_comments(readiness)):
+            problems.append(
+                "ProviderReadiness does not CALL provider_fulfilment_blockers, "
+                "so it cannot be reporting what the server will actually "
+                "enforce")
+        if "ProviderDocGate" in readiness and re.search(
+                r"ProviderDocGate\s*\.\s*instance\s*\.\s*(isSatisfied|checkStatus)",
+                _dart_without_comments(readiness)):
+            problems.append(
+                "ProviderReadiness calls ProviderDocGate.isSatisfied() or "
+                ".checkStatus(), whose rule DIFFERS from the server's (it "
+                "accepts MANUAL_REVIEW; the server does not). Displaying the "
+                "client's answer is what made the listing form accept input "
+                "the server would refuse. ensureDocuments() is fine -- that is "
+                "the ACTION, not a decision about what the server will allow")
+
+    # Searched with comments stripped. A falsifier case proved why: a mutation
+    # that commented the widget out left its NAME in a comment, and a raw
+    # substring search reported the banner as still present. A check that can be
+    # satisfied by a comment about the thing is not checking the thing.
+    dash = _read(LIB / "features" / "provider" / "service_provider_dashboard.dart")
+    if not dash:
+        problems.append("the provider dashboard is missing")
+    elif "PublishReadinessBanner" not in _dart_without_comments(dash):
+        problems.append(
+            "the provider dashboard does not show PublishReadinessBanner, so "
+            "the only place the block surfaces is a failed save at the end of "
+            "a fully filled form")
+
+    form = _read(LIB / "features" / "provider" / "provider_product_form_screen.dart")
+    if form and "showPublishBlockedDialog" not in _dart_without_comments(form):
+        problems.append(
+            "the product form does not route a gate refusal to "
+            "showPublishBlockedDialog, so it falls through to the generic "
+            "snackbar that showed the bare code")
+
+    return problems
+
+
 def check_provider_fulfilment_gate_is_wired() -> list[str]:
     """A provider may only work once verified, paid and funded.
 
@@ -4993,6 +5175,8 @@ def check_dynamic_privileges_name_real_signatures() -> list[str]:
 
 
 CHECKS = [
+    ("a provider who cannot publish is told why, and where to fix it",
+     check_publish_refusal_is_actionable),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

@@ -6,9 +6,11 @@ import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/provider_readiness.dart';
 import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/publish_readiness_banner.dart';
 import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/dashboard_top_tabs.dart';
 import '../../core/widgets/quick_action_pill.dart';
@@ -30,6 +32,15 @@ class _ServiceProviderDashboardState
   double? _walletBalance;
   bool _loading = true;
   String? _error;
+
+  /// What the SERVER says is outstanding before this provider may publish.
+  ///
+  /// Loaded alongside the rest of the dashboard, and re-read whenever the
+  /// provider returns from fixing something. It is deliberately not derived
+  /// from `ProviderDocGate`: the client's rule and the server's rule differ
+  /// (see `ProviderReadiness`), and it was the client's more permissive answer
+  /// that let a provider fill in a form the server would refuse.
+  ProviderReadiness _readiness = ProviderReadiness.unknown;
 
   @override
   void initState() {
@@ -77,6 +88,12 @@ class _ServiceProviderDashboardState
           .select('balance')
           .eq('provider_id', prov['id'])
           .maybeSingle();
+      // Asked of the server, alongside the rest, and never allowed to fail the
+      // dashboard: a provider who cannot publish still needs to see their
+      // orders. An unreadable answer leaves the banner hidden rather than
+      // showing a wrong "you are ready".
+      final readiness =
+          await ProviderReadiness.load(prov['id'] as String);
       if (mounted) {
         setState(() {
           _providerProfile = prov;
@@ -85,6 +102,7 @@ class _ServiceProviderDashboardState
           _points = points;
           _rankProgress = progress;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();
+          _readiness = readiness;
           _loading = false;
           _error = null;
         });
@@ -97,6 +115,20 @@ class _ServiceProviderDashboardState
         });
       }
     }
+  }
+
+  /// Re-asks the server whether the provider may publish now.
+  ///
+  /// Called when the provider returns from a remedy in the banner. It does not
+  /// assume the fix worked: the provider may have opened the wrong screen, or
+  /// the activation fee may still be processing, and a banner that clears
+  /// itself optimistically is the same lie the server's refusal used to tell.
+  Future<void> _reloadReadiness() async {
+    final id = _providerProfile?['id'];
+    if (id is! String || !mounted) return;
+    final readiness = await ProviderReadiness.load(id);
+    if (!mounted) return;
+    setState(() => _readiness = readiness);
   }
 
   @override
@@ -174,6 +206,17 @@ class _ServiceProviderDashboardState
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // Before anything else: can this provider publish at all?
+                    //
+                    // "Add Product" and "Add Vehicle" are both refused by the
+                    // server until this list is empty, and until this banner
+                    // existed the ONLY place that surfaced was a failed save at
+                    // the end of a fully filled form. A provider who could not
+                    // publish had no way to find out why short of trying.
+                    PublishReadinessBanner(
+                      readiness: _readiness,
+                      onChanged: _reloadReadiness,
+                    ),
                     // The one shortcut this role opens most: a provider's
                     // photos are what a customer reads before they book, and
                     // the Business tab buried them one tab and one list row

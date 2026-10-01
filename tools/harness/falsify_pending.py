@@ -182,11 +182,21 @@ with repo(A1, {A1: CLEAN, A2: CLEAN, A3: CLEAN}):
 
 # --- G: the shipped marker matches the last deploy ------------------------
 head = pending.deployed_head()
-newest = pending.all_migrations()[-1]
 expect("G: the committed DEPLOYED_HEAD is a real migration", head.exists(),
        str(head))
-expect("G: and it is the newest one (0116, the deploy run 36788641301 applied)",
-       head.name == newest.name, f"{head.name} != {newest.name}")
+# NOT "it is the newest migration". That assertion was here and it is wrong:
+# the marker's whole job is to be BEHIND the newest file while a migration
+# waits to be deployed, and asserting otherwise made this case go red the
+# moment 0117 was written -- i.e. it would have flagged correct behaviour as a
+# failure, and the tempting fix would have been to move the marker and lie
+# about what the live database has.
+expect("G: the marker is behind the working tree (0117 is pending a deploy)",
+       [p.name for p in pending.pending()] ==
+       ["20260927000117_the_listing_refusal_says_why.sql"],
+       f"pending={[p.name for p in pending.pending()]}")
+expect("G: and the last deploy's migration is 0116 (deploy run 36788641301)",
+       head.name == "20260927000116_the_task_feed_assertion_can_count.sql",
+       head.name)
 
 if not ok:
     print("\nFALSIFICATION FAILED")

@@ -42,6 +42,12 @@ List<String> _fulfilmentReasons(String raw) {
   // the detail in a JSON envelope whose shape differs between the exception's
   // toString() and a raw response body, so "everything after the first colon"
   // matched in one case and not the other. This matches in both.
+  //
+  // Two codes are accepted: the reason-carrying one, and the bare code the
+  // create paths used to raise (migration 0117 changed the server, not the
+  // clients that are already installed). A bare code yields no reasons, which
+  // is the correct outcome -- the caller then shows the generic sentence
+  // rather than inventing reasons the server did not give.
   final match = RegExp(
     'provider_not_fulfilment_ready\\s*:\\s*([A-Za-z_,\\s]*)',
     caseSensitive: false,
@@ -153,16 +159,36 @@ String friendlyError(Object error, {String? context}) {
   // done everything right and is waiting on a review. Each reason is
   // translated into the thing they can actually DO about it, which is the
   // entire point of returning a list instead of a boolean.
-  else if (_any(lower, ['provider_not_fulfilment_ready'])) {
+  else if (_any(lower, [
+    'provider_not_fulfilment_ready',
+    // The BARE code the two create paths used to raise. Migration 0117 makes
+    // them answer with the reason list instead, but an app that is already
+    // installed can call a server this migration has not reached yet, and a
+    // build in the Play Store keeps talking to the old body for as long as it
+    // takes users to update. Mapping both means neither generation shows a
+    // provider a machine token.
+    'provider_not_activated_or_documents_required',
+  ])) {
     final reasons = _fulfilmentReasons(raw);
     message = reasons.isEmpty
-        ? 'Finish your account setup before taking this on. Open your '
+        ? 'Finish your account setup before you can publish. Open your '
             'business profile to see what is outstanding.'
-        : 'Before you can take this on: ${reasons.join('; ')}. Open your '
-            'business profile to fix it.';
+        : 'Before you can publish: ${reasons.join('; ')}. Open your business '
+            'profile to fix it.';
   }
 
   // ── Authorisation (RLS denials arrive as plain 403s) ──
+  //
+  // `not_your_provider` is raised by the two create paths when the provider id
+  // does not belong to the signed-in account. It is deliberately NOT folded
+  // into the `auth_required` branch above: that one says "sign in again", and
+  // the provider here is perfectly well signed in -- telling them to sign in
+  // again would send them round a loop that cannot fix anything. It usually
+  // means a stale screen from a previous account.
+  else if (_any(lower, ['not_your_provider'])) {
+    message = 'That business is not linked to this account. Go back to your '
+        'dashboard and open it from there.';
+  }
   //
   // `insufficient_permission` is the app's OWN refusal code, raised by
   // `RAISE EXCEPTION 'INSUFFICIENT_PERMISSION'` in the admin and staff RPCs.

@@ -52,6 +52,21 @@ def with_patches(patches: dict[str, str]) -> list[str]:
         sc._read = _real_read
 
 
+def _patch(text: str, old: str, new: str) -> str:
+    """Replace `old`, refusing to proceed if it is not there.
+
+    A falsifier whose anchor a later edit removed goes green forever and says
+    nothing, which is worse than having no case at all. Raising here makes a
+    stale anchor a loud BROKEN rather than a quiet pass.
+    """
+    if old not in text:
+        raise AssertionError(
+            f"falsifier anchor not found in {ERR}: {old!r} -- the mutation "
+            f"would land nowhere and this case would pass while proving "
+            f"nothing")
+    return text.replace(old, new, 1)
+
+
 def expect_red(label: str, patches: dict[str, str]) -> bool:
     problems = with_patches(patches)
     if problems:
@@ -64,6 +79,14 @@ def expect_red(label: str, patches: dict[str, str]) -> bool:
 
 
 def main() -> int:
+    try:
+        return _main()
+    except AssertionError as exc:
+        print(f"[BROKEN] falsifier anchor is stale\n  {exc}")
+        return 1
+
+
+def _main() -> int:
     ok = True
 
     base = with_patches({})
@@ -132,9 +155,16 @@ def main() -> int:
                             " WHERE id = p_provider_id);")})
 
     # H. the provider is told only that something went wrong.
+    #
+    # The anchor used to be the single-line form
+    # `['provider_not_fulfilment_ready']`. Migration 0117 added the bare
+    # create-path code next to it, so the literal became a multi-line list and
+    # `str.replace` silently matched nothing -- the case went GREEN while
+    # proving nothing, which is the exact failure mode this repo keeps hitting.
+    # `_patch` below raises on a missing anchor so that cannot recur quietly.
     ok &= expect_red(
         "H: the client cannot explain PROVIDER_NOT_FULFILMENT_READY",
-        {ERR: err.replace("['provider_not_fulfilment_ready']", "['never_matches']")})
+        {ERR: _patch(err, "'provider_not_fulfilment_ready',", "'never_matches',")})
 
     if not ok:
         print("\nFALSIFICATION FAILED")

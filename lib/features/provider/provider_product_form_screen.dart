@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/services/provider_readiness.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/location_service.dart';
@@ -379,8 +380,18 @@ class _State extends State<ProviderProductFormScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not save this product'))));
+        // A refusal from the fulfilment gate is not a failed save, it is an
+        // answer about what the provider must do first. Showing it as a
+        // snackbar is what made this look like a broken button: the provider
+        // typed the whole listing, pressed Save, and got a line of text with
+        // no way to act on it and nothing on the form explaining why.
+        if (_isPublishRefusal(e)) {
+          await showPublishBlockedDialog(context, e.toString());
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(friendlyError(
+                  e, context: 'Could not save this product'))));
+        }
       }
     } finally {
       if (mounted) setState(() => _saving = false);

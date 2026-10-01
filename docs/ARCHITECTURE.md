@@ -1057,6 +1057,7 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | The staff work queue carries as many city scopes as category scopes, and money verification is city-scoped too | `assert_staff_city_scope_covers_the_task_feed()` (112) — it counts both, and searches `verify_payment_proof`'s body for the guard |
 | Every provider lifecycle action that carries the category guard carries the city guard | `check_staff_management_is_reachable()` + `restated_body_diff.py` (suppresses a restatement from a stale copy) |
 | A restatement that REPAIRS a defect changes only the broken lines, and the repair is in the body | `restated_body_diff.py` `FIXES` (§7.1.2) — the mirror of the superset rule, which 0116 could not satisfy |
+| A provider who cannot publish is told WHY, and where to fix it — before they type anything | `check_publish_refusal_is_actionable()` + migration 0117, `ProviderReadiness`, `PublishReadinessBanner` |
 | A column a query references exists in the scope that query actually has | `column_scope.py` over the pending window — the 42703 class that killed two deploys and that no parser can see |
 | A per-category / per-city fee inherits correctly, and a client cannot write the table | `assert_category_fees_are_wired()` (107), reported by `category_fee_surface_report()` |  | A staff member's rank, city, obligations and movement are on the screen, not only in the table | `check_staff_roster_is_wired()` — it fails if the roster is fetched and discarded, and passes on a rename |
 | A provider may only work once verified, paid and funded — on all four surfaces | `assert_provider_fulfilment_gate_is_wired()` (0113), plus `check_provider_fulfilment_gate_is_wired()`; blast radius from `provider_fulfilment_gate_report()` |
@@ -1157,6 +1158,7 @@ GitHub Actions cannot run, the Supabase SQL Editor.
 | `0114` | `notify_best_effort()` (delivers, logs, never raises) and `notify_nearby_drivers()` (the capped fan-out); `create_order_secure`, `create_ride_request` and `claim_ride` restated to notify the counterparty; `assert_counterparties_are_notified()` | **a provider was never told an order arrived, no driver was ever told a ride was nearby, and a rider was never told their ride had a driver.** All three worked, which is why they survived: the counterparty found out by polling |
 | `0115` | restates the six functions the first live Connectivity run flagged: `platform_transaction_fee` / `calculate_fare_estimate` re-wired through the category-aware resolvers, the `information_schema.yes_or_no` domain handled, and `assert_fee_switches_are_wired()` rewritten to read the pairs from 0073's own assertion | **the CEO's two fee switches were stored and inert** after 0107 restated their callers, and four assertions raised instead of measuring |
 | `0116` | restates `assert_staff_city_scope_covers_the_task_feed()` with the derived-table wrapper removed, so `unnest(...)` is filtered directly | **the task-feed assertion raises `column "part" does not exist` (42703) on every call**, so the city-scope report cannot run — 0115 fixed the symptom's name and left the cause |
+| `0117` | restates `create_provider_product` / `create_provider_vehicle` so the fulfilment gate refuses with `PROVIDER_NOT_FULFILMENT_READY: <reasons>` instead of a bare code, and adds `provider_listing_readiness()` | **a provider who cannot publish is shown `PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED`** — a machine token, no reason, no next step — after filling in a whole listing; the dashboard said nothing beforehand either |
 
 **Three deploys, three different questions none of the gates could ask.** The
 third was the instructive one: the *fix* for the second
@@ -1443,7 +1445,6 @@ same migration placed *behind* the head is correctly not judged. That pair is th
 difference between a real gate and a re-labelled `--recent 1`.
 
 #### 7.1.2 A repair restatement is judged by the mirror assertion
-
 `restated_body_diff.py` proves a restatement is a pure **superset** of the body
 it replaces, with every added line an approved scope guard. 0116 is the case that
 rule cannot express: it *fixes* a defect, so its dropped lines are the point, and
@@ -1467,6 +1468,75 @@ the revert to `AS x`, the subtler revert to `AS x(part)` (`part` is a real name 
 the defect is that the derived table has no such column), a **half** repair that
 looks fine on a read-through, a repair that also drops the missing-function check,
 and a legitimate re-wrap that stays green. 12/12.
+
+#### 7.1.3 The check that was green for the whole life of the bug
+
+**A provider could not upload a product, and no test said so.** The route
+existed, the form existed, the RPC existed and was granted, the dashboard linked
+to it — and pressing Save produced this, once per attempt:
+
+```
+PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED
+```
+
+Two independent defects sat behind it.
+
+**The refusal said nothing.** `create_provider_product` and
+`create_provider_vehicle` came from `20260924000004`, above the deploy baseline,
+and migration 0113 gave `claim_ride` and `transition_order_status` the
+reason-carrying pattern. The two CREATE paths were restated for the gate and
+never for the *message*, so the one surface a new provider touches first is the
+one surface that names no reason. Migration 0117 fixes it and adds
+`provider_listing_readiness()` so the state is readable before the form is.
+
+**The client's gate and the server's gate disagreed.** `ProviderDocGate` is
+client-side and fail-open, and it counts a document in `MANUAL_REVIEW` as
+accepted — deliberately, so an admin's review queue never locks a provider out
+of their own business. `provider_documents_verified()` (0113) accepts only
+`AUTO_APPROVED` / `VERIFIED`, because a document row is *born* in
+`MANUAL_REVIEW` (column default plus a BEFORE INSERT trigger), so the old
+predicate was satisfied by uploading an ID.
+
+That contradiction is the mechanism: the client said yes, so the provider filled
+in the entire form, and the server — the one that decides — refused at Save.
+`ProviderReadiness` now asks `provider_fulfilment_blockers()`, the same function
+the gate itself calls, so what the dashboard shows and what the server enforces
+cannot drift. It reports "unknown" when it cannot ask, because a green "you can
+publish" on an unreachable server is the same lie in the other direction.
+
+**And the check that should have caught it was a hand-written list.**
+`check_server_refusal_codes_reach_the_user()` asserted three specific codes, and
+`PROVIDER_NOT_ACTIVATED_OR_DOCUMENTS_REQUIRED` was not one of them — so the suite
+was green for the entire life of the bug. A curated list of "the codes that
+matter" decays in exactly one direction.
+
+`check_publish_refusal_is_actionable()` replaces that habit. It **derives** the
+functions: it scans the provider screens for `create_provider_*` RPC calls, reads
+each one's latest definition, and requires every code that function can raise to
+be translated. Three things must hold, because each has been false
+independently: the create functions raise the reason-carrying code, every code
+they can raise is translated, and the provider can see the block before typing
+anything. Its own vacuity guard is deliberate — if discovery finds nothing, the
+check goes RED, because a derived check that quietly inspects nothing is worse
+than no check.
+
+`falsify_publish_refusal.py` is 9 cases, and **two of them found real weaknesses
+in the new check on its first run**: matching the RPC *name* rather than the RPC
+*call* (a readiness path that asked the client still passed, because the name
+survived as an argument), and searching the dashboard source without stripping
+comments (commenting the banner out left its name behind). Both are fixed in the
+check. That is the whole argument for writing the falsifier.
+
+Changing this also broke two existing falsifiers, which is the rule working.
+`falsify_fulfilment_gate.py` case H anchored on the single-line literal
+`['provider_not_fulfilment_ready']`; 0117's edit made it multi-line, so
+`str.replace` silently matched nothing and the case passed while proving nothing
+— the exact hazard this repo has hit three times. It now raises on a missing
+anchor. `falsify_pending.py` case G asserted the applied-marker was the *newest*
+migration, which is backwards: the marker is supposed to be behind the working
+tree while a migration waits to deploy, so writing 0117 made it go red on
+correct behaviour, and the tempting fix would have been to move the marker and
+lie about what the live database has.
 
 ### 7.2 Edge Functions
 
