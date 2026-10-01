@@ -49,11 +49,16 @@ ON CONFLICT (id) DO UPDATE
       file_size_limit    = EXCLUDED.file_size_limit,
       allowed_mime_types = EXCLUDED.allowed_mime_types;
 
-COMMENT ON COLUMN public.profiles.avatar_storage_path IS
-  'Path of this user''s own profile picture inside the public profile-avatars '
-  'bucket. Written only through that bucket''s storage policies, which scope '
-  'the first path segment on auth.uid(). NULL means no picture.';
-
+-- The column comes FIRST. The comment used to sit above this block, which is
+-- fine on a database that already has the column and fatal on one that does
+-- not:
+--
+--   ERROR: column "avatar_storage_path" of relation "public.profiles" does
+--          not exist
+--
+-- Every other run of this file found the column already present -- because the
+-- comment itself was what created it in an earlier draft -- so the order was
+-- never exercised against the case it exists for.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -64,6 +69,11 @@ BEGIN
   END IF;
 END;
 $$;
+
+COMMENT ON COLUMN public.profiles.avatar_storage_path IS
+  'Path of this user''s own profile picture inside the public profile-avatars '
+  'bucket. Written only through that bucket''s storage policies, which scope '
+  'the first path segment on auth.uid(). NULL means no picture.';
 
 -- ---------------------------------------------------------------------------
 -- The policies
@@ -142,9 +152,18 @@ CREATE INDEX IF NOT EXISTS idx_profiles_avatar_storage_path
 -- caller's own folder, and the column is where the client says it is.
 --
 -- The policy checks read `pg_get_expr` rather than trying to walk
--- `pg_node_tree`: polqual and with_check are parse trees, not arrays, and
+-- `pg_node_tree`: `qual` and `with_check` are parse trees, not arrays, and
 -- `unnest()` on one is a runtime error inside a function the connectivity suite
 -- is about to call.
+--
+-- They name the columns as `pg_policies` spells them -- `qual`, not `polqual`.
+-- `polqual` belongs to the `pg_policy` CATALOG; the VIEW exposes `qual`, and
+-- on every version, Supabase's included. Naming the catalog's spelling is how
+-- this function got to
+--
+--   ERROR: column "polqual" does not exist
+--
+-- which the local PostgreSQL 14 scratch cluster caught before the deploy did.
 CREATE OR REPLACE FUNCTION public.assert_profile_avatar_surface()
 RETURNS text
 LANGUAGE plpgsql
@@ -153,6 +172,18 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
+  -- `pg_policies` is a VIEW whose `qual` and `with_check` columns ARE ALREADY
+  -- the deparsed expression text -- the view is defined as
+  -- `pg_get_expr(polqual, polrelid) AS qual`. So there is nothing to call
+  -- `pg_get_expr` on, and the catalog's own names are not columns here at all:
+  --
+  --   ERROR: column "polqual" does not exist
+  --   ERROR: column "polrelid" does not exist
+  --   ERROR: function pg_get_expr(text, regclass) does not exist
+  --
+  -- COALESCE because an INSERT policy carries its test in `with_check` and
+  -- leaves `qual` NULL; reading `qual` alone reports that no insert policy
+  -- exists when one plainly does.
   v_bucket  boolean;
   v_public  boolean;
   v_column  boolean;
@@ -178,7 +209,7 @@ BEGIN
     RAISE EXCEPTION 'profile avatar surface: profiles.avatar_storage_path is missing';
   END IF;
 
-  SELECT pg_get_expr(polqual, polrelid) INTO v_insert
+  SELECT COALESCE(qual, with_check) INTO v_insert
     FROM pg_policies
    WHERE schemaname = 'storage' AND tablename = 'objects'
      AND policyname = 'profile_avatars_insert';
@@ -190,7 +221,7 @@ BEGIN
       'caller''s own folder -- it reads as: %', v_insert;
   END IF;
 
-  SELECT pg_get_expr(polqual, polrelid) INTO v_update
+  SELECT COALESCE(qual, with_check) INTO v_update
     FROM pg_policies
    WHERE schemaname = 'storage' AND tablename = 'objects'
      AND policyname = 'profile_avatars_update_own';
@@ -206,7 +237,7 @@ BEGIN
    WHERE schemaname = 'storage' AND tablename = 'objects'
      AND policyname LIKE 'profile_avatars_%'
      AND cmd IN ('INSERT', 'UPDATE', 'DELETE')
-     AND pg_get_expr(COALESCE(qual, with_check), polrelid) ILIKE '%auth.uid()%';
+     AND COALESCE(qual, with_check) ILIKE '%auth.uid()%';
   IF v_scoped < 3 THEN
     RAISE EXCEPTION 'profile avatar surface: only %s of the three write policies on '
       'profile-avatars are scoped to the caller, so the others let anybody write '

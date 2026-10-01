@@ -1654,17 +1654,98 @@ The business side was never touched at all. `provider_profiles` is CASCADE from
 closed and the error names `orders` rather than the person asking to leave.
 
 **0118** (`20260927000118_nothing_blocks_the_account_deletion.sql`) detaches
-nineteen columns — seven business-side, twelve account-side — in one DO block
-driven by a `('table', 'column', 'parent')` VALUES list. It matches on
-(child relation, child column, **parent relation**) rather than the column alone,
-because `admin_notification_broadcasts` has two keys to `auth.users` and a
-column-only match takes whichever the catalog returns first. It skips keys that
-are already CASCADE or SET NULL, so re-running it is a no-op rather than a
-re-drop of a correct constraint. And it ends with a verification block that
-raises `ACCOUNT_DELETION_STILL_BLOCKED` if any of the nineteen is not now a
-SET NULL key — **a migration that silently skips is worse than one that fails**,
-and this one would otherwise have deployed cleanly having fixed nothing, exactly
-as 0054 did.
+twenty columns — seven business-side, thirteen account-side — in one DO block
+driven by a `('table', 'column')` VALUES list. It looks the key up on the
+child's own column and **takes the parent from `pg_constraint.confrelid`**,
+because the migration connection cannot resolve the `auth` schema and a
+hand-written parent name aborts the push. It skips keys that are already CASCADE
+or SET NULL, so re-running it is a no-op rather than a re-drop of a correct
+constraint. And it ends with a verification block that raises
+`ACCOUNT_DELETION_STILL_BLOCKED` if any of the twenty is not now a SET NULL key —
+**a migration that silently skips is worse than one that fails**, and this one
+would otherwise have deployed cleanly having fixed nothing, exactly as 0054 did.
+
+### Two deploys, and what the file now says it cannot do
+
+0118 failed to deploy twice, and both failures are worth recording because
+neither is visible to `flutter analyze`, to the static harness, or to review:
+
+| Run | Error | Cause |
+| --- | --- | --- |
+| 36870164815 | `relation "auth.users" does not exist` (42P01) | the list named the parent; the migration connection's `search_path` does not resolve `auth` |
+| 36873453231 | `record "target" has no field "parent"` (42703), then 42P01 again | `%I` on a `regclass` |
+
+The second is the instructive one. `format('%I', some_regclass)` does **not**
+quote a relation name; `regclass` renders as the *string* `auth.users`, and `%I`
+quotes that whole string as one identifier, producing `REFERENCES "auth.users"` —
+a relation literally named `auth.users`, which does not exist. It worked for the
+first seven tuples purely by luck: their parents live in `public`, which the
+`search_path` does resolve, so they rendered bare and happened to be valid. The
+fix is to rebuild the name from the catalog — `format('%I.%I', pn.nspname,
+pr.relname)` from `pg_class`/`pg_namespace` — which names the parent without
+writing `auth` anywhere in the file.
+
+**A local PostgreSQL scratch cluster is how these get caught.** `apt-get install
+postgresql-14`, a cluster on a unix socket (`pg_ctl -o '-k /tmp/pgrun -p 5433
+-c listen_addresses='`, so nothing listens on TCP), a hand-written slice of the
+real FK graph, and then `psql -v ON_ERROR_STOP=1 -f` over the migration in
+question. `su postgres` cannot read anything under the project directory, so the
+migration is copied to `/tmp` and `chmod 644` first. Running all three pending
+migrations against an empty database is what surfaced **four** further defects
+that a review of the diff would not have:
+
+1. 0118's verification block declared `target record;` and then used
+   `target.tbl` as a VALUES alias — `record "target" is not assigned yet` (42703).
+   The `FOR … IN` loop in the first block is what makes that name legal there.
+2. `account_deletion_blockers()` referenced the recursive CTE inside a subquery
+   (`(SELECT rel FROM gone LIMIT 1)`), which is `recursive reference to query
+   "gone" must not appear within a subquery`. The arm was redundant with the
+   JOIN below it.
+3. 0119 put `COMMENT ON COLUMN public.profiles.avatar_storage_path` **above**
+   the guarded `ADD COLUMN`, so it works only on a database that already has the
+   column — the one case it exists for. Every earlier run found the column
+   present, so the order was never exercised.
+4. 0120's evidence `CHECK` and its `INSERT` both name `appeal_cases.email`, and
+   no migration ever added the column: `column "email" does not exist`.
+
+Executing 0119's and 0120's functions found three more, none of which a
+`CREATE FUNCTION` will catch because plpgsql resolves names on first call:
+
+- `assert_profile_avatar_surface()` read `polqual` and `polrelid` off
+  `pg_policies`. Those are the **`pg_policy` catalog's** column names; the view
+  exposes `qual` and `with_check`, and those are already deparsed text — it is
+  defined as `pg_get_expr(polqual, polrelid) AS qual`. So there is nothing to
+  call `pg_get_expr` on at all. It also read `qual` alone for the INSERT policy,
+  whose test lives in `with_check`, so it reported "no insert policy exists"
+  when one plainly did.
+- `request_password_reset_appeal()` recovered the id of the row it had just
+  inserted with `(SELECT max(id) FROM appeal_cases …)`. PostgreSQL has **no
+  `max(uuid)`**, so every real caller got `function max(uuid) does not exist`
+  from the one function meant for somebody who cannot sign in. Nothing about that
+  feature could ever have worked. It is now `RETURNING id INTO v_case`.
+- `account_deletion_blockers()` answered `ok` locally, and that was correct — but
+  only because of fix 5 below.
+
+### The twentieth column, and the false green that hid it
+
+`admin_notification_broadcasts` has **two** keys to the account table:
+`admin_id`, which 0118 detaches, and `target_user_id`, which is nullable with no
+`ON DELETE` action at all — precisely the shape 0054's header calls survivable
+and 0118's own header calls a blocker. The harness reported zero blockers
+anyway, because `_foreign_key_actions()` collapsed each table to the
+**strongest action per parent**: one SET NULL column made the whole parent read
+SET NULL and the NO ACTION sibling disappeared.
+
+That is the same failure as 0054, one level up, and it is why the blocker list
+is now computed **per column** (`_FK_COLUMN_ACTIONS`). The per-parent collapse is
+still what the CASCADE closure walk wants — that is a question about the parent,
+not the column — but a parent is only as safe as its weakest column. Falsifier
+case **Q** drops the `target_user_id` tuple and asserts the check goes red; under
+the old per-parent reader it stayed green.
+
+**`check_account_deletion_is_unblocked()`** is the static half, and
+`falsify_account_deletion_page.py` cases M–Q cover it. Two things it had to get
+right first, both of them the shape of a false green:
 
 `provider_profiles.user_id` is deliberately **not** in the list. It is a NO
 ACTION key onto `profiles` and looks like a blocker, but `provider_profiles` is
@@ -1697,7 +1778,7 @@ right first, both of them the shape of a false green:
   published blocker. The reader now takes the migration's own tuples, and
   `_unreadable_detach_blocks()` reports a block it can see but cannot read a
   single name from, because silence from a broken pattern looks exactly like a
-  clean schema.
+  clean schema. It reads **20**.
 
 **Ordering.** `supabase/DEPLOYED_HEAD` stays at `…0117` until a deploy log
 actually says `Applying migration 20260927000118…`. The public deletion page

@@ -275,6 +275,13 @@ _ORDERS_DETACH = "      ('orders',                'provider_id'),\n"
 #: changes nothing. A falsifier that lands in the wrong list is worse than one
 #: with a missing anchor, because it reports a result.
 _AUDIT_DETACH = "      ('audit_logs',                        'actor_id'),\n"
+# The twentieth pair, and the one every earlier draft of this file missed.
+# `target_user_id` is nullable with no ON DELETE action, which every migration
+# before 0118 read as survivable. It is not, and it was invisible to the harness
+# as well, because the harness collapsed a table's keys to the strongest action
+# per parent and so saw the SET NULL `admin_id` and reported the pair clean.
+_BROADCAST_DETACH = ("      ('admin_notification_broadcasts',"
+                     "     'target_user_id'),\n")
 
 
 def _unblocked(mutate):
@@ -331,6 +338,19 @@ SCHEMA_CASES: list[tuple[str, str, object, bool]] = [
         "found a block it could not read rather than answering from a blind "
         "pattern",
         replace_in(MIG_0118, "AS v(tbl, col)", "AS v"),
+        False,
+    ),
+    (
+        "Q. the account-side detach for a BROADCAST's target is lost",
+        "the twentieth pair, and the only one a per-parent reader cannot see. "
+        "`admin_notification_broadcasts` has two keys to the account table: "
+        "`admin_id`, detached here, and `target_user_id`, nullable with no "
+        "action. Collapse the pair to the strongest action per parent and the "
+        "table reads SET NULL and clean, while a delete still raises 23503 for "
+        "every admin who has ever addressed a broadcast to one person. Dropping "
+        "this line must therefore go red -- and if it does not, the blocker "
+        "reader has gone back to answering per parent",
+        replace_in(MIG_0118, _BROADCAST_DETACH, ""),
         False,
     ),
 ]

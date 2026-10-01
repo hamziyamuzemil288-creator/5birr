@@ -5202,6 +5202,12 @@ _FK_ACTION_RANK = {"NO ACTION": 0, "SET NULL": 1, "CASCADE": 2}
 #: on every call, never mutated in place, so a falsifier that repoints MIGRATIONS
 #: at a mutated copy cannot read yesterday's answer out of it.
 _FK_COLUMNS: dict[tuple[str, str], str] = {}
+# (table, parent, column) -> ON DELETE action, kept alongside the per-parent
+# collapse above. The collapse answers "does this parent CASCADE?" for the
+# closure walk; this answers "does THIS COLUMN refuse the delete?" for the
+# blocker list, and the two disagree exactly when one table has columns with
+# different actions onto the same parent.
+_FK_COLUMN_ACTIONS: dict[tuple[str, str, str], str] = {}
 
 # Two shapes of dynamic detach block exist in the migration history, and both
 # are invisible to a grep for REFERENCES: the table and column names are
@@ -5435,9 +5441,11 @@ def _foreign_key_actions() -> dict[str, dict[str, str]]:
 
     edges: dict[str, dict[str, str]] = {}
     _FK_COLUMNS.clear()
+    _FK_COLUMN_ACTIONS.clear()
     for (table, parent, _column), action in columns.items():
         if table in dropped:
             continue
+        _FK_COLUMN_ACTIONS[(table, parent, _column)] = action
         cur = edges.setdefault(table, {})
         if parent not in cur or _FK_ACTION_RANK[action] > _FK_ACTION_RANK[cur[parent]]:
             cur[parent] = action
@@ -5518,10 +5526,18 @@ def _deletion_blockers() -> list[tuple[str, str, str]]:
     for table in sorted(edges):
         if table in deleted or table in business:
             continue
-        for parent, action in sorted(edges[table].items()):
-            if parent in gone and action == "NO ACTION":
-                out.append((table, _FK_COLUMNS.get((table, parent), "?"), parent))
-    return out
+        # PER COLUMN, never per parent. `admin_notification_broadcasts` holds
+        # two keys to the account table: `admin_id`, which 0118 detaches, and
+        # `target_user_id`, which is nullable with no ON DELETE action at all.
+        # Collapsing the two to "the strongest action for this parent" reports
+        # SET NULL and loses the NO ACTION column -- a false green produced by
+        # the very rule 0118's header argues against. A parent is only as safe
+        # as its weakest column, so that is what gets checked.
+        for (t, parent, column), action in sorted(_FK_COLUMN_ACTIONS.items()):
+            if t != table or parent not in gone or action != "NO ACTION":
+                continue
+            out.append((table, column, parent))
+    return sorted(out)
 
 
 def _declared_tables(html: str, block_id: str) -> list[str]:

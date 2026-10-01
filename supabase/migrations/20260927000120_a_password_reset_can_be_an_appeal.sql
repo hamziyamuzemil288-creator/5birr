@@ -62,6 +62,17 @@
 ALTER TABLE public.appeal_cases
   ADD COLUMN IF NOT EXISTS case_type text NOT NULL DEFAULT 'GENERAL';
 
+-- The contact route, stored. `phone` already existed; there was nowhere to put
+-- the address a locked-out person gives, and the whole point of this case type
+-- is that they cannot sign in to supply it. Every use of it -- the rate-limit
+-- lookup at step 1, the INSERT, the evidence CHECK below, and
+-- admin_appeals_screen.dart -- reads this column, so it has to exist before
+-- the CHECK that references it, or the push dies with
+--
+--   ERROR: column "email" does not exist
+ALTER TABLE public.appeal_cases
+  ADD COLUMN IF NOT EXISTS email text;
+
 -- The two NOT NULLs become relaxable, but not for everyone. Dropping them
 -- outright would let an ordinary appeal arrive with no photo and no phone,
 -- which is the case a reviewer can do nothing with.
@@ -121,6 +132,7 @@ DECLARE
   v_notes  text := NULLIF(btrim(coalesce(p_notes, '')), '');
   v_user   uuid;
   v_open   int;
+  v_case   uuid;
 BEGIN
   IF v_email = '' AND v_phone = '' THEN
     RAISE EXCEPTION 'CONTACT_REQUIRED';
@@ -163,12 +175,21 @@ BEGIN
      coalesce(v_notes,
               'Password reset requested from the sign-in screen. The standard '
               'reset link could not be completed.'),
-     NULLIF(v_phone, ''), NULLIF(v_email, ''));
+     NULLIF(v_phone, ''), NULLIF(v_email, ''))
+  -- The id of the row just written, not a guess at it afterwards. The audit
+  -- line used to read it back with `(SELECT max(id) FROM appeal_cases ...)`,
+  -- and PostgreSQL has no `max(uuid)` -- not for uuid, not for any type without
+  -- an operator -- so every real caller got
+  --
+  --   ERROR: function max(uuid) does not exist
+  --
+  -- from a function that is supposed to be filing an appeal for somebody who
+  -- cannot sign in. Nothing about this feature could ever have worked.
+  RETURNING id INTO v_case;
 
   INSERT INTO public.audit_logs (actor_id, event_type, entity_type, entity_id, metadata)
   VALUES (v_user, 'PASSWORD_RESET_REQUESTED', 'appeal_cases',
-          (SELECT max(id) FROM public.appeal_cases
-            WHERE user_id = v_user AND case_type = 'PASSWORD_RESET'),
+          v_case,
           jsonb_build_object('has_email', v_email <> '', 'has_phone', v_phone <> ''));
 
   RETURN 'If those details match an account, a reset request has been sent to our team.';

@@ -112,9 +112,16 @@
 --
 -- which is exactly what run 36870164815 did. Nothing in this file says
 -- `auth.users`; the parent is whatever the existing constraint already points
--- at. `admin_notification_broadcasts` has two keys to it (`admin_id` NO ACTION,
--- `target_user_id` SET NULL) and they are on different columns, so matching on
--- the column still picks exactly one.
+-- at. `admin_notification_broadcasts` has two keys to it (`admin_id` and
+-- `target_user_id`, both NO ACTION until this file touches them) and they are
+-- on different columns, so matching on the column still picks exactly one.
+--
+-- `target_user_id` is the twentieth, and it is the one this file's own header
+-- predicts. Nullable, and therefore assumed survivable by everything written
+-- before it. It is not. It was also invisible to the static harness, which
+-- kept only the strongest action per parent and so reported SET NULL for a
+-- table that still carried a NO ACTION column -- the same class of error as
+-- 0054, one level up.
 --
 -- The action filter is part of the lookup rather than a second query after it:
 -- 'a' is NO ACTION, 'r' is RESTRICT, 'c' CASCADE, 'n' SET NULL. A key that is
@@ -123,7 +130,8 @@
 DO $$
 DECLARE
   target record;
-  v_fk    text;
+  v_fk     text;
+  v_parent text;
 BEGIN
   FOR target IN
     SELECT * FROM (VALUES
@@ -145,6 +153,7 @@ BEGIN
       ('payment_proofs',                    'verified_by'),
       ('admin_expenses',                    'admin_id'),
       ('admin_notification_broadcasts',     'admin_id'),
+      ('admin_notification_broadcasts',     'target_user_id'),
       -- ---- keyed on somebody ELSE's record, so the row survives --------
       -- A staff member's deletion leaves the rows they touched behind, and
       -- these three are the ones that would refuse to let them go.
@@ -160,8 +169,21 @@ BEGIN
       CONTINUE;
     END IF;
 
-    SELECT c.conname INTO v_fk
+    -- The parent is re-quoted here, FROM THE CATALOG, and qualified with its
+    -- schema. `%I` on a regclass does NOT work: regclass renders as the string
+    -- `auth.users`, and `%I` quotes that whole string as one identifier, giving
+    -- REFERENCES "auth.users" -- a relation literally named `auth.users`, which
+    -- does not exist. That is the 42P01 that killed run 36873453231 on the
+    -- eighth tuple, `audit_logs.actor_id`, and only on the eighth: the seven
+    -- business-side parents live in `public`, which the connection's
+    -- search_path resolves, so they rendered bare and happened to work. Reading
+    -- `pg_namespace.nspname` and `pg_class.relname` is the only spelling that
+    -- names the parent without ever writing `auth` in this file.
+    SELECT c.conname, format('%I.%I', pn.nspname, pr.relname)
+      INTO v_fk, v_parent
       FROM pg_constraint c
+      JOIN pg_class pr     ON pr.oid = c.confrelid
+      JOIN pg_namespace pn ON pn.oid = pr.relnamespace
      WHERE c.conrelid   = to_regclass(format('public.%I', target.tbl))
        AND c.contype    = 'f'
        AND c.confdeltype IN ('a', 'r')
@@ -176,12 +198,14 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- The parent string is already schema-qualified and quoted, so it goes in
+    -- with `%s`, not `%I`.
     EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT %I',
                    target.tbl, v_fk);
     EXECUTE format(
       'ALTER TABLE public.%I ADD CONSTRAINT %I FOREIGN KEY (%I) '
-      'REFERENCES %I ON DELETE SET NULL',
-      target.tbl, v_fk, target.col, target.parent);
+      'REFERENCES %s ON DELETE SET NULL',
+      target.tbl, v_fk, target.col, v_parent);
 
     EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I DROP NOT NULL',
                    target.tbl, target.col);
@@ -199,9 +223,16 @@ $$;
 -- have deployed cleanly having fixed nothing, exactly as 0054 did. Every pair
 -- named above must now resolve to a SET NULL (or CASCADE) key, or the push
 -- aborts with the pairs that are still wrong.
+--
+-- `target` below is the VALUES alias, not a plpgsql record. This block has no
+-- loop, so there is nothing to assign a record variable to, and `target.tbl`
+-- written against an unassigned record is
+--
+--   ERROR: record "target" is not assigned yet (SQLSTATE 42703)
+--
+-- which is what the local scratch cluster said on the first run of this fix.
 DO $$
 DECLARE
-  target record;
   v_bad text;
 BEGIN
   SELECT string_agg(format('%I.%I', target.tbl, target.col), ', ')
@@ -223,10 +254,11 @@ BEGIN
       ('payment_proofs',        'verified_by'),
       ('admin_expenses',        'admin_id'),
       ('admin_notification_broadcasts', 'admin_id'),
+      ('admin_notification_broadcasts', 'target_user_id'),
       ('referral_codes',        'created_by'),
       ('wallet_recharge_requests',      'approved_by'),
       ('staff_task_completions',        'completed_by')
-    ) AS v(tbl, col)
+    ) AS target(tbl, col)
     JOIN pg_constraint c
       ON c.conrelid = to_regclass(format('public.%I', target.tbl))
      AND c.contype  = 'f'
@@ -283,14 +315,14 @@ BEGIN
 
       UNION
 
-      SELECT c.conrelid::regclass
-        FROM pg_constraint c
-       WHERE c.contype = 'f'
-         AND c.confrelid = (SELECT rel FROM gone LIMIT 1)
-         AND c.confdeltype = 'c'
-
-      UNION
-
+      -- The cascade arm. A recursive CTE may reference itself in a JOIN, but
+      -- NOT inside a subquery, so the "(SELECT rel FROM gone LIMIT 1)" shape
+      -- this used to have is
+      --
+      --   ERROR: recursive reference to query "gone" must not appear within a
+      --          subquery
+      --
+      -- It was also redundant with this arm, which walks the same edge.
       SELECT c.conrelid::regclass
         FROM pg_constraint c
         JOIN gone g ON c.confrelid = g.rel
