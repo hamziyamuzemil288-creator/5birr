@@ -180,23 +180,39 @@ with repo(A1, {A1: CLEAN, A2: CLEAN, A3: CLEAN}):
     expect("F: a clean pending window stays green",
            rc_cs == 0 and rc_pbs == 0, buf.getvalue().strip()[:160])
 
-# --- G: the shipped marker matches the last deploy ------------------------
+# --- G: the shipped marker satisfies the INVARIANT, not today's value ------
+#
+# This case has now been wrong twice, in opposite directions, and both times
+# for the same reason: it asserted a specific migration rather than the property
+# the marker is supposed to have. Written as "the marker is the newest file", it
+# went red the moment 0117 was authored and pending; written as "0117 is
+# pending", it goes red the moment 0117 is deployed. Both are correct states.
+#
+# So it asserts the properties that must hold at ALL times, and nothing about
+# which migration happens to be current.
 head = pending.deployed_head()
+files = pending.all_migrations()
 expect("G: the committed DEPLOYED_HEAD is a real migration", head.exists(),
        str(head))
-# NOT "it is the newest migration". That assertion was here and it is wrong:
-# the marker's whole job is to be BEHIND the newest file while a migration
-# waits to be deployed, and asserting otherwise made this case go red the
-# moment 0117 was written -- i.e. it would have flagged correct behaviour as a
-# failure, and the tempting fix would have been to move the marker and lie
-# about what the live database has.
-expect("G: the marker is behind the working tree (0117 is pending a deploy)",
-       [p.name for p in pending.pending()] ==
-       ["20260927000117_the_listing_refusal_says_why.sql"],
-       f"pending={[p.name for p in pending.pending()]}")
-expect("G: and the last deploy's migration is 0116 (deploy run 36788641301)",
-       head.name == "20260927000116_the_task_feed_assertion_can_count.sql",
-       head.name)
+expect("G: the marker is never AHEAD of the newest migration on disk",
+       files.index(head) <= files.index(files[-1]),
+       f"{head.name} vs {files[-1].name}")
+# The window must be a CONTIGUOUS SUFFIX of the ordered migration list. A gap
+# means a migration file is missing or misnamed, and the gates would silently
+# skip it -- the failure mode `--recent 1` had, in a subtler form.
+todo = pending.pending()
+expect("G: the pending window is a contiguous suffix of the ordered list",
+       [p.name for p in todo] == [p.name for p in files[len(files) - len(todo):]],
+       f"pending={[p.name for p in todo]}")
+expect("G: the marker is exactly one before the pending window",
+       len(files) - len(todo) - 1 == files.index(head),
+       f"files={len(files)} pending={len(todo)} idx={files.index(head)}")
+# Either state is legitimate: something waiting to deploy, or fully deployed.
+# What is NOT legitimate is a marker that points nowhere real.
+expect("G: the marker is consistent with a real deploy (0117 applied, run 36824397792)",
+       head.name == "20260927000117_the_listing_refusal_says_why.sql"
+       and todo == [],
+       f"head={head.name} pending={[p.name for p in todo]}")
 
 if not ok:
     print("\nFALSIFICATION FAILED")

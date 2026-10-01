@@ -385,7 +385,7 @@ class _State extends State<ProviderProductFormScreen> {
         // snackbar is what made this look like a broken button: the provider
         // typed the whole listing, pressed Save, and got a line of text with
         // no way to act on it and nothing on the form explaining why.
-        if (_isPublishRefusal(e)) {
+        if (ProviderReadiness.isPublishRefusal(e)) {
           await showPublishBlockedDialog(context, e.toString());
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
