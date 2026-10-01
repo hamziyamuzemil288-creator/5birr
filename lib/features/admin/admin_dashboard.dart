@@ -577,6 +577,17 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                 'Category & City Fees',
                                 'Bajaj vs truck · per-city rates',
                                 () => context.push('/admin/fees/categories')),
+                          // The authority section: take one uploaded image down,
+                          // suspend an account, and read the append-only record
+                          // of what has been done. Nothing else in this
+                          // dashboard can remove content — user management
+                          // suspends accounts and provider management
+                          // suspends businesses, but neither can delete a
+                          // photograph that breaks the terms.
+                          if (ref.read(authProvider).isAdmin)
+                            _menuCard(Icons.gavel_outlined, 'Content Control',
+                                'Reports, image takedown, suspensions',
+                                () => context.push('/admin/content')),
                         ],
                       ),
                     ),

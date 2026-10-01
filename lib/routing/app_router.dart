@@ -62,6 +62,8 @@ import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/admin/admin_settings_screen.dart';
 import '../features/admin/fee_settings_screen.dart';
+import '../features/admin/admin_content_control_screen.dart';
+import '../features/shared/transaction_documents_screen.dart';
 import '../features/admin/category_fee_settings_screen.dart';
 import '../features/appeal/appeal_screen.dart';
 import '../features/appeal/my_appeals_screen.dart';
@@ -498,6 +500,27 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/admin/fees/categories',
           builder: (_, __) => const CategoryFeeSettingsScreen()),
+
+      // Content control: the report queue, the moderation log, and the two
+      // actions nothing else could do — remove one uploaded image, suspend an
+      // account. Admin-only by construction: the server refuses every call to
+      // a non-admin before doing anything.
+      GoRoute(
+          path: '/admin/content',
+          builder: (_, __) => const AdminContentControlScreen()),
+
+      // The slips for one order or one ride. Both parties and admins may read
+      // them; `my_transaction_documents` decides who, not this route.
+      GoRoute(
+        path: '/documents/:type/:id',
+        builder: (_, state) => TransactionDocumentsScreen(
+          subjectType: state.pathParameters['type']!.toUpperCase(),
+          subjectId: state.pathParameters['id']!,
+          title: state.pathParameters['type']!.toUpperCase() == 'RIDE'
+              ? 'Ride documents'
+              : 'Order documents',
+        ),
+      ),
 
       // ── Help (signed-in users) ──
       GoRoute(path: '/help', builder: (_, __) => const HelpChatScreen()),

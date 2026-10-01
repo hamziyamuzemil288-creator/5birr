@@ -162,12 +162,27 @@ class _CategoryFeeSettingsScreenState extends State<CategoryFeeSettingsScreen> {
     try {
       final rows = await Supabase.instance.client
           .rpc('admin_category_fee_catalogue');
+      // Read the editor flag BEFORE the setState, not after it.
+      //
+      // This was:
+      //
+      //   setState(() { _rows = ...; _loading = false; });
+      //   _canEdit = await _readEditorFlag();
+      //
+      // A field assigned after the last setState does not rebuild anything, so
+      // `_canEdit` stayed false forever. Every control gated on it was dead:
+      // the category dropdown's `onChanged` was null, so no category could
+      // ever be selected, no fee section ever rendered, and the screen showed
+      // "Only the account owner can change what the platform charges" -- to
+      // the account owner. The whole editor was unusable and looked like a
+      // dead card in the sidebar.
+      final canEdit = await _readEditorFlag();
       if (!mounted) return;
       setState(() {
         _rows = List<Map<String, dynamic>>.from(rows as List);
+        _canEdit = canEdit;
         _loading = false;
       });
-      _canEdit = await _readEditorFlag();
     } catch (e) {
       if (!mounted) return;
       setState(() {

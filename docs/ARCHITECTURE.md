@@ -1786,6 +1786,95 @@ describes the post-0118 behaviour, so **0118 has to be applied before the page
 is submitted to Play Console** — otherwise the page promises an automated
 business closure that the live schema still cannot perform.
 
+### 7.1.5 Every transaction leaves a document, and content can be taken down
+
+Two migrations, both written after a defect was found by running the code
+rather than reading it.
+
+**0121 — `transaction_documents`.** The reported state was "full document
+prepared and stored end to end for every transaction, every scenario, with the
+necessary slips and both parties' information". What existed was
+`order_status_history` and `ride_status_history`: who moved the row, when, from
+which status. No amounts, no counterparty, nothing a person could hold, and no
+receipts table anywhere in the schema.
+
+The seam is **AFTER INSERT on the two history tables**, not a restatement of
+`transition_order_status` / `transition_ride_status`. 0088 already records what
+a missing branch in that transition costs: a ride frozen in a state nobody can
+move out of, with no fee ever charged. One trigger per history table covers
+every scenario that exists today and any a later migration adds. AFTER, not
+BEFORE, so a transaction that rolls back takes its document with it — a slip for
+an order that never existed is worse than no slip.
+
+Both parties are **snapshotted**, not joined: a slip that reads its parties
+through a join changes when the parties change, which defeats the purpose. The
+fee is read from `wallet_transactions`, not recomputed from the resolver —
+the resolver is what *would* be charged, the ledger is what *was* taken. The
+`transaction-slips` bucket is **private**, unlike every image bucket in the
+project, because a slip carries a delivery address and two phone numbers.
+
+**The assertion had to be rewritten once.** Its first form asked "does this
+subject have any document?" — a question about the *subject*, not the event.
+Three status changes produce three history rows and three documents, and
+deleting any one of them still leaves two, so every history row still found a
+document and the check reported `ok`. It was proved wrong by deleting a document
+and watching it stay green. It now compares **counts per subject**, which
+catches a trigger that did not fire and a document that went missing.
+
+**0122 — content control.** `suspend_provider()` existed; nothing could remove
+a single uploaded image and nothing recorded what was done. An administrator
+looking at a photograph that breaks the terms had two options — leave it up, or
+delete the provider — and the second is far too destructive to reach for over a
+picture. `admin_moderate_image` deletes the **referencing row and the storage
+object in one call**, because every image in this project is referenced by a row
+and removing only the object leaves a row pointing at nothing that renders as a
+broken image forever. `admin_suspend_account` writes `profiles` AND
+`provider_profiles`: the router gates on `profiles.status`, the admin panel
+reads `provider_profiles.status`, and the half-written state is exactly what
+`assert_profile_status_synced` exists to catch.
+
+Three bugs in 0122 were found only by executing it against the local
+PostgreSQL, and every one of them made the feature dead on arrival:
+
+- the bucket membership test was `p_bucket <> ANY (ARRAY[...])`. `<> ANY` is
+  **AND**-semantics, so a bucket that *is* on the list read as not moderable
+  and every takedown raised `THAT_BUCKET_IS_NOT_MODERABLE`. It must be
+  `<> ALL`. This is the single most-missed operator in SQL, and it reads as
+  correct;
+- the `ADD CONSTRAINT` calls were unguarded, so a re-run died with
+  `constraint ... already exists` — which is how a broken first attempt would
+  have been unable to be fixed. Both 0121 and 0122 now add constraints only
+  when absent, and use `%s` (not `%I`) for an already-quoted relation name,
+  because `%I` on `"public"."users"` reproduces the 42P01 that killed two
+  deploys;
+- `actioned_by_name` is NOT NULL, and `SELECT ... INTO` a name matching no row
+  writes NULL over the `''` default — so an administrator without a `profiles`
+  row yet could not remove an image at all.
+
+**The reported "icon does not open".** `category_fee_settings_screen.dart`
+wrote its permission flag *after* the final `setState`:
+
+```dart
+setState(() { _rows = ...; _loading = false; });
+_canEdit = await _readEditorFlag();
+```
+
+A field assigned after the last rebuild never reaches the widget tree.
+`_canEdit` stayed `false` for the life of the screen, every control gated on it
+was dead — the category dropdown's `onChanged` was `null`, so no category could
+be selected and no fee section ever rendered — and the screen told the **account
+owner** that only the account owner could change what the platform charges.
+Every route, card and GRANT was correct. From outside, that is indistinguishable
+from a card that does not open.
+
+`flutter analyze` cannot see it: the field is read, so it is not "unused", and
+the assignment type-checks. Only the **order** of the two statements reveals it.
+`check_permission_flags_reach_the_widget` now looks for that shape anywhere in
+`lib/`, and `falsify_permission_flag.py` puts the defect back into a copy of the
+tree and requires the check to go red — nine cases, including this one. The
+first run of that falsifier found a `NameError` in the check itself, which is
+the argument for having written it.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.

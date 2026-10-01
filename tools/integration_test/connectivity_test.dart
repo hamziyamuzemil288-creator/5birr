@@ -1406,6 +1406,51 @@ void main() {
       print('    account deletion blockers -> $detail');
     });
 
+    test('every order and ride leaves a document both parties can read',
+        () async {
+      // 0121. `order_status_history` and `ride_status_history` are an audit
+      // trail: who moved the row, when, from which status. They carry no
+      // amount, no counterparty and nothing a person could hold, and there was
+      // no receipts table at all — so a customer who paid and a provider who
+      // shipped had a notification and nothing else.
+      //
+      // This asks the LIVE triggers, not the migration history: a trigger that
+      // exists but is not attached produces documents for nothing and passes
+      // every static check.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_transaction_documents_are_wired');
+      expect(detail, isNotNull,
+          reason: 'The check could not be run at all. If this is null WITH '
+              '0121 deployed, the function is missing or PostgREST has not '
+              'reloaded — read the error before changing anything, those are '
+              'different faults. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'At least one order or ride status change left no slip, so '
+              'the transaction is not documented end to end: $detail');
+      // ignore: avoid_print
+      print('    transaction documents -> $detail');
+    });
+
+    test('content control can take an image down and record why', () async {
+      // 0122. Before this there was `suspend_provider()` and nothing else: an
+      // administrator looking at a gallery photograph that breaks the terms
+      // could leave it up or delete the provider, and the second is far too
+      // destructive to reach for over a picture.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_content_control_is_wired');
+      expect(detail, isNotNull,
+          reason: 'The check could not be run at all. If this is null WITH '
+              '0122 deployed, the function is missing or PostgREST has not '
+              'reloaded — read the error before changing anything. '
+              'Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'The moderation surface is incomplete, or an action was '
+              'recorded with no reason — so there is no audit trail for what '
+              'was taken down and why: $detail');
+      // ignore: avoid_print
+      print('    content control -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole

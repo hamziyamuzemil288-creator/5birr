@@ -3551,6 +3551,245 @@ def check_category_fees_are_wired() -> list[str]:
     return problems
 
 
+def check_permission_flags_reach_the_widget() -> list[str]:
+    """A flag read after the last setState never reaches the widget tree.
+
+    The reported bug: "city/category management in admin side bar is not
+    opening -- the icon is there but no opening". The route was right, the card
+    was right, the RPCs were all granted and deployed. The screen was:
+
+        setState(() { _rows = ...; _loading = false; });
+        _canEdit = await _readEditorFlag();
+
+    `_canEdit` is assigned AFTER the final rebuild, so nothing ever rebuilds
+    with it. It stays false for the life of the screen, and every control
+    gated on it is dead: the category dropdown's `onChanged` is null, no
+    category can be selected, no fee section renders, and the screen tells the
+    ACCOUNT OWNER that only the account owner can change what the platform
+    charges. From outside that is indistinguishable from a card that does not
+    open -- which is exactly how it was reported.
+
+    `flutter analyze` cannot see this: the field is read, so it is not
+    "unused", and the assignment type-checks. Only the ORDER of the two
+    statements reveals it.
+    """
+    problems: list[str] = []
+
+    for path in sorted(LIB.rglob("*.dart")):
+        src = _read(path)
+        # `});\n  _flag = await ...` -- a field written immediately after a
+        # closed setState block, with no setState between the two.
+        for m in re.finditer(
+                r"\}\);\s*\n(\s*)(_[A-Za-z0-9]+)\s*=\s*await\b", src):
+            line = src[:m.start()].count("\n") + 1
+            flag = m.group(2)
+            problems.append(
+                "%s:%d assigns %s straight after a setState with no rebuild "
+                "after it. The widget never sees the new value, so every "
+                "control gated on %s stays at its initial state -- a screen "
+                "that looks broken and is not. Read the flag before the "
+                "setState, or set it inside one."
+                % (str(path.relative_to(ROOT)).replace("\\", "/"),
+                   line, flag, flag))
+
+    # Note what this deliberately does NOT do: it does not report a problem
+    # when it matches nothing. Matching nothing is what a FIXED codebase looks
+    # like, and an "I found no instances of the bug" branch would turn the one
+    # clean result into a red. The proof that this anchor still matches the
+    # shape it was written for lives in falsify_permission_flag.py, which puts
+    # the defect back into a copy of the tree and requires this check to go
+    # red — a check that has never been seen red is not yet a check.
+    return problems
+
+
+def check_content_control_is_wired() -> list[str]:
+    """The authority surface must exist on the database AND in the app.
+
+    "Full authority to delete uploaded provider images if they violate the
+    terms, and to suspend any violent person or activities" is one screen. It
+    is absent, and three separate things have to hold for it to be more than a
+    button:
+
+      1. the database has somewhere to RECORD what was done — without an
+         append-only log, a takedown is indistinguishable from a bug;
+      2. the functions exist with the exact signatures the client calls, and
+         are admin-gated. A function that exists but is callable by `anon` is
+         worse than no function;
+      3. the screen, the route and the sidebar card exist, so it can be
+         reached.
+    """
+    problems: list[str] = []
+
+    path = ROOT / "supabase" / "migrations" / (
+        "20260927000122_the_admin_can_actually_take_something_down.sql")
+    if not path.is_file():
+        return ["%s is missing -- an administrator cannot remove an image or "
+                "record why they did" % path.name]
+
+    sql = _read(path)
+    body = _strip_comments(sql)
+
+    for table in ("moderation_actions", "content_reports"):
+        if not re.search(r"CREATE TABLE IF NOT EXISTS public\.%s\b" % table, body):
+            problems.append(
+                "0122 does not create public.%s, so a takedown or a suspension "
+                "leaves no record" % table)
+
+    for fn, args in (("admin_moderate_image", "text, text, text, text"),
+                     ("admin_suspend_account", "uuid, text, text"),
+                     ("admin_reinstate_account", "uuid, text"),
+                     ("admin_resolve_content_report", "uuid, text, text"),
+                     ("file_content_report",
+                      "uuid, uuid, text, text, text, text")):
+        if ("FUNCTION public.%s(%s)" % (fn, args)) not in body:
+            problems.append(
+                "0122 does not define public.%s(%s) -- the client calls exactly "
+                "that signature" % (fn, args))
+
+    # Admin-gating, asserted per function rather than by counting GRANTs: a
+    # REVOKE that names one function and not another leaves that one callable
+    # by anybody who guessed its name.
+    for fn in ("admin_moderate_image", "admin_suspend_account",
+               "admin_reinstate_account", "admin_resolve_content_report"):
+        m = re.search(r"FUNCTION public\.%s\([^)]*\)(.*?)\$\$;" % fn, body,
+                      re.DOTALL)
+        if not m:
+            continue
+        if "IF NOT public.is_admin()" not in m.group(1):
+            problems.append(
+                "0122's %s() has no is_admin() guard. A content takedown or an "
+                "account suspension callable by a signed-in customer is not a "
+                "moderation tool, it is a vulnerability." % fn)
+        if "GRANT EXECUTE ON FUNCTION public.%s" % fn not in body:
+            continue
+        # And it must be revoked from anon.
+        if not re.search(r"REVOKE ALL ON FUNCTION public\.%s\([^)]*\)\s*\n?\s*"
+                         r"FROM PUBLIC, anon" % fn, body):
+            problems.append(
+                "0122's %s() is not revoked from anon" % fn)
+
+    # `<> ANY` is the membership test everybody writes and nobody means.
+    if re.search(r"p_bucket\s*<>\s*ANY", body):
+        problems.append(
+            "0122 tests the bucket with `<> ANY (ARRAY[...])`. `<> ANY` is "
+            "AND-semantics, so a bucket that IS on the list reads as not "
+            "moderable and every takedown fails with "
+            "THAT_BUCKET_IS_NOT_MODERABLE. Use `<> ALL`.")
+
+    screen = LIB / "features" / "admin" / "admin_content_control_screen.dart"
+    if not screen.is_file():
+        problems.append("lib/features/admin/admin_content_control_screen.dart "
+                        "is missing -- the moderation functions have no door")
+    else:
+        s = _strip_comments(_read(screen))
+        for rpc in ("admin_content_reports", "admin_moderation_actions",
+                    "admin_moderate_image", "admin_suspend_account",
+                    "admin_resolve_content_report"):
+            if "'%s'" % rpc not in s:
+                problems.append(
+                    "admin_content_control_screen.dart never calls %s()" % rpc)
+
+    router = _read(LIB / "routing" / "app_router.dart")
+    if "'/admin/content'" not in router:
+        problems.append("app_router.dart has no /admin/content route")
+
+    dash = _strip_comments(_read(LIB / "features" / "admin"
+                                 / "admin_dashboard.dart"))
+    if "'/admin/content'" not in dash:
+        problems.append("admin_dashboard.dart has no sidebar card for "
+                        "/admin/content -- the screen exists with no way in")
+
+    return problems
+
+
+def check_transaction_documents_are_wired() -> list[str]:
+    """Every transaction must leave a document, on every path, for both parties.
+
+    Three things, and the first is the one that is easy to believe is enough:
+
+      1. the documents are written by a TRIGGER on the status-history tables.
+         Restating `transition_order_status` / `transition_ride_status` to
+         write them would mean reproducing every branch of both, and 0088
+         records what a missing branch costs — a ride frozen in a state nobody
+         can move out of, with no fee ever charged;
+      2. the trigger is AFTER INSERT, so a transaction that rolls back takes
+         its document with it. A slip for an order that never existed is worse
+         than no slip;
+      3. the parties are snapshotted and readable by exactly the customer, the
+         provider and an admin.
+    """
+    problems: list[str] = []
+
+    path = ROOT / "supabase" / "migrations" / (
+        "20260927000121_every_transaction_leaves_a_document.sql")
+    if not path.is_file():
+        return ["%s is missing -- no transaction leaves a document" % path.name]
+
+    sql = _read(path)
+    body = _strip_comments(sql)
+
+    if "CREATE TABLE IF NOT EXISTS public.transaction_documents" not in body:
+        problems.append("0121 does not create public.transaction_documents")
+
+    for tbl, trg in (("order_status_history", "trg_write_order_transaction_document"),
+                     ("ride_status_history", "trg_write_ride_transaction_document")):
+        m = re.search(r"CREATE TRIGGER %s\s+AFTER INSERT ON public\.%s"
+                      % (re.escape(trg), re.escape(tbl)), body)
+        if not m:
+            problems.append(
+                "0121 has no `AFTER INSERT` trigger %s on public.%s -- a "
+                "BEFORE trigger would record the status the subject has not "
+                "reached yet, and a trigger on the subject table instead of "
+                "the history table would miss every path that writes history "
+                "without touching status." % (trg, tbl))
+
+    # Both parties, snapshot. Reading them through a join at display time means
+    # the document changes when the parties change, which defeats the purpose.
+    for col in ("customer_name", "customer_phone", "provider_name",
+                "provider_phone", "platform_fee", "subject_snapshot"):
+        if col not in body:
+            problems.append(
+                "0121's transaction_documents has no %s column, so the slip "
+                "cannot carry both parties' information" % col)
+
+    # The reader must not be a bare OR-chain the filters hang off.
+    m = re.search(r"FUNCTION public\.my_transaction_documents\(.*?\$\$;", body,
+                  re.DOTALL)
+    if m:
+        fn = m.group(0)
+        if "customer_user_id = (SELECT auth.uid())" in fn and \
+                "OR d.provider_user_id = (SELECT auth.uid())\n" in fn and \
+                "AND (p_subject_type IS NULL" in fn:
+            problems.append(
+                "0121's my_transaction_documents filters the OR-chain without "
+                "parentheses: `AND` binds tighter than `OR`, so a CUSTOMER's "
+                "documents ignore p_subject_type/p_subject_id and asking for "
+                "one order returns every order they have placed.")
+
+    for bucket in ("transaction-slips",):
+        if bucket not in body:
+            problems.append(
+                "0121 never creates the %s bucket, so a slip has nowhere to be "
+                "attached" % bucket)
+        elif re.search(r"VALUES\s*\(\s*'%s',\s*'%s',\s*true" % (bucket, bucket),
+                       body):
+            problems.append(
+                "0121 creates %s as a PUBLIC bucket. A slip carries a delivery "
+                "address and two phone numbers." % bucket)
+
+    screen = LIB / "features" / "shared" / "transaction_documents_screen.dart"
+    if not screen.is_file():
+        problems.append(
+            "lib/features/shared/transaction_documents_screen.dart is missing "
+            "-- documents are written and nobody can read one")
+    elif "'my_transaction_documents'" not in _read(screen):
+        problems.append(
+            "transaction_documents_screen.dart never calls "
+            "my_transaction_documents")
+
+    return problems
+
+
 PROVIDER_ACTIONS = (
     "approve_provider",
     "reject_provider",
@@ -5872,6 +6111,12 @@ CHECKS = [
      check_nearest_area_is_wired),
     ("per-category and per-city fees are reachable from the admin sidebar",
      check_category_fees_are_wired),
+    ("a permission flag read after the last setState reaches the widget",
+     check_permission_flags_reach_the_widget),
+    ("content control can take an image down and record why",
+     check_content_control_is_wired),
+    ("every order and every ride leaves a document both parties can read",
+     check_transaction_documents_are_wired),
     ("staff creation stays in the sidebar, and a staff city stops something",
      check_staff_management_is_reachable),
     ("a staff member's rank, city and obligations are readable, not just stored",
