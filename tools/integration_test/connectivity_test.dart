@@ -1376,6 +1376,36 @@ void main() {
           reason: 'The deletion machinery changed shape: $detail');
     });
 
+    test('nothing in the live schema blocks deleting an account', () async {
+      // The assertion 0054 should have shipped and did not. A nullable column
+      // with no ON DELETE action blocks the delete just as hard as a NOT NULL
+      // one, so `delete_user_account` raised 23503 on `audit_logs` for every
+      // account that had ever done anything — after the request had already
+      // been marked APPROVED. No test noticed, because the flow had never been
+      // run end to end against a real account.
+      //
+      // This asks the LIVE catalog rather than the migration history, so a
+      // constraint added by hand in the dashboard (which no file records) also
+      // shows up. Migration 0118 ships `account_deletion_blockers()` for
+      // exactly this: it walks the cascade closure and reports every key that
+      // would still refuse the delete.
+      final (detail, error) = await rpcTextDiagnosed('account_deletion_blockers');
+      expect(detail, isNotNull,
+          reason: 'The blocker check could not be run at all. If this is null '
+              'WITH 0118 deployed, the function is missing or PostgREST has not '
+              'reloaded — read the error before changing anything, those are '
+              'different faults. Diagnostic: $error');
+      expect(detail, isNot(startsWith('BLOCKED')),
+          reason: 'An account cannot actually be closed while these columns '
+              'still hold a NO ACTION or RESTRICT key onto something that dies '
+              'with it: $detail');
+      expect(detail, startsWith('ok'),
+          reason: 'The blocker check answered something unexpected, so it is '
+              'not measuring what it claims to: $detail');
+      // ignore: avoid_print
+      print('    account deletion blockers -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole

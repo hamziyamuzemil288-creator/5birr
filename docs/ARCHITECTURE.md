@@ -1085,6 +1085,8 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | A bucket the client writes to is created by a migration the deploy workflow actually *executes* | `check_client_buckets_are_created()` |
 | Every income figure counts every fee type, the activation fee included | `check_income_readers_count_every_fee_type()` |
 | The activation fee is written where an income reader can see it | `check_activation_fee_is_recorded_as_income()` |
+| The account-deletion page Google Play loads is public, reachable, and says what the foreign keys actually do | `check_account_deletion_page_is_public_and_true()` |
+| No foreign key refuses `DELETE FROM auth.users`, on the account side or the business side | `check_account_deletion_is_unblocked()` |
 
 Two lessons worth keeping, both paid for:
 
@@ -1537,6 +1539,171 @@ migration, which is backwards: the marker is supposed to be behind the working
 tree while a migration waits to deploy, so writing 0117 made it go red on
 correct behaviour, and the tempting fix would have been to move the marker and
 lie about what the live database has.
+
+**A policy page has to be a page, and it has to be true.** Google Play rejected
+the listing with *"account deletion page is down, or includes geographical
+restrictions, or the URL is incorrect"*, and all three were true of
+`delete-account.md`: a markdown file in a private repository is not a page, and
+it described an email address and a seven-day promise instead of the flow the
+app actually ships (`request_account_deletion`, migration 20260927000054, and
+`AccountDeletionScreen` behind Profile → Delete Account). Nothing in the
+repository could tell the difference between a truthful page and a plausible one,
+so there was nothing to fail.
+
+`docs/delete-account.html` is the page: one self-contained file, no form, no
+script, no remote asset, no country check, and a link to it from
+`docs/index.html` so the published root is not a dead end.
+`check_account_deletion_page_is_public_and_true()` holds three things at once,
+and each has been false on its own:
+
+1. **Public in the mechanical sense Play tests for** — one file, no form, no
+   `input`, no `<script>`, no `http-equiv`, no `src`/`href` to another host. A
+   login wall is the same defect as a geo wall: both mean a reviewer without an
+   account sees nothing.
+2. **The instructions match the app** — every label the page tells a user to tap
+   or type is matched against the screen that calls
+   `rpc('request_account_deletion')`, found by search rather than named here, so
+   the page cannot describe a control that does not exist. The menu step is
+   additionally required to exist as a real `context.push('/account/deletion')`.
+3. **The deleted/kept split is the schema's split** — `_foreign_key_actions()`
+   walks every migration and returns each table's ON DELETE action, and
+   `_deletion_cascade()` closes over CASCADE from `auth.users`. A table the page
+   claims is deleted and the database does not delete is a **hard failure**:
+   over-claiming erasure is a lie to a policy reviewer. Under-claiming is not,
+   which is why the completeness rule runs the other way — every table the app
+   reads must be listed as deleted, retained, or **conditional**, and the
+   conditional bucket is only legal for tables the schema genuinely splits.
+
+That third bucket is not a convenience. `wallet_recharge_requests` cascades with
+the provider wallet *and* is nulled out of `approved_by`: a business account
+loses the row, a customer account keeps it. `staff_activity_log`,
+`staff_job_assignments`, `staff_warnings` and `staff_task_completions` have the
+same shape, and `referral_codes` a fifth. Filing any of them under a single
+bucket states something false about half the accounts, which is why the check
+derives the split set and requires the page to match it exactly.
+
+**Three things were wrong before the check was right**, and all three were
+found by the falsifier rather than by reading:
+
+- The first derivation merged foreign keys by taking the **strongest action ever
+  seen in the history**. `user_documents` was therefore pinned to the CASCADE in
+  0022a forever, and case J — which changes a migration instead of the page —
+  stayed green. The state is now tracked per `(table, parent, column)` with the
+  last statement winning, and the per-parent answer is the strongest of its
+  columns, which is what `appeal_cases` needs (`user_id` CASCADE *and*
+  `resolved_by` nullable: the row goes, the nullable column is never consulted).
+- The merge also compared ranks *before* storing, so every plain `NO ACTION`
+  edge was discarded — and a NO ACTION key on a nullable column is the entire
+  "kept, link nulled" case. `wallet_recharge_requests.approved_by` was invisible,
+  which is how a table that survives deletion nearly got filed under "deleted".
+- `ADD COLUMN … REFERENCES auth.users(id)` is a foreign key, and reading only
+  the `ADD CONSTRAINT` form hid every one of them.
+
+The page also had to be corrected for something no check was looking at: the
+audit tables null the *link* but keep a denormalised **name** on the row
+(`staff_activity_log.actor_name`, `staff_warnings.warned_by_name`,
+`staff_job_assignments.assigned_by_name`), and `support_tickets` keeps
+`reporter_phone` while `orders` keeps `delivery_address` and `ride_requests`
+keeps the pickup and destination the user typed. The page says so plainly
+instead of claiming no name is retained — the honest version of the claim is
+worth more to a reviewer than the flattering one, and the flattering one is
+false.
+
+`falsify_account_deletion_page.py` is 16 cases. Case J is the one that matters:
+it edits a **migration**, so a green run cannot be explained by the check having
+memorised today's answer.
+
+### 7.1.4 Nothing may block the account deletion
+
+**0054 detached the eight columns that were loud and left the ones that were
+quiet, and the quiet ones block just as hard.** Its header says the eight it
+converted were "`NOT NULL` with no action", and then reasons that a NULLABLE
+column "simply stops matching", as though nullability were the thing that
+mattered. PostgreSQL 18, §5.5.5:
+
+> The default ON DELETE action is ON DELETE NO ACTION […] the foreign-key
+> constraint is still required to be satisfied, so this operation will usually
+> result in an error.
+
+and, in the next paragraph, the exemption that is easy to misread as permission:
+
+> Normally, a referencing row need not satisfy the foreign key constraint if any
+> of its referencing columns are null.
+
+That is about **writing** a referencing row whose column is already null. It is
+not a licence to delete the parent while a row still points at it. A nullable
+`audit_logs.actor_id` is exactly as blocking as a NOT NULL one.
+
+So `delete_user_account` ends in `DELETE FROM auth.users` and dies with
+
+```
+ERROR: update or delete on table "audit_logs" violates foreign key
+       constraint "audit_logs_actor_id_fkey" on table "audit_logs"
+```
+
+for any account holding an audit row — and 0035 put a trigger on the mutation
+paths, so that is **every account that has ever done anything**. The order of
+operations makes it worse than a failure: the RPC has already written APPROVED
+and the notification before the gateway calls the cascade, so the request ends
+up APPROVED for an account that still exists. That is the one state the design
+said it was avoiding.
+
+The business side was never touched at all. `provider_profiles` is CASCADE from
+`auth.users`, and seven keys point into that subtree with no action — including
+`orders.provider_id`, which is NOT NULL, so a shop with one order could never be
+closed and the error names `orders` rather than the person asking to leave.
+
+**0118** (`20260927000118_nothing_blocks_the_account_deletion.sql`) detaches
+nineteen columns — seven business-side, twelve account-side — in one DO block
+driven by a `('table', 'column', 'parent')` VALUES list. It matches on
+(child relation, child column, **parent relation**) rather than the column alone,
+because `admin_notification_broadcasts` has two keys to `auth.users` and a
+column-only match takes whichever the catalog returns first. It skips keys that
+are already CASCADE or SET NULL, so re-running it is a no-op rather than a
+re-drop of a correct constraint. And it ends with a verification block that
+raises `ACCOUNT_DELETION_STILL_BLOCKED` if any of the nineteen is not now a
+SET NULL key — **a migration that silently skips is worse than one that fails**,
+and this one would otherwise have deployed cleanly having fixed nothing, exactly
+as 0054 did.
+
+`provider_profiles.user_id` is deliberately **not** in the list. It is a NO
+ACTION key onto `profiles` and looks like a blocker, but `provider_profiles` is
+reached only through `auth.users.user_id ON DELETE CASCADE`, so the only rows
+that can reference the dying profile row are the rows being deleted in the same
+statement. Relaxing it would drop NOT NULL on the column the entire app finds a
+provider by, to fix a problem that cannot occur.
+
+The migration also adds `account_deletion_blockers()`, which asks the **live**
+catalog rather than the migration history — a constraint added by hand in the
+Supabase dashboard never appears in a file. The connectivity suite asserts it
+returns `ok`, and it is granted to `anon` for the same reason
+`assert_ceo_delete_is_wired` is: the suite runs as anon, and a diagnostic the
+reading role cannot call answers PGRST202, which is indistinguishable from a
+migration that was never applied.
+
+**`check_account_deletion_is_unblocked()`** is the static half, and
+`falsify_account_deletion_page.py` cases M–P cover it. Two things it had to get
+right first, both of them the shape of a false green:
+
+- The first attempt to read 0118's detach list searched for
+  `FROM (VALUES …) AS v(a, b, c)` anywhere in the history. It matched **285
+  tuples** — status transitions, fee settings, connectivity-test expectations —
+  and reported "nothing blocks the deletion" on a schema where `orders.provider_id`
+  was still a NOT NULL NO ACTION key. It is now scoped to a `DO $$ … $$` block
+  that drops and re-adds a foreign key, which reads **19**.
+- A curated copy of a list the file already states is a second thing to forget:
+  0118 shipped nineteen columns while the harness still believed 0054's eight,
+  which is how `orders.provider_id` came back out of the derivation as a
+  published blocker. The reader now takes the migration's own tuples, and
+  `_unreadable_detach_blocks()` reports a block it can see but cannot read a
+  single name from, because silence from a broken pattern looks exactly like a
+  clean schema.
+
+**Ordering.** `supabase/DEPLOYED_HEAD` stays at `…0117` until a deploy log
+actually says `Applying migration 20260927000118…`. The public deletion page
+describes the post-0118 behaviour, so **0118 has to be applied before the page
+is submitted to Play Console** — otherwise the page promises an automated
+business closure that the live schema still cannot perform.
 
 ### 7.2 Edge Functions
 

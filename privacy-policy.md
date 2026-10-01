@@ -43,13 +43,15 @@ We do not sell your personal information. We may share data with:
 
 ## Data Retention
 
-We retain your information for as long as your account is active, or as needed to provide services, comply with legal obligations, resolve disputes, and enforce our agreements.
+We retain your information for as long as your account is active, or as needed to provide services, comply with legal obligations, resolve disputes, and enforce our agreements. Transaction, accounting and audit records are kept in a form that is no longer linked to your account; `delete-account.md` lists exactly what is deleted and what is kept.
 
 ## Your Rights
 
 You may:
 - Access, update, or correct your account information within the app
-- Request deletion of your account and associated data by contacting us
+- Request deletion of your account and associated data, from within the app
+  (Profile > Delete Account) or by email. See [delete-account.md](delete-account.md)
+  for the full flow and for exactly what is deleted and what is kept.
 - Disable location permissions at any time via device settings
 - Opt out of non-essential push notifications in app settings
 

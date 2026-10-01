@@ -5174,7 +5174,609 @@ def check_dynamic_privileges_name_real_signatures() -> list[str]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# N. the public account-deletion page says what the database actually does
+# ---------------------------------------------------------------------------
+
+# The eight columns 20260927000054 detaches with a DYNAMIC DO block. It cannot
+# be read with a regex over the file (the table and column names are format()
+# arguments, and the ALTER is built at run time), so the one place a static
+# reader can see them is the migration's own FOREACH array. They are named
+# here because pretending the whole history is greppable is how an earlier
+# version of this check concluded that `orders` still blocked deletion.
+_DETACHED_BY_DO_BLOCK = {
+    "orders": "user_id",
+    "reviews": "user_id",
+    "ride_requests": "user_id",
+    "support_tickets": "user_id",
+    "payment_agreements": "user_id",
+    "ride_ratings": "rater_id",
+    "admin_actions": "admin_id",
+    "admin_wallet_actions": "admin_id",
+}
+
+_FK_ACTION_RANK = {"NO ACTION": 0, "SET NULL": 1, "CASCADE": 2}
+
+#: (table, parent) -> the column the last-written foreign key uses, so a finding
+#: can name `orders.provider_id` rather than just `orders`. Replaced wholesale
+#: on every call, never mutated in place, so a falsifier that repoints MIGRATIONS
+#: at a mutated copy cannot read yesterday's answer out of it.
+_FK_COLUMNS: dict[tuple[str, str], str] = {}
+
+# Two shapes of dynamic detach block exist in the migration history, and both
+# are invisible to a grep for REFERENCES: the table and column names are
+# format() arguments or array literals, so the ALTER is assembled at run time.
+#
+# 0054 uses `FOREACH t IN ARRAY ARRAY['orders', ...]` with a `CASE t` picking
+# the column, so its list is a hand-transcribed copy of a DO block.
+_DETACHED_BY_CASE_BLOCK = {
+    "orders": "user_id",
+    "reviews": "user_id",
+    "ride_requests": "user_id",
+    "support_tickets": "user_id",
+    "payment_agreements": "user_id",
+    "ride_ratings": "rater_id",
+    "admin_actions": "admin_id",
+    "admin_wallet_actions": "admin_id",
+}
+
+# 0118 uses a VALUES list, so the names are in the file and can be READ rather
+# than transcribed. A curated copy of a list the file already states is a
+# second thing to forget to update: 0118 shipped 19 columns and the harness
+# still believed 8, which is how `orders.provider_id` came back out of the
+# deleted/kept derivation as a blocker the page had already published.
+_DETACH_VALUES = re.compile(
+    r"FROM\s*\(VALUES(.*?)\)\s*AS\s+v\(([^)]*)\)", re.IGNORECASE | re.DOTALL)
+_DETACH_TUPLE = re.compile(
+    r"'\s*([A-Za-z0-9_]+)\s*',\s*'\s*([A-Za-z0-9_]+)\s*',\s*'\s*([A-Za-z0-9_.]+)\s*'")
+_DO_BLOCK = re.compile(r"DO\s+\$\$(.*?)\$\$\s*;", re.IGNORECASE | re.DOTALL)
+
+
+def _detach_block_bodies(sql: str):
+    """The `DO` blocks in a migration that detach a foreign key."""
+    for do in _DO_BLOCK.finditer(sql):
+        body = do.group(1)
+        if all(marker in body for marker in
+               ("DROP CONSTRAINT", "ON DELETE SET NULL", "FOREIGN KEY")):
+            yield body
+
+
+def _detached_by_values_block(sql: str):
+    """(child table, column, parent) named by a VALUES-shaped detach block.
+
+    Scoped to a `DO $$ ... $$` block that actually re-adds a foreign key as
+    `ON DELETE SET NULL` after dropping it. Scoping matters: this repository is
+    full of three-column `VALUES` lists -- status transitions, fee settings,
+    connectivity-test expectations -- and a bare `FROM (VALUES ...) AS v(a,b,c)`
+    search matched 285 tuples across the history and reported "nothing blocks
+    account deletion" for a schema where `orders.provider_id` was still a NOT
+    NULL NO ACTION key. A green answer from an unanchored pattern is worse than
+    no answer.
+    """
+    out = []
+    for body in _detach_block_bodies(sql):
+        for m in _DETACH_VALUES.finditer(body):
+            aliases = [a.strip().lower() for a in m.group(2).split(",")]
+            if len(aliases) != 3:
+                # 0118 also has a two-column `AS v(tbl, col)` list in its
+                # verification block. Reading that as a detach would null out
+                # keys the block never touches.
+                continue
+            for t in _DETACH_TUPLE.finditer(m.group(1)):
+                out.append((t.group(1).lower(), t.group(2).lower(),
+                            t.group(3).lower()))
+    return out
+
+
+def _unreadable_detach_blocks(sql: str) -> list[str]:
+    """Detach blocks this harness can see but cannot read a single name from.
+
+    The failure this exists for: a detach list is present, the reader's anchor
+    no longer matches its shape, zero tuples come back, and the derived schema
+    quietly reverts to "every key is NO ACTION" -- or, worse, to a set that
+    happens to look clean. Reporting "I found a detach block and understood
+    none of it" is the only honest answer, and it turns a silent blind spot
+    into a red the next person has to look at.
+    """
+    unreadable = []
+    for body in _detach_block_bodies(sql):
+        candidates = [m for m in _DETACH_VALUES.finditer(body)
+                      if len([a for a in m.group(2).split(",")]) == 3]
+        if not candidates:
+            continue
+        if not any(_DETACH_TUPLE.search(m.group(1)) for m in candidates):
+            unreadable.append(body.strip().splitlines()[0][:80])
+    return unreadable
+
+_PAGE = "delete-account.html"
+_INDEX = "index.html"
+# The privacy policy is submitted to Play Console next to the deletion URL; if
+# it stops existing the account-deletion page that links to it stops being
+# self-contained, so its absence is this check's problem too.
+_PRIVACY_PAGE = "privacy-policy.html"
+
+
+def _foreign_key_actions() -> dict[str, dict[str, str]]:
+    """child table -> parent table -> strongest ON DELETE action.
+
+    Tracked per COLUMN, because a table can hold two foreign keys to the same
+    parent and the two answers are not interchangeable:
+
+      * `appeal_cases.user_id` is CASCADE and `appeal_cases.resolved_by` has no
+        action. DELETE fires both, the row goes, and the nullable column is
+        simply never consulted -- so the table is deleted. Taking the LAST
+        statement instead of the strongest would call it kept.
+      * `wallet_recharge_requests.approved_by` is the only key it has to
+        auth.users; it reaches the closure through `wallets`. Last-statement and
+        strongest agree here, and the table is genuinely split.
+
+    So the state is (table, parent, column) with the LAST write winning -- which
+    is what a `DROP CONSTRAINT` followed by an `ADD CONSTRAINT` means -- and the
+    per-parent answer is the strongest of the columns. Merging on the strongest
+    action seen ANYWHERE in the history instead would pin the schema to the
+    first thing it ever did: changing a CASCADE to a SET NULL in a later
+    migration would leave the old answer in place forever, and a check that
+    cannot see a change is not a check.
+    """
+    columns: dict[tuple[str, str, str], str] = {}
+    dropped: set[str] = set()
+
+    def norm(parent: str) -> str:
+        return "auth.users" if parent in ("auth", "auth.users", "users") else parent
+
+    def put(table: str, parent: str, column: str, action: str) -> None:
+        columns[(table, norm(parent), column.lower())] = action
+        _FK_COLUMNS[(table, norm(parent))] = column.lower()
+
+    def forget(table: str, parent: str) -> None:
+        for key in [k for k in columns if k[0] == table and k[1] == norm(parent)]:
+            del columns[key]
+
+    ref = re.compile(
+        r"REFERENCES\s+(?:public\.)?\"?([A-Za-z0-9_.]+)\"?\s*"
+        r"\(\s*\"?[A-Za-z0-9_]+\"?\s*\)\s*"
+        r"(ON\s+DELETE\s+(?:CASCADE|SET\s+NULL))?", re.IGNORECASE)
+
+    def action_of(group: str | None) -> str:
+        if not group:
+            return "NO ACTION"
+        upper = group.upper()
+        return "CASCADE" if "CASCADE" in upper else "SET NULL"
+
+    for path in migration_files():
+        sql = _read(path)
+        for m in re.finditer(
+                r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:public\.)?\"?([A-Za-z0-9_]+)\"?",
+                sql, re.IGNORECASE):
+            dropped.add(m.group(1).lower())
+            for key in [k for k in columns if k[0] == m.group(1).lower()]:
+                del columns[key]
+        for m in re.finditer(
+                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?"
+                r"\"?([A-Za-z0-9_]+)\"?\s*\(", sql, re.IGNORECASE):
+            table = m.group(1).lower()
+            end = sql.find(";", m.end())
+            body = sql[m.end():end if end > 0 else len(sql)]
+            depth, current, parts = 0, "", []
+            for ch in body:                      # split on top-level commas only
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(current)
+                    current = ""
+                else:
+                    current += ch
+            parts.append(current)
+            for part in parts:
+                part = " ".join(part.split())
+                cm = re.match(r"^\"?([A-Za-z0-9_]+)\"?\s+(.*)$", part, re.DOTALL)
+                if not cm:
+                    continue
+                rm = ref.search(cm.group(2))
+                if rm:
+                    put(table, rm.group(1).lower(), cm.group(1),
+                        action_of(rm.group(2)))
+        for am in re.finditer(
+                r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?"
+                r"\"?([A-Za-z0-9_]+)\"?\s+(.*?);", sql, re.IGNORECASE | re.DOTALL):
+            table, clause = am.group(1).lower(), " ".join(am.group(2).split())
+            if (re.search(r"ADD\s+CONSTRAINT", clause, re.IGNORECASE)
+                    and re.search(r"FOREIGN\s+KEY", clause, re.IGNORECASE)):
+                fm = re.search(
+                    r"FOREIGN\s+KEY\s*\(\s*\"?([A-Za-z0-9_]+)\"?\s*\)\s*"
+                    r"REFERENCES\s+(?:public\.)?\"?([A-Za-z0-9_.]+)\"?\s*\([^)]*\)\s*"
+                    r"(ON\s+DELETE\s+(?:CASCADE|SET\s+NULL))?", clause, re.IGNORECASE)
+                if fm:
+                    put(table, fm.group(2).lower(), fm.group(1),
+                        action_of(fm.group(3)))
+                    continue
+            # `ADD COLUMN ... REFERENCES auth.users(id)` is a foreign key too,
+            # and several of them are the ONLY link a table has to the account
+            # (`wallet_recharge_requests.approved_by`). Reading only the
+            # ADD CONSTRAINT form makes those tables look unreachable from the
+            # account, which is how a table that survives deletion gets filed
+            # under "deleted".
+            cm = re.search(r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+                           r"\"?([A-Za-z0-9_]+)\"?\s+[A-Za-z]+"
+                           r"(?:\([^)]*\))?\s*(?:,|\s)*.*?REFERENCES\s+"
+                           r"(?:public\.)?\"?([A-Za-z0-9_.]+)\"?\s*\([^)]*\)\s*"
+                           r"(ON\s+DELETE\s+(?:CASCADE|SET\s+NULL))?",
+                           clause, re.IGNORECASE)
+            if cm:
+                put(table, cm.group(2).lower(), cm.group(1),
+                    action_of(cm.group(3)))
+                continue
+            # A dropped constraint is the schema walking a key back; the
+            # following ADD is the new truth.
+            dm = re.search(r"DROP\s+CONSTRAINT\b.*?FOREIGN\s+KEY.*?REFERENCES\s+"
+                           r"(?:public\.)?\"?([A-Za-z0-9_.]+)\"?",
+                           clause, re.IGNORECASE | re.DOTALL)
+            if dm:
+                forget(table, dm.group(1).lower())
+
+    for table, column in _DETACHED_BY_CASE_BLOCK.items():
+        put(table, "auth.users", column, "SET NULL")
+    for table, column, parent in _detached_by_values_block(
+            "\n".join(_read(p) for p in migration_files())):
+        put(table, parent, column, "SET NULL")
+
+    edges: dict[str, dict[str, str]] = {}
+    _FK_COLUMNS.clear()
+    for (table, parent, _column), action in columns.items():
+        if table in dropped:
+            continue
+        cur = edges.setdefault(table, {})
+        if parent not in cur or _FK_ACTION_RANK[action] > _FK_ACTION_RANK[cur[parent]]:
+            cur[parent] = action
+    return edges
+
+
+def _deletion_cascade() -> tuple[set[str], set[str], set[str]]:
+    """(deleted with the account, kept but detached, and the two's overlap).
+
+    Deleted is the CLOSURE, not the direct children: `provider_profiles` is a
+    direct child, but `products`, `vehicles`, `wallets` and their dependants go
+    with it, and those are exactly the rows a person asks to have removed. Kept
+    is every table with a foreign key to auth.users that the closure does not
+    reach -- those rows survive and only the link is nulled.
+
+    The overlap is the honest part and is not an edge case. A table can hang off
+    a deleted parent while referencing the account only through a NULLABLE
+    column: `wallet_recharge_requests` cascades with the provider wallet and is
+    nulled out of `approved_by`, so a business account loses the row and a
+    customer account keeps it. Filing it under either single bucket states
+    something false about one of the two, so it is reported separately.
+    """
+    edges = _foreign_key_actions()
+    deleted: set[str] = set()
+    frontier = {"auth.users"}
+    while frontier:
+        nxt = set()
+        for table, parents in edges.items():
+            if table in deleted:
+                continue
+            if any(p in frontier and a == "CASCADE" for p, a in parents.items()):
+                deleted.add(table)
+                nxt.add(table)
+        frontier = nxt
+    direct = {t for t, ps in edges.items() if "auth.users" in ps}
+    # A second, NULLABLE auth.users column on a table that already cascades
+    # changes nothing -- the CASCADE still takes the row (notifications has
+    # `user_id` CASCADE and appeal_cases has `resolved_by`). The genuine split
+    # is a table with NO cascading link to the account at all, which the closure
+    # only reaches through somebody else's wallet.
+    split = {t for t in deleted
+             if "auth.users" in edges[t] and edges[t]["auth.users"] != "CASCADE"}
+    return deleted, direct - deleted, split
+
+
+def _deletion_blockers() -> list[tuple[str, str, str]]:
+    """(table, column, parent) for every key that still refuses the delete.
+
+    A key blocks when the row it hangs off is deleted with the account, the row
+    that holds the key is NOT itself deleted with it, and the action is neither
+    CASCADE nor SET NULL. The middle clause is why a table like
+    `wallet_recharge_requests` is not simply excluded for being inside the
+    cascade: the rows in it belong to a provider, so they outlive a customer.
+
+    The last clause is the one that is easy to get wrong. PostgreSQL 18, 5.5.5:
+    the default ON DELETE action "will usually result in an error", and the
+    exemption for a null referencing column applies to inserting and updating a
+    row, not to deleting the parent. 0054 assumed otherwise and left nine
+    nullable columns still holding NO ACTION keys.
+    """
+    edges = _foreign_key_actions()
+    deleted, _kept, _split = _deletion_cascade()
+
+    business: set[str] = set()
+    frontier = {"provider_profiles"}
+    while frontier:
+        nxt = set()
+        for table, parents in edges.items():
+            if table in business or table in deleted:
+                continue
+            if any(p in frontier and a == "CASCADE" for p, a in parents.items()):
+                business.add(table)
+                nxt.add(table)
+        frontier = nxt
+
+    gone = deleted | business | {"auth.users"}
+    out = []
+    for table in sorted(edges):
+        if table in deleted or table in business:
+            continue
+        for parent, action in sorted(edges[table].items()):
+            if parent in gone and action == "NO ACTION":
+                out.append((table, _FK_COLUMNS.get((table, parent), "?"), parent))
+    return out
+
+
+def _declared_tables(html: str, block_id: str) -> list[str]:
+    m = re.search(r"<ul[^>]*id=\"%s\"[^>]*>(.*?)</ul>" % re.escape(block_id),
+                  html, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return []
+    return re.findall(r"data-table=\"([^\"]+)\"", m.group(1))
+
+
+def check_account_deletion_page_is_public_and_true() -> list[str]:
+    """Google Play rejected the listing: the account-deletion page was down.
+
+    Play requires a page that ANYONE can load -- no app install, no sign-in, no
+    country restriction -- saying how to ask for deletion. The repo already
+    carried a `delete-account.md` telling users to email an address, and it had
+    been overtaken by the app: `request_account_deletion` (migration
+    20260927000054) plus AccountDeletionScreen are the real flow. A file in a
+    private repository is not a page, which is the whole of the rejection.
+
+    Three things have to hold, and each has been false on its own:
+
+    1. the page is PUBLIC in the mechanical sense Google tests for -- one
+       self-contained file, no form, no script, no external request, so there is
+       nothing to sign in to, nothing to geolocate, and nothing that can fail to
+       load because a third party is down;
+    2. the instructions match the app -- every label the page tells a user to
+       tap or type is a string that really exists in the screen that submits the
+       request, so the page cannot drift into describing a flow nobody has; and
+    3. the deleted/kept split is the SCHEMA's split, derived from the foreign
+       keys, not a list somebody wrote. Claiming a table is deleted when the
+       database keeps it is the one error that makes the page a lie to a policy
+       reviewer, so over-claiming is a hard failure and under-claiming is not.
+    """
+    problems: list[str] = []
+
+    page = _read(ROOT / "docs" / _PAGE)
+    if not page:
+        return [
+            "docs/%s does not exist. Google Play requires a public web page "
+            "describing how to request account deletion; a file in a private "
+            "repository is not one." % _PAGE,
+        ]
+    index = _read(ROOT / "docs" / _INDEX)
+    if _PAGE not in index:
+        problems.append(
+            "docs/%s does not link to %s, so the published site root would not "
+            "lead a reviewer to the page Play is asking for" % (_INDEX, _PAGE))
+    if not _read(ROOT / "docs" / _PRIVACY_PAGE):
+        problems.append(
+            "docs/%s is missing; Play Console asks for a privacy policy URL "
+            "next to the deletion one" % _PRIVACY_PAGE)
+
+    # --- 1. public and self-contained ---------------------------------------
+    for pattern, why in (
+            (r"<form\b", "a sign-in form"),
+            (r"<input\b", "an input control"),
+            (r"type=\"password\"", "a password field"),
+            (r"<script\b", "a script that can fail to load"),
+            (r"\son[a-z]+\s*=", "an inline event handler"),
+            (r"http-equiv", "a client-side redirect"),
+            (r"<iframe\b", "an embedded frame"),
+            (r"navigator\.", "a client-side capability or geolocation check"),
+    ):
+        if re.search(pattern, page, re.IGNORECASE):
+            problems.append(
+                "docs/%s contains %s. The page Play loads has to be readable "
+                "by anyone, anywhere, with nothing to sign in to and nothing "
+                "that can be blocked." % (_PAGE, why))
+    for ref in re.findall(r"(?:src|href)\s*=\s*\"([^\"]+)\"", page):
+        low = ref.strip().lower()
+        if low.startswith(("http://", "https://", "//")):
+            problems.append(
+                "docs/%s loads %r from another host. A policy page must render "
+                "from its own URL alone." % (_PAGE, ref))
+    for needed, why in (
+            (r"<html[^>]+lang=\"en\"", "a declared language"),
+            (r"<title>[^<]+</title>", "a title"),
+            (r"name=\"viewport\"", "a viewport meta tag"),
+    ):
+        if not re.search(needed, page, re.IGNORECASE):
+            problems.append("docs/%s is missing %s" % (_PAGE, why))
+
+    # --- 2. the instructions match the app ----------------------------------
+    labels = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m)).strip()
+              for m in re.findall(r"<span class=\"ui\">(.*?)</span>", page,
+                                  re.DOTALL)]
+    labels = [lbl for lbl in labels if lbl]
+    if not labels:
+        problems.append(
+            "docs/%s quotes no interface labels, so nothing ties the "
+            "instructions to the app and they can drift silently" % _PAGE)
+
+    submitter = ""
+    for dart in dart_sources():
+        if "rpc('request_account_deletion'" in _read(dart):
+            submitter = dart
+            break
+    if not submitter:
+        problems.append(
+            "no Dart source calls request_account_deletion, so the flow the "
+            "page describes cannot be found and the page is unverifiable")
+    else:
+        screen = _read(submitter)
+        for label in labels:
+            if label not in screen:
+                problems.append(
+                    "docs/%s tells the user to use %r, but that string does not "
+                    "appear in %s -- the page describes a control that does not "
+                    "exist" % (_PAGE, label, submitter.name))
+
+    menu_labels = [lbl for lbl in labels if lbl == "Delete Account"]
+    if menu_labels and not any(
+            "Delete Account" in _read(d) and "/account/deletion" in _read(d)
+            for d in dart_sources()):
+        problems.append(
+            "docs/%s says the request starts from a 'Delete Account' menu item, "
+            "but no screen in lib/ has one that navigates to the deletion route"
+            % _PAGE)
+
+    # --- 3. the deleted/kept split is the schema's split --------------------
+    derived_deleted, derived_kept, derived_split = _deletion_cascade()
+    if not derived_deleted or not derived_kept:
+        problems.append(
+            "the foreign-key derivation found %d deleted and %d kept tables -- "
+            "it is inspecting nothing, so it cannot judge the page"
+            % (len(derived_deleted), len(derived_kept)))
+
+    declared_deleted = set(_declared_tables(page, "deleted-tables"))
+    declared_kept = set(_declared_tables(page, "retained-tables"))
+    declared_conditional = set(_declared_tables(page, "conditional-tables"))
+    if not declared_deleted:
+        problems.append(
+            "docs/%s declares no deleted tables, so the claim that anything is "
+            "removed is unfalsifiable" % _PAGE)
+    if not declared_kept:
+        problems.append(
+            "docs/%s declares no retained tables, so the page cannot be "
+            "distinguished from boilerplate" % _PAGE)
+
+    lying = sorted(declared_deleted - derived_deleted)
+    if lying:
+        problems.append(
+            "docs/%s tells users these tables are deleted with the account, and "
+            "the schema does not delete them: %s. Either the page is wrong or "
+            "the migration is; a policy page must not promise a deletion the "
+            "database does not perform."
+            % (_PAGE, ", ".join(lying)))
+    both = sorted(declared_deleted & declared_kept)
+    if both:
+        problems.append(
+            "docs/%s lists these tables as both deleted and retained: %s"
+            % (_PAGE, ", ".join(both)))
+
+    # A table can genuinely be BOTH -- `wallet_recharge_requests` cascades with
+    # the provider wallet and is also nulled out of the approver column, so a
+    # business account loses it and a customer account keeps it. Filing such a
+    # table under either single bucket is a false statement about one of those
+    # two cases, so it has to be declared as conditional, and only a table the
+    # schema really splits may be.
+    split = derived_split
+    if split != declared_conditional:
+        problems.append(
+            "docs/%s declares conditional tables %s, but the schema splits %s. "
+            "A table that is deleted for one kind of account and kept for "
+            "another has to be declared as conditional; everything else belongs "
+            "in exactly one bucket."
+            % (_PAGE, sorted(declared_conditional) or "none", sorted(split) or "none"))
+
+    visible = {name for name in literal_calls(r"(?<!storage)\.from\(\s*'([^']+)'")
+               if "-" not in name}
+    silent = sorted(visible - declared_deleted - declared_kept - declared_conditional)
+    if silent:
+        problems.append(
+            "docs/%s says nothing about tables the app reads, so a user cannot "
+            "tell whether they survive: %s. Every one must be listed as deleted "
+            "or as retained." % (_PAGE, ", ".join(silent)))
+
+    defined = {
+        m.group(1).lower()
+        for m in re.finditer(
+            r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW)\s+"
+            r"(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?\"?([A-Za-z0-9_]+)\"?",
+            "\n".join(_read(p) for p in migration_files()), re.IGNORECASE)
+    }
+    unknown = sorted((declared_deleted | declared_kept | declared_conditional) - defined)
+    if unknown:
+        problems.append(
+            "docs/%s names tables no migration creates, so the appendix cannot "
+            "be checked against the schema: %s" % (_PAGE, ", ".join(unknown)))
+
+    return problems
+
+
+def check_account_deletion_is_unblocked() -> list[str]:
+    """No foreign key may refuse `DELETE FROM auth.users`.
+
+    The page check above asks whether the POLICY PAGE is true. This asks
+    whether the DATABASE agrees, which is the half that was false for the whole
+    life of the feature.
+
+    `request_account_deletion` writes a PENDING row, the staff screen approves
+    it, the Edge Function calls `delete_user_account`, and that function ends
+    in `DELETE FROM auth.users WHERE id = p_target_user_id`. Every key still
+    pointing at that row with no ON DELETE action takes the whole statement
+    down with 23503 — after the request has been marked APPROVED, which is
+    precisely the state the design said it wanted to avoid: visible, retryable,
+    never silently lost. 0054 detached eight NOT NULL columns and left the
+    nullable ones, on the belief that a null column is exempt. It is not:
+    PostgreSQL 18, 5.5.5 says a NO ACTION delete "will usually result in an
+    error", and the null exemption in the next paragraph is about writing a
+    referencing row, not about deleting its parent.
+
+    So `audit_logs.actor_id` — written by a trigger on the mutation paths since
+    0035 — blocked the delete for every account that had ever done anything, and
+    `orders.provider_id` blocked it for every provider who had ever taken an
+    order. Nothing tested the path end to end, so both shipped.
+
+    0118 detaches nineteen columns and adds `account_deletion_blockers()` so the
+    live catalog can be asked the same question. This check is the static half.
+    """
+    problems: list[str] = []
+
+    deleted, kept, _split = _deletion_cascade()
+    if not deleted or not kept:
+        problems.append(
+            "the cascade derivation found %d deleted and %d kept tables -- it is "
+            "inspecting nothing, so it cannot judge whether the delete is "
+            "blocked" % (len(deleted), len(kept)))
+
+    blockers = _deletion_blockers()
+    for table, column, parent in blockers:
+        problems.append(
+            "%s.%s still holds a NO ACTION key onto %s, which is deleted with "
+            "the account, so closing the account fails with a foreign-key "
+            "violation after the request has already been approved. Add it to "
+            "the detach list in 20260927000118 (or a later migration) as "
+            "ON DELETE SET NULL."
+            % (table, column, parent))
+
+    # A blocker list that is empty because the derivation found no edges at all
+    # is the failure this check exists to prevent, so say so rather than pass.
+    if not blockers and not any("auth.users" in ps for ps in
+                                _foreign_key_actions().values()):
+        problems.append(
+            "no foreign key to auth.users was found at all, so 'nothing blocks "
+            "the deletion' means the derivation is broken, not that the schema "
+            "is clean")
+
+    for path in migration_files():
+        for head in _unreadable_detach_blocks(_read(path)):
+            problems.append(
+                "%s contains a foreign-key detach block this harness cannot "
+                "read any name from (%s). The account-deletion derivation is "
+                "blind to it, so 'nothing blocks the delete' above is not "
+                "evidence. Keep the list as `('table', 'column', 'parent')` "
+                "tuples under a three-column alias."
+                % (path.name, head))
+    return problems
+
+
 CHECKS = [
+    ("the public account-deletion page is reachable and matches the schema",
+     check_account_deletion_page_is_public_and_true),
+    ("no foreign key refuses the account deletion, on either side",
+     check_account_deletion_is_unblocked),
     ("a provider who cannot publish is told why, and where to fix it",
      check_publish_refusal_is_actionable),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",

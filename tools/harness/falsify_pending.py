@@ -209,9 +209,18 @@ expect("G: the marker is exactly one before the pending window",
        f"files={len(files)} pending={len(todo)} idx={files.index(head)}")
 # Either state is legitimate: something waiting to deploy, or fully deployed.
 # What is NOT legitimate is a marker that points nowhere real.
-expect("G: the marker is consistent with a real deploy (0117 applied, run 36824397792)",
-       head.name == "20260927000117_the_listing_refusal_says_why.sql"
-       and todo == [],
+#
+# This case asserted TODAY'S answer -- "the marker is 0117 and nothing is
+# pending" -- and went red the moment 0118 was authored, which is the exact
+# mistake its own comment above warns about: an expectation pinned to a value
+# goes stale on the next migration and trains people to "fix" it by moving the
+# marker, i.e. by lying about what the live database has. It is now stated as
+# the property that must hold whenever a deploy finishes: the window is
+# everything authored strictly after the marker, in order, and the marker
+# itself is never inside it.
+expect("G: the window is exactly what was authored after the marker's deploy",
+       [p.name for p in todo] == [f.name for f in files[files.index(head) + 1:]]
+       and head.name not in [p.name for p in todo],
        f"head={head.name} pending={[p.name for p in todo]}")
 
 if not ok:
