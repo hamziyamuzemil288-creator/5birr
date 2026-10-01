@@ -5,8 +5,13 @@ When a migration re-issues `CREATE OR REPLACE FUNCTION foo(...)`, the single
 most dangerous failure mode is a *silent* one: the restatement drops a line the
 original had, and nothing in SQL parsing notices.  This tool proves that a
 restated body is a pure superset of its predecessor -- every non-blank,
-non-comment line of the original still appears, in the same order, and the
-only lines the restatement adds are the ones we explicitly allow.
+non-comment line of the original still appears, in the same order, andthe only lines the restatement adds are the ones we explicitly allow.
+
+A restatement that REPAIRS a defect is the opposite situation -- its dropped
+lines are the point -- so those are judged by the mirror assertion instead
+(`FIXES`): the repair is present, the broken shape is gone, and the only lines
+that changed are the ones the broken statement was made of.
+
 
 Usage:
     python3 tools/harness/restated_body_diff.py            # run every case
@@ -299,11 +304,113 @@ def check_case(fn: str, src_glob: str, dst_glob: str, allowed: tuple[str, ...],
     return problems
 
 
+# --------------------------------------------------------------- fix cases ---
+# A restatement that REPAIRS a defect is the mirror image of the cases above,
+# and the mirror assertion is the right one: the dropped lines are the point.
+# The superset check would reject such a restatement for doing its job, and
+# "just skip it" would leave the repair unpinned -- the defect could be
+# reintroduced by a later restatement, or half the repair could be undone, and
+# nothing here would notice.
+#
+# So these cases assert the complementary property, which is just as tight:
+#   1. the repaired body CONTAINS the working statement,
+#   2. it does NOT contain the shape that was broken, and
+#   3. every single line that differs between the two bodies mentions one of the
+#      identifiers the broken statement is made of -- so a repair that quietly
+#      also reformats, reorders, or drops anything else is RED.
+#
+# (3) is a vocabulary rule, not a list of literal lines, so re-wrapping the fix
+# for readability does not require editing this table.
+#
+# (function, source-file glob, restating-file glob, changed-line vocabulary,
+#  must appear, must not appear)
+FIXES: list[tuple[str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = [
+    (
+        # 0115 wrapped `unnest` in a subquery that projected the constant 1 and
+        # then filtered on a column of the derived table, so the assertion this
+        # function exists to make raised 42703 twice instead of counting. 0116
+        # removes the wrapper -- the only two statements it touches.
+        "assert_staff_city_scope_covers_the_task_feed",
+        "20260927000115",
+        "20260927000116",
+        ("v_cat_guard", "v_city_guard", "unnest(", "part"),
+        (
+            "from unnest(string_to_array(v_feed, "
+            "'staff_scope_allows_category(')) as part where part <> '';",
+            "from unnest(string_to_array(v_feed, "
+            "'staff_scope_allows_city(')) as part where part <> '';",
+        ),
+        (
+            # the wrapper, in either casing, is the defect
+            "from ( select 1 from unnest",
+            # and the alias-list answer that did not work either
+            "as x(part)",
+        ),
+    ),
+]
+
+
+def _flat_body(body: str) -> str:
+    """The body's code lines, lowercased, with ALL whitespace removed.
+
+    Whitespace is dropped rather than collapsed because the repaired statement
+    is also allowed to be re-wrapped: `from unnest(\n  string_to_array(...))` and
+    `from unnest(string_to_array(...))` are the same statement, and a rule that
+    only survived one of them would force a pointless edit the day someone
+    reformatted it. Needs are compared the same way, so the entries below can be
+    written the way a human reads them.
+    """
+    return re.sub(r"\s+", "", " ".join(_code_lines(body)).lower())
+
+
+def check_fix(fn: str, src_glob: str, dst_glob: str, vocab: tuple[str, ...],
+              present: tuple[str, ...], absent: tuple[str, ...]) -> list[str]:
+    problems: list[str] = []
+    src = defining_in_file(fn, src_glob)
+    dst = defining_in_file(fn, dst_glob)
+    if src is None:
+        return [f"{fn}: source definition not found in {src_glob}*"]
+    if dst is None:
+        return [f"{fn}: restated definition not found in {dst_glob}*"]
+    if src[0] == dst[0]:
+        return [f"{fn}: source and restatement resolved to the same file ({src[0].name})"]
+
+    old = _code_lines(src[1])
+    new = _code_lines(dst[1])
+    if not old or not new:
+        return [f"{fn}: a body produced no code lines"]
+
+    old_set, new_set = set(old), set(new)
+    for line in sorted(old_set - new_set):
+        if not any(tok in line for tok in vocab):
+            problems.append(
+                f"{fn}: the fix also changed an unrelated line: {line!r}")
+    for line in sorted(new_set - old_set):
+        if not any(tok in line for tok in vocab):
+            problems.append(
+                f"{fn}: the fix also added an unrelated line: {line!r}")
+
+    flat = _flat_body(dst[1])
+    for needle in present:
+        if re.sub(r"\s+", "", needle.lower()) not in flat:
+            problems.append(f"{fn}: the repaired statement is absent: {needle!r}")
+    for needle in absent:
+        if re.sub(r"\s+", "", needle.lower()) in flat:
+            problems.append(f"{fn}: the broken shape is still in the body: {needle!r}")
+
+    if not (old_set - new_set) and not (new_set - old_set):
+        problems.append(f"{fn}: the restatement changes nothing (fix missing?)")
+
+    return problems
+
+
 def main() -> int:
     verbose = "--verbose" in sys.argv
     all_problems: list[str] = []
     for fn, src_glob, dst_glob, allowed in CASES:
         all_problems += check_case(fn, src_glob, dst_glob, allowed, verbose)
+    for fn, src_glob, dst_glob, vocab, present, absent in FIXES:
+        all_problems += check_fix(fn, src_glob, dst_glob, vocab, present, absent)
 
     if all_problems:
         print("RESTATED BODY DIFF: FAILED")
@@ -313,6 +420,8 @@ def main() -> int:
 
     print(f"ok: {len(CASES)} restated function bodies are pure supersets of their "
           f"predecessors, and every added line is an approved scope guard")
+    print(f"ok: {len(FIXES)} restatement(s) that fix a defect change ONLY the "
+          f"broken lines, and the fix is present with the defect gone")
     return 0
 
 

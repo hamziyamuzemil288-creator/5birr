@@ -780,8 +780,8 @@ RPC):
 
   `tools/harness/plpgsql_body_syntax.py` closes that gap: it splits each
   dollar-quoted body and parses every embedded statement as plain SQL, and
-  `sh build/run_all.sh` runs it on the newest migration. It is scoped that
-  way deliberately — the already-applied history trips its splitter on control
+  `sh build/run_all.sh` runs it over every migration a deploy would apply
+  (§7.1.1) — not the whole history, which trips its splitter on control
   flow sharing a `;` boundary, and failing the build on live, working SQL
   teaches everyone to ignore it. It took four attempts to get right, each
   caught by falsifying it against the real typo:
@@ -1056,6 +1056,8 @@ nothing and rewriting a 2000-line snapshot is its own risk.
 | A staff city stops something on the five provider lifecycle actions, not just the queue | `assert_admin_rpc_service_role_access()` (111) — it now pins `staff_scope_allows_city` and `my_staff_scope_summary()` |
 | The staff work queue carries as many city scopes as category scopes, and money verification is city-scoped too | `assert_staff_city_scope_covers_the_task_feed()` (112) — it counts both, and searches `verify_payment_proof`'s body for the guard |
 | Every provider lifecycle action that carries the category guard carries the city guard | `check_staff_management_is_reachable()` + `restated_body_diff.py` (suppresses a restatement from a stale copy) |
+| A restatement that REPAIRS a defect changes only the broken lines, and the repair is in the body | `restated_body_diff.py` `FIXES` (§7.1.2) — the mirror of the superset rule, which 0116 could not satisfy |
+| A column a query references exists in the scope that query actually has | `column_scope.py` over the pending window — the 42703 class that killed two deploys and that no parser can see |
 | A per-category / per-city fee inherits correctly, and a client cannot write the table | `assert_category_fees_are_wired()` (107), reported by `category_fee_surface_report()` |  | A staff member's rank, city, obligations and movement are on the screen, not only in the table | `check_staff_roster_is_wired()` — it fails if the roster is fetched and discarded, and passes on a rename |
 | A provider may only work once verified, paid and funded — on all four surfaces | `assert_provider_fulfilment_gate_is_wired()` (0113), plus `check_provider_fulfilment_gate_is_wired()`; blast radius from `provider_fulfilment_gate_report()` |
 | Every notification type written actually exists in the enum | `check_notification_types_exist()` — the bug that made every ride request fail, which no parser can see |
@@ -1405,6 +1407,67 @@ ride/order fee checks) are existential negatives that pass with zero rows, which
 is why `assert_income_covers_every_fee_type()` returns the live figures, fails on
 impossible arithmetic, and says so when the ledger is empty.
 
+#### 7.1.1 The gates check what a deploy would apply, not the newest file
+
+`sh build/run_all.sh` runs six gates. Two of them read SQL, and both were scoped
+to `--recent 1`: the newest migration, the one being authored. That is right for
+a single file and wrong as a statement of intent, because the question the gate
+answers is not *"is the file I am typing clean?"* but *"is everything I am about
+to push to the live database clean?"*. The two diverge as soon as more than one
+migration is waiting — a batch of three, each checked the day it was written,
+goes out in one `db push`, and none of them was ever checked in the shape it is
+deployed in.
+
+`tools/harness/pending.py` fixes it. The boundary is `supabase/DEPLOYED_HEAD`,
+a committed file holding the filename of the newest migration a deploy actually
+**applied** — not merely ran, since a no-op deploy logs `Remote database is up
+to date` and applies nothing. It is updated as step 1 of §7.5, by the same deploy
+it describes.
+
+Two rules keep the fix from being its own quiet failure:
+
+- **A missing, empty, or unknown boundary is fatal**, not "check nothing". A
+  window that silently collapses to empty reports success without having looked at
+  anything, which is worse than no gate — `--recent 1` was wrong in exactly that
+  direction and the fix must not reintroduce it through a missing file.
+- **An empty window falls back to the newest migration and says so.** When
+  everything is deployed (the state right now) the gate still checks one file and
+  prints `note: nothing is pending … re-checking the newest 1 so the gate is never
+  vacuous`. A gate whose scope is empty has proved nothing.
+
+`falsify_pending.py` has 20 cases covering exactly those: the fallback, a pending
+migration being in the window, each of the three unusable-boundary states
+failing both gates, and — the case that matters — a real defect planted in the
+**second** of two pending migrations turning the gate red end to end, while the
+same migration placed *behind* the head is correctly not judged. That pair is the
+difference between a real gate and a re-labelled `--recent 1`.
+
+#### 7.1.2 A repair restatement is judged by the mirror assertion
+
+`restated_body_diff.py` proves a restatement is a pure **superset** of the body
+it replaces, with every added line an approved scope guard. 0116 is the case that
+rule cannot express: it *fixes* a defect, so its dropped lines are the point, and
+the superset check would (correctly) reject it for doing its job. Leaving it
+unpinned was the real gap — the defect could be reintroduced by a later
+restatement, or half the repair undone, and nothing would notice.
+
+So `FIXES` asserts the complement, just as tightly:
+
+1. the repaired body **contains** the working statement,
+2. it does **not** contain the shape that was broken (`from ( select 1 from
+   unnest`, and `as x(part)` — the alias-list answer that did not work either), and
+3. **every line that differs** between the two bodies mentions an identifier the
+   broken statement is made of (`v_cat_guard`, `v_city_guard`, `unnest(`, `part`),
+   so a repair that quietly reformats, reorders, or drops anything else is RED.
+
+Rule 3 is a vocabulary, not a list of literal lines, so re-wrapping the fix for
+readability needs no edit; the presence/absence needles drop all whitespace for
+the same reason. `falsify_restated_body_diff.py` cases H–L prove the rule bites:
+the revert to `AS x`, the subtler revert to `AS x(part)` (`part` is a real name —
+the defect is that the derived table has no such column), a **half** repair that
+looks fine on a read-through, a repair that also drops the missing-function check,
+and a legitimate re-wrap that stays green. 12/12.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.
@@ -1503,6 +1566,18 @@ the dashboard survives a deploy.
    beginning `ok:` that prints every fee figure — a `FAIL:` prefix means the
    ledger's arithmetic is impossible or a recharge withheld money without
    recording it as a fee.
+12. **Update `supabase/DEPLOYED_HEAD`** to the last migration the log reported as
+    `Applying migration <name>`, and commit it. This file is the only thing in the
+    repository that knows which migrations the live database has, and it is what
+    makes `sh build/run_all.sh` check the right window (§7.1.1). Skipping it does
+    not fail the build — the gates stay green over a window that has quietly
+    stopped covering the pending migrations — which is exactly why it is the last
+    step of a checklist rather than a step in a script.
+
+    A deploy that logs `Staged N migration files` and then `Remote database is up
+    to date` applied **nothing**: leave the marker where it is. "The workflow went
+    green" and "the migrations were applied" are different facts, and only the
+    second one moves this file.
 
 **Migrations must be applied before Connectivity CI can pass.** It runs against
 the live database, and it runs as the **`anon`** role: the suite builds

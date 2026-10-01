@@ -26,7 +26,8 @@ SQL after stripping plpgsql's `INTO` clause.
 
 Usage:
     python3 tools/harness/plpgsql_body_syntax.py <migration> [<migration>...]
-    python3 tools/harness/plpgsql_body_syntax.py --recent [N]   # default gate
+    python3 tools/harness/plpgsql_body_syntax.py --pending       # default gate
+    python3 tools/harness/plpgsql_body_syntax.py --recent [N]   # the newest N
     python3 tools/harness/plpgsql_body_syntax.py --all           # audit
 """
 
@@ -35,6 +36,9 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import pending  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "supabase" / "migrations"
@@ -332,11 +336,21 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 0
 
+    note = ""
     if argv[0] == "--all":
         targets = sorted(MIGRATIONS.glob("*.sql"))
+    elif argv[0] == "--pending":
+        # Everything a deploy would apply: see tools/harness/pending.py. Falls
+        # back to the newest migration when nothing is pending, so the gate is
+        # never vacuous.
+        try:
+            targets, note = pending.gate_targets()
+        except pending.PendingError as exc:
+            print(f"[FAIL] {exc}")
+            return 1
     elif argv[0] == "--recent":
-        # The default scope for a pre-deploy gate: the newest migration, the
-        # one being authored.
+        # The newest N migrations. Kept as an explicit option: useful when
+        # bisecting, and the fallback the --pending window uses.
         #
         # --all is an audit, not a gate. The already-applied history contains
         # plpgsql bodies whose statements this splitter cannot separate
@@ -362,6 +376,8 @@ def main(argv: list[str]) -> int:
 
     for p in problems:
         print(f"[FAIL] {p}")
+    if note:
+        print(f"note: {note}")
     if problems:
         print(f"\n{len(problems)} problem(s) in SQL inside plpgsql bodies.")
         return 1

@@ -12,11 +12,11 @@ rc1=$?
 # 2. SQL inside plpgsql bodies, which static_checks (and pglast on a whole
 #    file) cannot see: a migration can parse clean and still be rejected by
 #    `supabase db push` the moment the function is created. Scoped to the
-#    newest migration -- the one being authored -- because the already-applied
-#    history trips the splitter on control flow that shares a `;` boundary,
-#    and failing the build on live, working SQL is how a real signal gets
-#    ignored. `--all` is available for a deliberate audit.
-python3 "$here/plpgsql_body_syntax.py" --recent 1
+#    migrations a deploy would actually apply (see pending.py) -- NOT the whole
+#    history, because the already-applied files trip the splitter on control
+#    flow that shares a `;` boundary, and failing the build on live, working SQL
+#    is how a real signal gets ignored. `--all` is available for an audit.
+python3 "$here/plpgsql_body_syntax.py" --pending
 rc2=$?
 
 # 3. Column references a query's own scope cannot provide.
@@ -30,8 +30,10 @@ rc2=$?
 #    Judged only when EVERY relation in scope is a derived table or CTE with a
 #    fully-known output, so an unknown relation can only suppress a finding,
 #    never invent one. `--all` over the history reports exactly those four
-#    statements and nothing else.
-python3 "$here/column_scope.py" --recent 1
+#    statements and nothing else. Same window as gate 2: everything not yet on
+#    the live database, so one run answers "is what I am about to push clean?"
+#    rather than "is the file I am typing clean?".
+python3 "$here/column_scope.py" --pending
 rc3=$?
 
 # 4. The router's redirect rules, searched for cycles by simulation.

@@ -42,7 +42,8 @@ relations, so `public.some_table.col` and a row variable stay silent.
 
 Usage:
     python3 tools/harness/column_scope.py <migration> [<migration>...]
-    python3 tools/harness/column_scope.py --recent [N]   # default gate
+    python3 tools/harness/column_scope.py --pending       # default gate
+    python3 tools/harness/column_scope.py --recent [N]   # the newest N
     python3 tools/harness/column_scope.py --all           # audit
 """
 
@@ -57,6 +58,7 @@ ROOT = HERE.parents[1]
 MIGRATIONS = ROOT / "supabase" / "migrations"
 
 sys.path.insert(0, str(HERE))
+import pending  # noqa: E402
 
 try:
     import pglast  # type: ignore
@@ -345,8 +347,15 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
+    note = ""
     if argv[0] == "--all":
         targets = sorted(MIGRATIONS.glob("*.sql"))
+    elif argv[0] == "--pending":
+        try:
+            targets, note = pending.gate_targets()
+        except pending.PendingError as exc:
+            print(f"[FAIL] {exc}")
+            return 1
     elif argv[0] == "--recent":
         n = int(argv[1]) if len(argv) > 1 else 1
         targets = sorted(MIGRATIONS.glob("*.sql"))[-n:]
@@ -366,6 +375,8 @@ def main(argv: list[str]) -> int:
 
     for p in problems:
         print(f"[FAIL] {p}")
+    if note:
+        print(f"note: {note}")
     if problems:
         print(f"\n{len(problems)} column reference(s) a query's scope cannot provide.")
         return 1
