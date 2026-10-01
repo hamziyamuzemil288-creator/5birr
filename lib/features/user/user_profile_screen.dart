@@ -1,13 +1,180 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/points_service.dart';
 import '../../core/services/rank_service.dart';
+import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/verification_status_tile.dart';
+
+/// The user's own profile picture, and the only control in the app that sets
+/// it.
+///
+/// Separate from the provider's BUSINESS photo on purpose. That one lives on
+/// `provider_profiles.photo_storage_path` in the `provider-photos` bucket
+/// (20260927000106) and is edited from the provider dashboard. This is
+/// `profiles.avatar_storage_path` in `profile-avatars` (20260927000119), it is
+/// on every signed-in person's profile rather than only providers', and until
+/// 0119 the column and the bucket did not exist at all -- so "change my
+/// profile picture" was not broken, it was absent.
+///
+/// The write policies scope on the first path segment being the caller's uid,
+/// which is why the path below is built client-side and MUST start with the
+/// caller's own id. The server has never seen the row.
+class ProfileAvatar extends ConsumerStatefulWidget {
+  const ProfileAvatar({super.key, this.size = 76});
+
+  final double size;
+
+  @override
+  ConsumerState<ProfileAvatar> createState() => _ProfileAvatarState();
+}
+
+class _ProfileAvatarState extends ConsumerState<ProfileAvatar> {
+  static const _bucket = 'profile-avatars';
+
+  final _picker = ImagePicker();
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = ref.watch(authProvider).profile?.avatarStoragePath;
+    final ring = widget.size + 6;
+
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: _busy ? null : _pick,
+          child: Container(
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: AppTheme.primaryGreen.withOpacity(0.3),
+                width: 2,
+              ),
+            ),
+            child: Container(
+              width: widget.size,
+              height: widget.size,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: AppTheme.primaryGreen.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: _busy
+                  ? const Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppTheme.primaryGreen,
+                        ),
+                      ),
+                    )
+                  : (path == null
+                      ? const Icon(Icons.person,
+                          color: AppTheme.primaryGreen, size: 38)
+                      : Image.network(
+                          Supabase.instance.client.storage
+                              .from(_bucket)
+                              .getPublicUrl(path),
+                          fit: BoxFit.cover,
+                          // A broken image is worse than no image: this is the
+                          // one place a person expects to see their own face,
+                          // and a silent grey box reads as "the app lost it".
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.person,
+                            color: AppTheme.primaryGreen,
+                            size: 38,
+                          ),
+                        )),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        // A camera badge is the only honest affordance here. Without it the
+        // avatar reads as decoration and nobody discovers it is editable.
+        SizedBox(
+          width: ring,
+          child: Text(
+            _busy ? 'Uploading…' : 'Change photo',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.primaryGreenDark,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _pick() async {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) {
+      _toast('Please sign in again.');
+      return;
+    }
+
+    // Downscaled, not forwarded. The bucket is 5MB and accepts only
+    // jpeg/png/webp, and a HEIC from an iPhone is refused inside storage where
+    // it surfaces as a generic failure. Same convention as every other picker
+    // in this app.
+    final picked = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1024,
+      maxHeight: 1024,
+      imageQuality: 85,
+    );
+    if (picked == null || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final client = Supabase.instance.client;
+      final file = File(picked.path);
+      final name = Uri.encodeComponent(file.uri.pathSegments.last);
+      final path =
+          '$uid/avatar/${DateTime.now().microsecondsSinceEpoch}/$name';
+
+      await client.storage
+          .from(_bucket)
+          .upload(path, file, fileOptions: const FileOptions(upsert: true));
+      await client
+          .from('profiles')
+          .update({'avatar_storage_path': path})
+          .eq('id', uid);
+
+      // The write is saved on its own rather than waiting for a form submit:
+      // a person who picks a photo and navigates away should not lose it. The
+      // auth provider holds the cached profile row, so it has to be told or the
+      // avatar keeps showing the old (or no) picture until the next launch.
+      ref.invalidate(authProvider);
+      if (!mounted) return;
+      _toast('Photo updated');
+    } catch (e) {
+      if (mounted) {
+        _toast(friendlyError(e, context: 'Could not upload your photo'));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _toast(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+}
 
 class UserProfileScreen extends ConsumerWidget {
   const UserProfileScreen({super.key});
@@ -53,26 +220,10 @@ class UserProfileScreen extends ConsumerWidget {
               ),
               child: Column(
                 children: [
-                  // Avatar with ring
-                  Container(
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                          color: AppTheme.primaryGreen.withOpacity(0.3),
-                          width: 2),
-                    ),
-                    child: Container(
-                      width: 76,
-                      height: 76,
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryGreen.withOpacity(0.1),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.person,
-                          color: AppTheme.primaryGreen, size: 38),
-                    ),
-                  ),
+                  // Avatar with ring. It was a hard-coded Icons.person with no
+                  // tap target, which is the whole of Bug 1: there was no way
+                  // to set your own picture because there was nothing to press.
+                  const ProfileAvatar(),
                   const SizedBox(height: 14),
                   Text(profile?.fullName ?? 'User',
                       style: const TextStyle(

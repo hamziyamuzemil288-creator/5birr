@@ -767,11 +767,16 @@ class _ProofTile extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Other — the catch-all, and the one act nobody else may perform
 // ─────────────────────────────────────────────────────────────────────────────
-class _OtherSection extends StatelessWidget {
+/// ConsumerWidget rather than StatelessWidget because the account block added
+/// below signs out through authProvider, which is what the rest of the app
+/// does -- calling Supabase.instance.client.auth.signOut() here instead would
+/// skip whatever cleanup the provider performs and leave a second, divergent
+/// sign-out path in the product.
+class _OtherSection extends ConsumerWidget {
   const _OtherSection();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -801,6 +806,38 @@ class _OtherSection extends StatelessWidget {
                 onTap: () => context.push(e.$1),
               ),
             )),
+        const SizedBox(height: 24),
+        const _SectionTitle('Your account'),
+        // The CEO dashboard is a SEPARATE surface from the admin one, and it
+        // had neither of these. The admin app bar carries a "Change password"
+        // item in its avatar popup, but nothing on THIS screen reached it, so
+        // the most privileged account in the product had the least obvious way
+        // to change its own password -- and no way to sign out of the surface
+        // at all. Both link out rather than reimplementing: the screen and the
+        // Edge Function already exist and already work.
+        Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: ListTile(
+            leading: const Icon(Icons.lock_outline,
+                color: AppTheme.primaryGreenDark),
+            title: const Text('Change password'),
+            subtitle: const Text(
+                'Your current password, then a new one. Every other device is '
+                'signed out afterwards.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/account/password'),
+          ),
+        ),
+        Card(
+          margin: EdgeInsets.zero,
+          child: ListTile(
+            leading: const Icon(Icons.logout, color: AppTheme.error),
+            title: const Text('Sign out'),
+            subtitle: const Text('End this session on this device.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => ref.read(authProvider.notifier).signOut(),
+          ),
+        ),
         const SizedBox(height: 24),
         const _SectionTitle('Danger zone'),
         Card(

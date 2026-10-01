@@ -10,6 +10,7 @@ import '../../core/widgets/primary_button.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/services/login_identity.dart';
+import 'password_reset_request_sheet.dart';
 import '../../core/services/staff_admin_service.dart';
 import '../../core/services/staff_gateway_service.dart';
 import '../auth/admin_gate.dart';
@@ -550,6 +551,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           child: TextButton(
                             onPressed: _showForgotPasswordSheet,
                             child: const Text('Forgot Password?'),
+                          ),
+                        ),
+                        // The case the emailed link cannot fix. A person who
+                        // lost the inbox, or whose address on the account is
+                        // wrong, or who signed up with Google and never had a
+                        // password, has exactly one option today and it is
+                        // giving up. This files a PASSWORD_RESET appeal, which
+                        // lands in the SAME admin appeals queue as every other
+                        // case -- not a parallel inbox somebody has to remember
+                        // to check.
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: () => showPasswordResetRequestSheet(
+                              context,
+                              initialEmail: _emailController.text.trim(),
+                            ),
+                            child: const Text(
+                              "Can't get the email? Ask us",
+                            ),
                           ),
                         ),
                         // Task 13 item 2: same tick+math CAPTCHA as signup,

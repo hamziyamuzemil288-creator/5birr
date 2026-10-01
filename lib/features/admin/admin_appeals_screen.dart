@@ -20,7 +20,18 @@ class AdminAppealsScreen extends StatefulWidget {
 class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
   static const _statuses = ['OPEN', 'RESOLVED', 'CLOSED', 'ALL'];
 
+  /// Case-type filter, on top of the status one.
+  ///
+  /// A password-reset request is filed by somebody who CANNOT sign in, so it
+  /// arrives here with no evidence photo and possibly no phone. It is the one
+  /// case type where the queue is a work list rather than a list of disputes:
+  /// it goes stale in a way an appeal does not, because the person is still
+  /// locked out while it sits. So it gets its own filter rather than being
+  /// mixed into ALL and forgotten.
+  static const _types = ['ALL TYPES', 'GENERAL', 'PASSWORD_RESET'];
+
   String _filter = 'OPEN';
+  String _typeFilter = 'ALL TYPES';
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _cases = [];
@@ -42,6 +53,9 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
       // so reporter names are joined in Dart (same pattern as tickets).
       var query = client.from('appeal_cases').select('*');
       if (_filter != 'ALL') query = query.eq('status', _filter);
+      if (_typeFilter != 'ALL TYPES') {
+        query = query.eq('case_type', _typeFilter);
+      }
       final rows = await query.order('created_at', ascending: false).limit(200);
       final cases = (rows as List)
           .map((r) => Map<String, dynamic>.from(r as Map))
@@ -124,6 +138,151 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
     }
   }
 
+  /// Set a locked-out person's password, on a staff member's authority.
+  ///
+  /// The target account is NOT chosen here. The client sends the CASE id and
+  /// `approve_password_reset_appeal` derives the user from the case row, so a
+  /// modified client cannot point this at an arbitrary account. The gateway
+  /// then does the part no SQL function can: write to auth.users with the
+  /// service role, and revoke the sessions the old password was protecting.
+  Future<void> _setPasswordForCase(Map<String, dynamic> c) async {
+    final passwordCtrl = TextEditingController();
+    final confirmCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+    var submitting = false;
+    String? error;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialog) => AlertDialog(
+          title: const Text('Set a new password'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'The account holder has asked for this. Confirm you have '
+                  'checked the contact details on the case, then set a '
+                  'temporary password and pass it to them directly.',
+                  style: const TextStyle(
+                      fontSize: 13, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: passwordCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'New password',
+                    helperText: 'At least 10 characters',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confirmCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Confirm new password'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: noteCtrl,
+                  decoration: const InputDecoration(
+                      labelText: 'Note for the case (optional)'),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(error!,
+                      style: const TextStyle(
+                          fontSize: 12, color: AppTheme.error)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: submitting
+                  ? null
+                  : () => Navigator.pop(dialogCtx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: AppTheme.primaryGreenDark),
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      final p = passwordCtrl.text;
+                      if (p.length < 10) {
+                        setDialog(() =>
+                            error = 'Use at least 10 characters.');
+                        return;
+                      }
+                      if (p != confirmCtrl.text) {
+                        setDialog(() => error = 'The two passwords do not match.');
+                        return;
+                      }
+                      setDialog(() {
+                        submitting = true;
+                        error = null;
+                      });
+                      try {
+                        final res = await Supabase.instance.client.functions
+                            .invoke('password-reset-gateway', body: {
+                          'case_id': c['id'],
+                          'new_password': p,
+                          'note': noteCtrl.text.trim(),
+                        });
+                        if (res.status != 200) {
+                          final data =
+                              res.data is Map ? res.data as Map : const {};
+                          setDialog(() => submitting = false);
+                          setDialog(() {
+                            error = data['error'] == 'password_not_set'
+                                ? 'The case was recorded but the password was '
+                                    'NOT changed. Set it by hand and close the case.'
+                                : 'Could not set the password. Try again.';
+                          });
+                          return;
+                        }
+                        if (dialogCtx.mounted) {
+                          Navigator.pop(dialogCtx, true);
+                        }
+                      } catch (_) {
+                        setDialog(() {
+                          submitting = false;
+                          error = 'Could not reach the server. Try again.';
+                        });
+                      }
+                    },
+              child: submitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Set password'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    passwordCtrl.dispose();
+    confirmCtrl.dispose();
+    noteCtrl.dispose();
+
+    if (confirmed == true && mounted) {
+      _load();
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Password set. Every other device has been signed out. Tell the '
+            'person to change it again once they are in.'),
+      ));
+    }
+  }
+
   Future<void> _resolveWithNote(Map<String, dynamic> appealCase, String status) async {
     final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
@@ -193,6 +352,45 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
                             side: BorderSide.none,
                             onSelected: (_) {
                               setState(() => _filter = s);
+                              _load();
+                            },
+                          ),
+                        ))
+                    .toList(),
+              ),
+            ),
+          ),
+          // Case-type filter chips
+          Container(
+            width: double.infinity,
+            color: AppTheme.primaryGreenDark,
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: _types
+                    .map((t) => Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            label: Text(
+                              t == 'ALL TYPES' ? 'All types' : t == 'GENERAL'
+                                  ? 'Appeals'
+                                  : 'Password resets',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            selected: _typeFilter == t,
+                            labelStyle: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: _typeFilter == t
+                                  ? AppTheme.gold
+                                  : Colors.white,
+                            ),
+                            selectedColor: Colors.white,
+                            backgroundColor: Colors.white.withOpacity(0.15),
+                            side: BorderSide.none,
+                            onSelected: (_) {
+                              setState(() => _typeFilter = t);
                               _load();
                             },
                           ),
@@ -343,7 +541,10 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => _AppealDetailSheet(caseData: c, onStatus: _updateStatus),
+      builder: (ctx) => _AppealDetailSheet(
+          caseData: c,
+          onStatus: _updateStatus,
+          onSetPassword: _setPasswordForCase),
     );
   }
 }
@@ -352,7 +553,16 @@ class _AppealDetailSheet extends StatefulWidget {
   final Map<String, dynamic> caseData;
   final Future<void> Function(Map<String, dynamic>, String, {String? note}) onStatus;
 
-  const _AppealDetailSheet({required this.caseData, required this.onStatus});
+  /// The password-reset action lives on the screen, not on the sheet: it needs
+  /// `context` for a dialog and `_load()` to refresh the queue afterwards. The
+  /// sheet only decides whether to offer it.
+  final void Function(Map<String, dynamic>) onSetPassword;
+
+  const _AppealDetailSheet({
+    required this.caseData,
+    required this.onStatus,
+    required this.onSetPassword,
+  });
 
   @override
   State<_AppealDetailSheet> createState() => _AppealDetailSheetState();
@@ -371,11 +581,24 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
   }
 
   Future<void> _loadPhoto() async {
+    // A PASSWORD_RESET case has no evidence photo -- the person filing it
+    // cannot sign in, which is the whole premise -- so `photo_path` is NULL.
+    // This used to be `as String`, which threw on the cast and left the staff
+    // member staring at an error instead of at the case they came to action.
+    // A missing photo is a fact about the case, not a failure to load one.
+    final path = widget.caseData['photo_path'] as String?;
+    if (path == null || path.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _photoError = 'No photo attached';
+        _photoLoading = false;
+      });
+      return;
+    }
     try {
       final url = await Supabase.instance.client.storage
           .from('user-documents')
-          .createSignedUrl(
-              widget.caseData['photo_path'] as String, 60 * 60);
+          .createSignedUrl(path, 60 * 60);
       if (!mounted) return;
       setState(() {
         _photoUrl = url;
@@ -515,7 +738,15 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
                               ),
                             ),
                           )
-                        : Image.network(_photoUrl!, fit: BoxFit.cover),
+                        : _photoUrl == null
+                            ? Container(
+                                color: AppTheme.surface,
+                                child: const Center(
+                                  child: Icon(Icons.image_not_supported_outlined,
+                                      color: AppTheme.textSecondary, size: 28),
+                                ),
+                              )
+                            : Image.network(_photoUrl!, fit: BoxFit.cover),
               ),
             ),
             const SizedBox(height: 16),
@@ -596,31 +827,64 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
             ],
 
             if (status == 'OPEN') ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        widget.onStatus(c, 'CLOSED');
-                      },
-                      child: const Text('Close case'),
-                    ),
+              if (c['case_type'] == 'PASSWORD_RESET') ...[
+                // The action that actually unblocks the person. It is NOT the
+                // same as Resolve: resolving the case only files the paperwork,
+                // and a password-reset case that is resolved without a password
+                // being set leaves the account exactly as locked as it was,
+                // with the evidence that somebody tried to help now marked
+                // done. So the set-password action comes first and the plain
+                // resolve is not offered for this type at all.
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.gold,
+                        padding: const EdgeInsets.symmetric(vertical: 14)),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.onSetPassword(c);
+                    },
+                    icon: const Icon(Icons.vpn_key, size: 18),
+                    label: const Text('Set a new password'),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton(
-                      style: FilledButton.styleFrom(
-                          backgroundColor: AppTheme.primaryGreenDark),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        widget.onStatus(c, 'RESOLVED');
-                      },
-                      child: const Text('Resolve'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Verify the person first using the contact details above. '
+                  'Setting a password signs every other device out.',
+                  style: TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 14),
+              ] else ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          widget.onStatus(c, 'CLOSED');
+                        },
+                        child: const Text('Close case'),
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: AppTheme.primaryGreenDark),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          widget.onStatus(c, 'RESOLVED');
+                        },
+                        child: const Text('Resolve'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ],
         ),

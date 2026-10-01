@@ -16,6 +16,16 @@ class UserProfile {
   final String? kebele;
   final String? streetRoad;
 
+  /// Storage path of this person's own profile picture, in the public
+  /// `profile-avatars` bucket (migration 20260927000119). Not the provider
+  /// business photo, which is a different column on a different table.
+  ///
+  /// Deliberately absent from [toJson]: that map is the profile's identity and
+  /// contact contract, and a picture is not part of it. Carrying it would make
+  /// every caller that round-trips a profile write a storage path it has no
+  /// business writing.
+  final String? avatarStoragePath;
+
   const UserProfile({
     required this.id,
     required this.fullName,
@@ -28,6 +38,7 @@ class UserProfile {
     this.city,
     this.kebele,
     this.streetRoad,
+    this.avatarStoragePath,
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -43,6 +54,7 @@ class UserProfile {
       city: json['city'] as String?,
       kebele: json['kebele'] as String?,
       streetRoad: json['street_road'] as String?,
+      avatarStoragePath: json['avatar_storage_path'] as String?,
     );
   }
 

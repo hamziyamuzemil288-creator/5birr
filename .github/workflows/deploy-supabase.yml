@@ -315,6 +315,20 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy account-deletion-gateway
 
+      # Staff actioning a password reset for somebody who cannot sign in.
+      # Same reason as account-deletion-gateway: writing to auth.users needs
+      # the service role key, which must never reach a client, and there is no
+      # SQL function that can do it.
+      #
+      # It is NOT deployed with --no-verify-jwt. The gateway re-checks the
+      # caller's staff permission itself before touching anything, and it
+      # identifies the caller from the caller's own JWT, so a signed-out request
+      # has to be rejected by the function rather than waved through by the
+      # gateway. Callers are the admin appeals queue, which is signed in.
+      - name: Deploy function password-reset-gateway
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy password-reset-gateway
+
       - name: Set Supabase function secrets
         if: ${{ !inputs.dry_run }}
         run: |
