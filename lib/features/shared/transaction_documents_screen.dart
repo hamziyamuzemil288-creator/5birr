@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -39,6 +42,7 @@ class _TransactionDocumentsScreenState
   List<Map<String, dynamic>> _docs = const [];
   bool _loading = true;
   String? _error;
+  bool _uploading = false;
 
   @override
   void initState() {
@@ -72,6 +76,75 @@ class _TransactionDocumentsScreenState
         _error = friendlyError(e, context: 'Could not load the documents');
       });
     }
+  }
+
+  /// Attaches a scanned or photographed slip to one document.
+  ///
+  /// `attach_transaction_slip` existed in 0121 and was reached from no Dart
+  /// file: the slips this screen lists could be produced by the server but
+  /// nothing could ever be attached to one, which is why `slip_storage_path`
+  /// is still NULL on every row in production.
+  ///
+  /// The path MUST be `<caller uid>/...`. The storage policy refuses anything
+  /// else and `attach_transaction_slip` raises
+  /// SLIP_PATH_MUST_BE_IN_YOUR_OWN_FOLDER on top of that, so the uid is taken
+  /// from the session rather than from the document's subject: an
+  /// administrator is not the customer, and uploading into the customer's
+  /// folder would be rejected anyway.
+  Future<void> _attach(Map<String, dynamic> d) async {
+    if (_uploading) return;
+    final number = d['document_number'] as String?;
+    if (number == null || number.isEmpty) {
+      _snack('That document has no number, so nothing could be attached.',
+          bad: true);
+      return;
+    }
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) {
+      _snack('Sign in again before attaching a slip.', bad: true);
+      return;
+    }
+
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 2000,
+      imageQuality: 85,
+    );
+    if (picked == null || !mounted) return;
+
+    setState(() => _uploading = true);
+    try {
+      final ext = picked.path.toLowerCase().endsWith('.pdf') ? 'pdf' : 'jpg';
+      final path = '$uid/slip_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await Supabase.instance.client.storage
+          .from('transaction-slips')
+          .upload(path, File(picked.path),
+              fileOptions: const FileOptions(upsert: true));
+      await Supabase.instance.client.rpc('attach_transaction_slip', params: {
+        'p_document_number': number,
+        'p_path': path,
+      });
+      if (!mounted) return;
+      _snack('Slip attached to $number.');
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        _snack(friendlyError(e, context: 'Could not attach this slip'),
+            bad: true);
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  void _snack(String message, {bool bad = false}) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: bad ? AppTheme.error : null,
+      ));
   }
 
   @override
@@ -183,6 +256,44 @@ class _TransactionDocumentsScreenState
           Text(
             'issued ${issued.substring(0, issued.length < 16 ? issued.length : 16)}',
             style: const TextStyle(fontSize: 10.5, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 8),
+          if ((d['slip_storage_path'] as String? ?? '').isNotEmpty)
+            Row(
+              children: [
+                const Icon(Icons.attach_file, size: 14, color: AppTheme.textMuted),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'slip attached',
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                ),
+              ],
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed:
+                  _uploading ? null : () => _attach(d),
+              icon: _uploading
+                  ? const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.upload_file, size: 15),
+              label: Text(
+                (d['slip_storage_path'] as String? ?? '').isEmpty
+                    ? 'Attach a slip'
+                    : 'Replace the slip',
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: AppTheme.primaryGreenDark,
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+              ),
+            ),
           ),
         ],
       ),

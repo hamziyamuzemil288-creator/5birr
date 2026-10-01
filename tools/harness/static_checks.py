@@ -3790,6 +3790,208 @@ def check_transaction_documents_are_wired() -> list[str]:
     return problems
 
 
+def check_admin_rpc_argv_is_transcribed() -> list[str]:
+    """0124's expected argument names must match the Dart call sites.
+
+    `admin_rpc_signature_report()` carries a hand-written list of the
+    parameter names each admin RPC is called with, because a database function
+    cannot read the Dart. That transcription is a second copy of a list the
+    client already states, which is the exact shape of defect this repository
+    has been bitten by repeatedly: 0118 shipped nineteen columns while the
+    harness still believed 0054's eight.
+
+    Two ways it rots, both checked here:
+
+      1. the Dart call site gains, loses or renames an argument and the
+         transcription does not — the assertion then reports "ok" for a
+         mismatch it was written to catch;
+      2. the Dart stops calling a function the transcription still lists, or
+         starts calling one it does not — the report drifts out of date with
+         the app in the other direction.
+    """
+    problems: list[str] = []
+
+    mig = ROOT / "supabase" / "migrations" / (
+        "20260927000124_every_admin_write_path_is_reachable.sql")
+    if not mig.is_file():
+        return ["%s is missing -- no admin RPC reachability assertion"
+                % mig.name]
+
+    sql = _read(mig)
+    body = _strip_comments(sql)
+
+    # ('fn', 'identity', '{a,b,c}')
+    rows = re.findall(
+        r"\('([a-z_]+)',\s*'public\.[a-z_]+\([^']*\)',\s*'\{([^}]*)\}'\)", body)
+    if not rows:
+        return ["0124 transcribes no admin RPC argument names, so "
+                "admin_rpc_signature_report() is asserting nothing"]
+
+    for fn, arglist in rows:
+        expected = {a.strip() for a in arglist.split(",") if a.strip()}
+
+        call = _rpc_call_sites(fn)
+        if not call:
+            problems.append(
+                "0124 lists %s but no Dart file calls it -- the report has "
+                "drifted out of date with the app" % fn)
+            continue
+
+        sent = _sent_keys(call, fn)
+        if sent is None:
+            problems.append(
+                "0124 lists %s but the Dart call site's argument map could not "
+                "be read, so its names cannot be verified against the client"
+                % fn)
+            continue
+
+        # A map built by a `for (final f in [...]) key: value` element states
+        # only some of its keys literally. The rest are read from the declared
+        # field lists behind the loop, and both halves are compared against
+        # 0124 -- skipping them would leave the check reporting "ok" for a
+        # mismatch it was written to catch, which is how a fee editor that
+        # saved nothing survived a green harness.
+        dynamic = _dynamic_param_names(call, fn)
+        if dynamic:
+            combined = sent | dynamic
+            if sent & dynamic:
+                problems.append(
+                    "%s is sent %s both literally and from a declared field "
+                    "list, so the two spellings would have to be renamed "
+                    "together" % (fn, sorted(sent & dynamic)))
+                continue
+            if combined != expected:
+                problems.append(
+                    "0124 expects %s to be called with %s, but the Dart call "
+                    "site sends %s -- %s of them from the declared field "
+                    "lists behind its collection-for. Either side drifted; "
+                    "the assertion would report 'ok' for a mismatch it exists "
+                    "to catch."
+                    % (fn, sorted(expected), sorted(combined),
+                       len(dynamic)))
+                continue
+            continue
+
+        if sent != expected:
+            problems.append(
+                "0124 expects %s to be called with %s, but the Dart call site "
+                "sends %s. Either side drifted; the assertion will report 'ok' "
+                "for a mismatch it exists to catch."
+                % (fn, sorted(expected) or "no arguments",
+                   sorted(sent) or "no arguments"))
+
+    return problems
+
+
+def _rpc_call_chunk(site: str, fn: str) -> str | None:
+    """The single `rpc('fn', params: {...})` chunk belonging to `fn`.
+
+    Same scoping rule as `_sent_keys`, factored out so the dynamic-argument
+    branch can look at the argument list of the call it is actually judging.
+    """
+    needle = "'%s'" % fn
+    for chunk in [c for c in re.split(r"(?=rpc\()", site) if c.startswith("rpc(")]:
+        head = chunk[:chunk.find("params:") if "params:" in chunk else len(chunk)]
+        if needle in head:
+            return chunk
+    return None
+
+
+def _dynamic_param_names(site: str, fn: str) -> set[str]:
+    """Parameter names contributed by a `for (final f in [...]) name: value` map.
+
+    `admin_save_category_fee` is called with thirteen of its fifteen arguments
+    built by a collection-for over declared `_FeeField` lists, so the source
+    literal does not contain those keys. Skipping them would make the check
+    report "ok" for a mismatch it exists to catch, so the declared lists are
+    read instead -- `f.param` names come from `param: 'p_...'`, which is the
+    only place the app states them.
+    """
+    chunk = _rpc_call_chunk(site, fn)
+    if chunk is None:
+        return set()
+    loop = re.search(r"for\s*\(\s*final\s+(\w+)\s+in\s*\[(.*?)\]\s*\)", chunk, re.S)
+    if not loop:
+        return set()
+    var = loop.group(1)
+    # The element is `f.param: parse(f.param)` and sits AFTER the loop's
+    # closing bracket, so it is read from the chunk past the match. (Splitting
+    # the loop match on `"in"` does not work: the first "in" is inside
+    # `final`, and the match does not contain the element at all.)
+    tail = re.match(r"\s*([\w.]+):", chunk[loop.end():])
+    attr = (tail.group(1) if tail else var).split(".")[-1]
+    names: set[str] = set()
+    for list_name in re.findall(r"\b(_[A-Za-z0-9]+)\b", loop.group(2)):
+        decl = re.search(
+            r"\b%s\s*=\s*\[(.*?)\n\];" % re.escape(list_name), site, re.S)
+        if not decl:
+            continue
+        names.update(re.findall(
+            r"\b%s:\s*'([a-z_0-9]+)'\s*," % re.escape(attr), decl.group(1)))
+    return names
+
+
+def _rpc_call_sites(fn: str) -> str:
+    """The concatenated source of every Dart file that calls `fn`.
+
+    Matches the two shapes the app actually uses -- `.rpc('name')` and
+    `.rpc(\n  'name',\n  params: {...},\n)`. A `rpc(\n` anchor alone matched
+    nothing, and a check that cannot see its own subject is worse than no
+    check: it reported all fourteen functions as uncalled.
+    """
+    out = []
+    needle = "'%s'" % fn
+    # A lookahead, NOT `\b`. The closing quote and whatever follows it are
+    # both non-word characters, so there is no word boundary there and
+    # `rpc\(\s*'name'\b` matches nothing at all -- which made this report all
+    # fourteen functions as uncalled while every one of them was called.
+    for path in sorted(LIB.rglob("*.dart")):
+        src = _read(path)
+        if needle not in src:
+            continue
+        if re.search(r"rpc\(\s*%s(?=[\s,)\]])" % re.escape(needle), src):
+            out.append(src)
+    return "\n".join(out)
+
+
+def _sent_keys(site: str, fn: str) -> set[str] | None:
+    """The keys in the `params: { ... }` map of the call to `fn` specifically.
+
+    Scoped by function name, because one screen makes several rpc() calls and
+    reading the first one in the file attributes another call's arguments to
+    this one -- which reported `p_status`/`p_limit` against
+    `admin_moderate_image` on a screen that does call all of them.
+
+    Returns None when the shape cannot be read, which is a finding in its own
+    right: a transcription nobody can check is not a transcription.
+    """
+    needle = "'%s'" % fn
+    # Split on `rpc(` rather than matching to the next `;`: a screen that makes
+    # two calls inside one `Future.wait([...])` separates them with a COMMA,
+    # so a `.*?;` chunk swallowed the first call's arguments and attributed
+    # them to the second. `admin_moderation_actions({p_limit})` was reported as
+    # sending `p_status` because of it.
+    chunks = [c for c in re.split(r"(?=rpc\()", site) if c.startswith("rpc(")]
+    for chunk in chunks:
+        head = chunk[:chunk.find("params:") if "params:" in chunk else len(chunk)]
+        if needle not in head:
+            continue
+        pm = re.search(r"params:\s*\{", chunk)
+        if not pm:
+            return set()          # called with no argument map at all
+        tail = chunk[pm.end():]
+        # Bound the map. Without this the tail runs on into the NEXT rpc()
+        # call in the same expression, so `admin_clear_category_fee` was
+        # reported as sending a `category` key that belongs to a different
+        # call entirely.
+        close = re.search(r"\}\s*\)", tail)
+        if close:
+            tail = tail[:close.start()]
+        keys = set(re.findall(r"'([a-z_0-9]+)'\s*:", tail))
+        return keys
+    return None
+
+
 PROVIDER_ACTIONS = (
     "approve_provider",
     "reject_provider",
@@ -6115,6 +6317,9 @@ CHECKS = [
      check_permission_flags_reach_the_widget),
     ("content control can take an image down and record why",
      check_content_control_is_wired),
+    ("the admin RPC reachability report is transcribed from the Dart, not "
+     "guessed",
+     check_admin_rpc_argv_is_transcribed),
     ("every order and every ride leaves a document both parties can read",
      check_transaction_documents_are_wired),
     ("staff creation stays in the sidebar, and a staff city stops something",

@@ -1875,6 +1875,111 @@ tree and requires the check to go red — nine cases, including this one. The
 first run of that falsifier found a `NameError` in the check itself, which is
 the argument for having written it.
 
+### 7.1.6 The end-to-end audit: four failures, one shape
+
+A report that sections built well were not working end to end. All of it turned
+out to be one shape of defect, repeated: **a thing existed, was correct, was
+granted, and could not be reached.** None of the four was a compile error.
+
+**The category fee: "the category may have been removed".** The fee editor
+called `admin_save_category_fee` with fifteen named arguments. Thirteen came
+from a `for (final f in [...]) f.param: ...` element over declared `_FeeField`
+lists, and one of the two literal keys was fine — but the list declared
+`p_booking_base_fare` where the database has declared `p_booking_base_fee`
+since 0107. **PostgREST matches named arguments by name**, so a single wrong
+letter in a fifteen-argument call is `PGRST202`, and `friendlyError` renders
+`PGRST202` as *"That item could not be found. It may have been removed."* — a
+sentence about a missing category, caused by a misspelt parameter.
+
+Two things had been believed about this bug and both were wrong. `ON CONFLICT
+(category_id, city)` matches `category_fee_settings_unique`, and the function
+body exists and raises its own refusals. Neither is relevant: the request never
+reached the body. Nothing but comparing the client's keys against the live
+catalog's `proargnames` could have found it.
+
+The check that found it, `check_admin_rpc_argv_is_transcribed`, had been
+**reporting the mismatch for days and was not reading the dynamic half**. Its
+collection-for branch skipped comparison entirely, because a map built by a loop
+cannot be enumerated from the source — and the thirteen arguments it skipped
+were the majority of the call. The bug was sitting inside the one branch written
+to excuse itself. That branch now resolves the declared lists and compares them
+too, and the *success* path needed its own `continue`: without one the check
+compared the two literal keys again after the dynamic comparison had already
+passed, and reported a green call site as broken.
+
+**The admin password.** `account-change-password/index.ts` tested
+`email.isNotEmpty` — a **Dart** extension method, in TypeScript. Deno has no
+such thing, so it threw a `TypeError` on the way to the password change and the
+request died as a 500. Sign-in is email + password, so `email` is populated for
+effectively every account and the branch always ran. A refusal shaped exactly
+like a policy decision, caused by a crash. Fixed to `email !== ""`.
+
+**Three functions nothing called.** `admin_reinstate_account` (0122),
+`file_content_report` (0122) and `attach_transaction_slip` (0121) existed, were
+granted, were asserted, and were reached from **no Dart file at all**. The
+consequences were concrete: `content_reports` was an empty table, so the
+moderation queue had no way to be filled; `slip_storage_path` is NULL on every
+transaction document in existence; and `AdminContentControlScreen`'s own class
+comment claimed it "suspends or reinstates an account" while containing no way
+to reinstate one. All three are now wired:
+
+- reinstate, on the moderation-history row for the suspension it reverses,
+  because that is where the question "did we put them back?" is asked;
+- a report action on the public provider page, which names
+  `reported_provider_id` and **not** `reported_user_id` —
+  `public_provider_profiles` withholds the owner's account id by design
+  (20260924000006), so naming the provider is the most that screen can do, and
+  asking for more would undo that hardening;
+- slip attachment on each document card, uploaded under the **caller's** uid
+  because the storage policy and `attach_transaction_slip` both require
+  `<caller uid>/...`, and an administrator is not the customer.
+
+**A fourth, found by reading `flutter analyze` warnings.** An appeal could be
+resolved but never annotated: the buttons called `_updateStatus` straight
+through, so `appeal_cases.resolution_note` was unwritable, while
+`_resolveWithNote` — the helper that asks for the note — sat unreferenced in the
+same file. The note dialog now runs on the screen rather than the sheet, because
+the sheet is the bottom-most surface and cannot open a dialog above itself
+without the dialog inheriting its barrier. Analyzer warnings dropped 20 → 18;
+the two remaining are dead *duplicates* of working helpers
+(`admin_history_screen._pickDate` beside `_pickDateFromSheet`,
+`admin_user_management_screen._getSignedUrl` beside an inline equivalent), left
+in place because neither is a broken section.
+
+**0124 — the answer, not the guess.** `admin_rpc_signature_report()` reads the
+**live catalog** for fifteen admin RPCs and compares each one against what the
+Dart sends. A static check cannot settle this: the Dart, the migration text and
+the deployed catalog are three things that can disagree, and only the catalog is
+what the server will accept. Four failure modes, each proven by making it
+happen against a scratch database:
+
+| Injected fault | Reported |
+| --- | --- |
+| `p_booking_base_fare` for `p_booking_base_fee` | `client sends parameter names the function does not declare (PGRST202)` |
+| `REVOKE EXECUTE … FROM authenticated` | `exists, but authenticated may not EXECUTE it` |
+| function dropped | `MISSING or wrong arity` |
+| a second overload of the same name | `AMBIGUOUS: 2 overloads … (PGRST203)` |
+
+The overload row was a **blind spot the first version had**, and it is worth
+recording because the assertion looked green while it was there. `to_regprocedure`
+finds the expected signature, that signature is granted, its names match — every
+test passes — and PostgREST still answers `PGRST203` for the call because it
+cannot choose between two candidates. The expected signature being *present* is
+not evidence that the call *resolves*. Overloads are easy to create by accident
+in this schema precisely because these migrations restate functions with
+`CREATE OR REPLACE`, and an arity change **adds** an overload rather than
+replacing one.
+
+The first negative control attempted here was itself wrong and said so: replacing
+the function with a three-argument version left the fifteen-argument one in
+place, because `CREATE OR REPLACE` only replaces a matching signature. The
+control had to drop the function first. A control that cannot fail is worse than
+no control.
+
+`tools/harness/falsify_admin_rpc_argv.py` holds eight cases for the static half,
+one of which reproduces the shipped `p_booking_base_fare` defect exactly. Two
+of the eight were red on their first run for defects in the falsifier itself.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.

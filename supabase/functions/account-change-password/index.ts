@@ -73,7 +73,15 @@ Deno.serve(async (req) => {
   // there is no "current password" to ask for. updateUser on the live session
   // is the only available path, and Supabase sends the user a confirmation.
   const email = userData.user.email ?? "";
-  if (email.isNotEmpty) {
+  // `email !== ""`, NOT `email.isNotEmpty`. `isNotEmpty` is a Dart extension
+  // method; Deno has no such thing, so `email.isNotEmpty` throws a TypeError
+  // the moment it is evaluated. Because it is evaluated on the way to the
+  // password change, EVERY password change made from the app failed with a
+  // 500, which the client reports as "We could not change the password. Try
+  // again." -- a refusal that looks like a policy decision and is in fact a
+  // crash. sign-in is email + password (supabase_service.dart), so `email` is
+  // populated for effectively every account and this branch always ran.
+  if (email !== "") {
     const { error: currentError } = await userClient.auth.signInWithPassword({
       email,
       password: currentPassword,

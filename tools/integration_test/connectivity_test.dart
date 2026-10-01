@@ -1451,6 +1451,45 @@ void main() {
       print('    content control -> $detail');
     });
 
+    test('every admin RPC the app calls is callable with the names it sends',
+        () async {
+      // The two failures that prompted this, in one assertion.
+      //
+      // Changing an admin's own password always failed because the Edge
+      // Function tested `email.isNotEmpty` -- a Dart extension method that
+      // does not exist in Deno, so it threw on the way to the change and the
+      // request died as a 500. That is a refusal shaped exactly like a policy
+      // decision.
+      //
+      // Saving a category fee was refused with "That item could not be found.
+      // It may have been removed." -- which is what friendlyError renders for
+      // PGRST202. PostgREST matches named arguments by NAME, so a client
+      // sending `p_city` against a function declaring `p_city_name` gets
+      // PGRST202, and so does a function whose arity does not match or which
+      // `authenticated` may not execute. All three read to a user as a
+      // sentence about a missing record.
+      //
+      // No static check can settle this: the Dart screen, the migration file
+      // and the live catalog can all disagree, and only the catalog is what
+      // the server will accept.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_admin_write_paths_are_reachable');
+      expect(detail, isNotNull,
+          reason: 'The check could not be run at all. If this is null WITH '
+              '0124 deployed, the function is missing or PostgREST has not '
+              'reloaded — read the error before changing anything. '
+              'Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'At least one admin RPC is missing, has the wrong arity, is '
+              'not executable by the role the app calls as, declares '
+              'different parameter names than the client sends (PGRST202), or '
+              'shares its name with another overload in public (PGRST203) — '
+              'the first three are what the user sees as "That item could not '
+              'be found. It may have been removed": $detail');
+      // ignore: avoid_print
+      print('    admin RPC reachability -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole

@@ -24,6 +24,7 @@ class _State extends State<UserProviderDetailScreen> {
   ProviderTrustStats? _trust;
   bool _loading = true;
   bool _fav = false;
+  bool _reporting = false;
   // A dropped connection used to land on the same "Provider not found" screen
   // as a deleted provider, so a network blip read as "this shop is gone".
   String? _error;
@@ -85,6 +86,233 @@ class _State extends State<UserProviderDetailScreen> {
     }
   }
 
+  /// Files a content report about this provider, or about one specific image
+  /// on it.
+  ///
+  /// `file_content_report` landed in 0122 and was reachable from no Dart file,
+  /// so `content_reports` has been an empty table: administrators had a queue
+  /// to work through and no way for a customer to fill it. The same call is
+  /// what `AdminContentControlScreen` reads and acts on, so this closes the
+  /// loop end to end.
+  ///
+  /// The report names `reported_provider_id`, never `reported_user_id`:
+  /// `public_provider_profiles` deliberately withholds the owner's account id
+  /// (migration 20260924000006 hardened it), and asking the server for it here
+  /// would undo that.
+  Future<void> _openReport() async {
+    final photos = _reportablePhotos();
+    var category = 'MISLEADING_LISTING';
+    String? chosenPath;
+    final bucket = photos.isEmpty ? null : photos.first.bucket;
+    final controller = TextEditingController();
+
+    final submit = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setInner) => AlertDialog(
+          title: const Text('Report this provider'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: category,
+                  decoration: const InputDecoration(labelText: 'What is wrong'),
+                  items: const [
+                    DropdownMenuItem(
+                        value: 'MISLEADING_LISTING',
+                        child: Text('Misleading listing')),
+                    DropdownMenuItem(
+                        value: 'SPAM_OR_SCAMS', child: Text('Spam or scam')),
+                    DropdownMenuItem(
+                        value: 'HARASSMENT', child: Text('Harassment')),
+                    DropdownMenuItem(
+                        value: 'HATE_OR_ABUSE', child: Text('Hate or abuse')),
+                    DropdownMenuItem(
+                        value: 'VIOLENT_OR_THREATENING',
+                        child: Text('Violence or a threat')),
+                    DropdownMenuItem(
+                        value: 'NUDITY_OR_SEXUAL',
+                        child: Text('Sexual content')),
+                    DropdownMenuItem(
+                        value: 'FAKE_ACCOUNT', child: Text('Fake account')),
+                    DropdownMenuItem(value: 'OTHER', child: Text('Something else')),
+                  ],
+                  onChanged: (v) => setInner(() => category = v ?? 'OTHER'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  maxLines: 3,
+                  maxLength: 2000,
+                  decoration: const InputDecoration(
+                    labelText: 'What happened',
+                    helperText:
+                        'At least 10 characters. An administrator cannot ask '
+                        'you a follow-up question, so say what you saw.',
+                  ),
+                ),
+                if (photos.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text('Or point at one photo',
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    height: 74,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: photos.length + 1,
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (_, i) {
+                        if (i == 0) {
+                          return _photoChoice(
+                            ctx,
+                            selected: chosenPath == null,
+                            onTap: () => setInner(() => chosenPath = null),
+                            child: const Icon(Icons.block,
+                                size: 18, color: AppTheme.textMuted),
+                          );
+                        }
+                        final photo = photos[i - 1];
+                        return _photoChoice(
+                          ctx,
+                          selected: chosenPath == photo.path,
+                          onTap: () => setInner(() => chosenPath = photo.path),
+                          child: Image.network(photo.url,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 18,
+                                  color: AppTheme.textMuted)),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Send report'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final description = controller.text.trim();
+    controller.dispose();
+    if (submit != true || !mounted) return;
+
+    // The server refuses under ten characters with REPORT_NEEDS_A_DESCRIPTION.
+    // Checked here so the customer is told what is wrong before the round
+    // trip, not after it.
+    if (description.length < 10) {
+      _snack('Please describe what happened in at least 10 characters.',
+          bad: true);
+      return;
+    }
+
+    setState(() => _reporting = true);
+    try {
+      await Supabase.instance.client.rpc('file_content_report', params: {
+        'p_reported_provider_id': widget.providerId,
+        // Sent as an explicit NULL rather than omitted, so this call site
+        // states the whole argument list the function declares. It is NULL on
+        // purpose: `public_provider_profiles` withholds the owner's account id
+        // by design, so naming the provider is the most this screen can do.
+        'p_reported_user_id': null,
+        'p_object_bucket': chosenPath == null ? null : bucket,
+        'p_object_path': chosenPath,
+        'p_category': category,
+        'p_description': description,
+      });
+      if (!mounted) return;
+      _snack('Report sent. An administrator will review it.');
+    } catch (e) {
+      if (mounted) {
+        _snack(friendlyError(e, context: 'Could not send this report'),
+            bad: true);
+      }
+    } finally {
+      if (mounted) setState(() => _reporting = false);
+    }
+  }
+
+  Widget _photoChoice(
+    BuildContext ctx, {
+    required bool selected,
+    required VoidCallback onTap,
+    required Widget child,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 74,
+        height: 74,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected
+                ? AppTheme.primaryGreen
+                : AppTheme.cardBorder,
+            width: selected ? 2.5 : 1,
+          ),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  /// The images on this page an administrator could actually take down: the
+  /// header photo and every product image. Both buckets are on
+  /// `admin_moderate_image`'s allowlist, so naming one here is a report the
+  /// admin can act on rather than a note they cannot resolve.
+  List<({String bucket, String path, String url})> _reportablePhotos() {
+    final out = <({String bucket, String path, String url})>[];
+    final p = _provider;
+    if (p == null) return out;
+    final client = Supabase.instance.client;
+
+    final header = p['photo_storage_path'] as String?;
+    if (header != null && header.isNotEmpty) {
+      out.add((
+        bucket: 'provider-photos',
+        path: header,
+        url: client.storage.from('provider-photos').getPublicUrl(header),
+      ));
+    }
+    for (final prod in _products) {
+      final path = _firstImagePath(prod);
+      if (path == null) continue;
+      out.add((
+        bucket: 'product-images',
+        path: path,
+        url: client.storage.from('product-images').getPublicUrl(path),
+      ));
+    }
+    return out;
+  }
+
+  void _snack(String message, {bool bad = false}) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: bad ? AppTheme.error : null,
+      ));
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -135,6 +363,18 @@ class _State extends State<UserProviderDetailScreen> {
       appBar: AppBar(
         title: Text(p['business_name'] ?? ''),
         actions: [
+          IconButton(
+            tooltip: 'Report this provider',
+            icon: _reporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child:
+                        CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.flag_outlined),
+            onPressed: _reporting ? null : _openReport,
+          ),
           IconButton(
             icon: Icon(_fav ? Icons.favorite : Icons.favorite_border,
                 color: _fav ? AppTheme.error : null),

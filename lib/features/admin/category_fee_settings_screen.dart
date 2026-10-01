@@ -57,7 +57,12 @@ const List<_FeeField> _rideFields = [
 
 const List<_FeeField> _bookingFields = [
   _FeeField(
-      param: 'p_booking_base_fare',
+      // `p_booking_base_fee`, not `..._fare`. PostgREST matches named
+      // arguments by name, so this one-letter slip was a PGRST202 on every
+      // save -- which the error mapper renders as "the category may have
+      // been removed", which is what sent this whole audit down the wrong
+      // path. The database has declared it `_fee` since 0107.
+      param: 'p_booking_base_fee',
       label: 'Booking base fee',
       column: 'booking_base_fare'),
   _FeeField(

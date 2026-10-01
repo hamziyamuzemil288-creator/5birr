@@ -213,6 +213,35 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     });
   }
 
+  /// The counterpart to `_suspend`, and the reason this screen's own class
+  /// comment could claim it reinstates accounts while nothing in the app could
+  /// actually do it: `admin_reinstate_account` existed in 0122 and was reached
+  /// from no Dart file at all.
+  ///
+  /// 0123 restated it so the reinstatement carries its own keyed notice rather
+  /// than the approval welcome -- the account was approved once already, and a
+  /// "Welcome to Aliob" would imply somebody who had never left was leaving.
+  Future<void> _reinstate(Map<String, dynamic> action) async {
+    final id = action['target_user_id'] as String?;
+    if (id == null) {
+      _snack('That action was taken against a provider record, not a login.',
+          bad: true);
+      return;
+    }
+    final reason = await _askReason(
+      'Reinstate this account?',
+      confirm: 'Reinstate',
+    );
+    if (reason == null || !mounted) return;
+
+    await _run('Reinstatement', () {
+      return Supabase.instance.client.rpc('admin_reinstate_account', params: {
+        'p_user_id': id,
+        'p_reason': reason,
+      });
+    });
+  }
+
   Future<void> _resolve(Map<String, dynamic> report, String outcome) async {
     final reason = await _askReason(
       outcome == 'UPHELD' ? 'Upheld — what did you do?' : 'Dismiss — why?',
@@ -458,6 +487,11 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     final type = a['action_type'] as String? ?? '';
     final path = a['object_path'] as String?;
     final who = (a['target_user_id'] ?? a['actioned_by_name']) as String?;
+    // Reinstatement lives on the suspension that it reverses, not on the report
+    // card: an administrator reads the history to answer "who did we take out,
+    // and have we put them back?", and that question is asked here.
+    final canReinstate =
+        type == 'ACCOUNT_SUSPENDED' && a['target_user_id'] != null;
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.zero,
@@ -480,6 +514,17 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
         ].join(' · '),
         style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
       ),
+      trailing: canReinstate
+          ? TextButton.icon(
+              onPressed: _working ? null : () => _reinstate(a),
+              icon: const Icon(Icons.restore, size: 15),
+              label: const Text('Reinstate'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppTheme.primaryGreenDark,
+                visualDensity: VisualDensity.compact,
+              ),
+            )
+          : null,
     );
   }
 

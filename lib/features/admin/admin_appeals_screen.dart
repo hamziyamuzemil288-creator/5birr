@@ -543,7 +543,7 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
       ),
       builder: (ctx) => _AppealDetailSheet(
           caseData: c,
-          onStatus: _updateStatus,
+          onResolve: _resolveWithNote,
           onSetPassword: _setPasswordForCase),
     );
   }
@@ -551,7 +551,17 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
 
 class _AppealDetailSheet extends StatefulWidget {
   final Map<String, dynamic> caseData;
-  final Future<void> Function(Map<String, dynamic>, String, {String? note}) onStatus;
+
+  /// Resolve/close with a note. This lives on the screen, not on the sheet,
+  /// because the sheet is already the bottom-most surface: it cannot open a
+  /// dialog on top of itself without the dialog inheriting the sheet's
+  /// barrier. The sheet only decides to ask.
+  ///
+  /// This is what makes `appeal_cases.resolution_note` writable at all. The
+  /// buttons used to call `_updateStatus` straight through, so an appeal could
+  /// be resolved but never annotated — and the helper that did ask for the
+  /// note sat unreferenced in the same file.
+  final void Function(Map<String, dynamic> appealCase, String status) onResolve;
 
   /// The password-reset action lives on the screen, not on the sheet: it needs
   /// `context` for a dialog and `_load()` to refresh the queue afterwards. The
@@ -560,7 +570,7 @@ class _AppealDetailSheet extends StatefulWidget {
 
   const _AppealDetailSheet({
     required this.caseData,
-    required this.onStatus,
+    required this.onResolve,
     required this.onSetPassword,
   });
 
@@ -865,7 +875,7 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
                       child: OutlinedButton(
                         onPressed: () {
                           Navigator.pop(context);
-                          widget.onStatus(c, 'CLOSED');
+                          widget.onResolve(c, 'CLOSED');
                         },
                         child: const Text('Close case'),
                       ),
@@ -877,7 +887,7 @@ class _AppealDetailSheetState extends State<_AppealDetailSheet> {
                             backgroundColor: AppTheme.primaryGreenDark),
                         onPressed: () {
                           Navigator.pop(context);
-                          widget.onStatus(c, 'RESOLVED');
+                          widget.onResolve(c, 'RESOLVED');
                         },
                         child: const Text('Resolve'),
                       ),
