@@ -30,11 +30,21 @@ chmod 644 "$TMP"/*.sql
 su postgres -c "cd $TMP && $PGBIN/psql -h $SOCK -p $PORT -d postgres -q -c 'DROP DATABASE IF EXISTS $DB'" 2>/dev/null
 su postgres -c "cd $TMP && $PGBIN/psql -h $SOCK -p $PORT -d postgres -q -c 'CREATE DATABASE $DB'"
 
-# `sh tools/harness/replay_fee.sh --without-fix` replays 0107 alone. That is
-# the falsification of this file's central claim: the fee probe MUST come back
-# red for CASE 1 and CASE 2b when the corrected restatement is not applied.
-MIGRATIONS="0062.sql 0107.sql 0127.sql"
-[ "${1:-}" = "--without-fix" ] || MIGRATIONS="$MIGRATIONS 0126.sql"
+# `sh tools/harness/replay_fee.sh --without-fix` omits 0126. That is the
+# falsification of this file's central claim: the fee probe MUST come back red
+# for CASE 1 and CASE 2b when the corrected restatement is not applied.
+#
+# The order is FILENAME order, the order the deploy applies them. It used to be
+# 0062 0107 0127 0126, which put the document migration before the fee one it
+# follows on the real database -- harmless while neither depended on the other,
+# but a replay that applies the batch out of order is not reproducing the thing
+# it claims to reproduce.
+FEE_BASE="0062.sql 0107.sql"
+if [ "${1:-}" = "--without-fix" ]; then
+  MIGRATIONS="$FEE_BASE 0127.sql"
+else
+  MIGRATIONS="$FEE_BASE 0126.sql 0127.sql"
+fi
 
 for f in fee_pre.sql $MIGRATIONS fee_probe.sql image_probe.sql document_probe.sql; do
   echo "== $f"

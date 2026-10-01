@@ -484,6 +484,15 @@ $$;
 -- fails, this function still records the warning in the log, because the log
 -- is the evidence and the notice is only the courtesy copy.
 
+-- The live database already has admin_warn_user(uuid, text, text) RETURNS
+-- void, from migration 20260923000001. CREATE OR REPLACE cannot change a
+-- function's return type: PostgreSQL raises 42P13 ("cannot change return type
+-- of existing function") while analysing the statement, before it ever looks
+-- at the new body -- so this deploy died on 0126 with the whole batch behind
+-- it unapplied. The old signature is dropped first; the EXECUTE grant is
+-- re-issued at the bottom of this file.
+DROP FUNCTION IF EXISTS public.admin_warn_user(uuid, text, text);
+
 CREATE OR REPLACE FUNCTION public.admin_warn_user(
   p_user_id uuid,
   p_title text,

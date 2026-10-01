@@ -96,6 +96,26 @@ else
   rc7=0
 fi
 
+# 8. A CREATE OR REPLACE FUNCTION that changes an existing return type.
+#
+#    PostgreSQL refuses that with 42P13 ("cannot change return type of existing
+#    function") WHILE ANALYSING the statement, before it reads the new body --
+#    and CREATE OR REPLACE cannot do it at all; the signature has to be DROPPED
+#    first. That is how this batch died: 0126 restated admin_warn_user, which
+#    the live database already had returning void, so the deploy stopped on
+#    0126 and 0127 and 0128 never applied.
+#
+#    Every other gate was green over it. The body was allowed to change, the
+#    statement parsed, the ON CONFLICT targets were real, the call and the
+#    grant were correct -- the only thing compared was the BODY, never the
+#    return type, and that comparison happens nowhere but at push time.
+#
+#    Same pending window as gates 2 and 3: the question is "will what I am
+#    about to push apply?". A return-type change that already deployed is not a
+#    finding here, because it could not have deployed without its DROP.
+python3 "$here/return_type_changes.py" --pending
+rc8=$?
+
 [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ $rc3 -eq 0 ] && [ $rc4 -eq 0 ] && \
-[ $rc5 -eq 0 ] && [ $rc6 -eq 0 ] && [ $rc7 -eq 0 ]
+[ $rc5 -eq 0 ] && [ $rc6 -eq 0 ] && [ $rc7 -eq 0 ] && [ $rc8 -eq 0 ]
 exit $?

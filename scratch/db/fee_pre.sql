@@ -304,6 +304,22 @@ BEGIN
 END;
 $$;
 
+-- Verbatim SIGNATURE from 20260923000001. It returns VOID, and 0126 restates
+-- it returning TEXT. PostgreSQL refuses to change a function's return type via
+-- CREATE OR REPLACE (42P13), so 0126 must DROP it first -- and this fixture is
+-- what makes the local replay reproduce the LIVE database, where that old
+-- function already exists. Without it the replay applied 0126 cleanly while the
+-- real deploy died on the return-type change with 0127 and 0128 behind it.
+-- The body is a stub; only the signature and return type matter here.
+CREATE FUNCTION public.admin_warn_user(
+  p_user_id uuid, p_title text, p_body text)
+RETURNS void LANGUAGE plpgsql
+AS $$
+BEGIN
+  NULL;
+END;
+$$;
+
 INSERT INTO public.categories (name, sector) VALUES
   ('Bajaj', 'RIDE'),
   ('Truck', 'RIDE'),
