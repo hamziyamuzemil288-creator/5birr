@@ -2241,6 +2241,182 @@ The `Where to?` button was verified to be **unconditional**: it is not behind a
 flag, a feature gate or a role check, so there is no configuration in which a
 rider cannot reach it.
 
+### 7.1.10 The fee editor had never once worked
+
+Four reports, and only one of them turned out to be what it looked like.
+
+#### The fee editor: found by running it, not by reading it
+
+`admin_save_category_fee()` had **never saved a single row**, since the day
+0107 created it. Replayed against a real PostgreSQL 14
+(`sh tools/harness/replay_fee.sh`), every call died with:
+
+```
+42703: column "booking_base_fare" of relation "category_fee_settings"
+       does not exist
+```
+
+0107 renamed the column `booking_base_fare` → `booking_base_fee` when it
+renamed the matching argument `p_booking_base_fare` → `p_booking_base_fee`. The
+INSERT column list was updated. Every resolver was updated. The
+`ON CONFLICT ... DO UPDATE SET` list was not:
+
+```sql
+ON CONFLICT (category_id, city) DO UPDATE SET
+  ...
+  booking_base_fare = EXCLUDED.booking_base_fee,   -- no such column
+```
+
+**PostgreSQL analyses `INSERT ... ON CONFLICT DO UPDATE` before it executes
+it.** So this is a plan-time failure: no row, no audit row, no trace.
+
+#### Why every existing check was green
+
+This is the part worth keeping. Each existing check answered a *different*
+question, and answered it correctly:
+
+| Check | Question | Answer |
+|---|---|---|
+| Migration 0124 | does `admin_save_category_fee` exist with the arity and parameter names the client sends? | **yes** — it always did |
+| `check_admin_rpc_argv_is_transcribed` | does the Dart send any undeclared parameter? | **no** — the mistake is in the function's *body* |
+| `check_category_fees_are_wired` | is every fee field group both rendered and sent? | **yes** |
+| `assert_category_fees_are_wired` | are the money columns nullable so blank means "inherit"? | **yes** |
+
+All four describe the **call**. None of them executes the **statement**. A
+correctly named, correctly granted, correctly called function can still be
+unable to run — and "is it wired" and "does it work" are different questions,
+and only one was being asked.
+
+#### The two answers it now gives
+
+- **Harness gate 6**, `tools/harness/conflict_targets.py`: collects every
+  table's columns from every `CREATE TABLE` **and every `ALTER TABLE ... ADD
+  COLUMN`**, then checks every `ON CONFLICT ... DO UPDATE SET` target against
+  the table it updates. A restatement supersedes, because the live database
+  holds the last definition — otherwise this gate would be permanently red
+  over a deployed migration that can never be edited, and a gate that is always
+  red is a gate nobody reads.
+- **`assert_category_fee_save_plans()`**, run by Connectivity CI: `EXPLAIN`s
+  the upsert without `ANALYZE`, which **plans without executing**. A column
+  that does not exist fails at plan time, so this needs no rows, no category
+  and no fee-editor authority.
+
+The two cannot see each other: SQL cannot read the Dart, and Python cannot
+plan a statement.
+
+Its falsifier (`falsify_conflict_targets.py`) includes the case that matters
+most — 0107's broken body with the 0126 restatement removed, which is the
+*exact* state of the live database before this fix. The check is red there.
+
+That check earned its keep immediately, twice: it caught a genuine defect in
+the new 0126 assertion itself (twelve `NULL`s written for thirteen columns),
+and it refused to go green until told that a later restatement supersedes an
+earlier broken body.
+
+#### The sentence the user saw, and why it was wrong twice
+
+`friendly_error.dart` reported this 42703 as **"That item could not be found.
+It may have been removed."** — because the branch matched `'does not exist'`,
+which in a query's error names a **schema object on our side**, never a
+customer record of theirs.
+
+`'does not exist'` is now gone from **both** `friendlyError()` and
+`isNotFound()`. Removing it from only one would have left every detail screen
+rendering its "not found" state for a request that failed our side.
+
+A correction to an earlier note in this document: `CATEGORY_NOT_FOUND` was
+*also* believed to cause this, on the grounds that it contains "not found". It
+does not — it is `category_not_found` with an **underscore**, and the branch
+matches the substring with a **space**. An exclusion list was written on that
+false premise, and its own mutation run proved the list was dead code, so it
+was removed rather than kept. The 42703 was the whole cause.
+
+14 tests pin this in both directions, and five mutations were proven red:
+re-adding `'does not exist'`, dropping `'not found'`, giving the 42703 branch
+the old sentence, dropping the non-owner branch, and dropping the 42703 arm.
+The third of those — dropping `'not found'` — was a regression introduced while
+writing the fix, caught only because a direct assertion existed for it.
+
+#### Image moderation: a gallery that was not there
+
+`AdminContentControlScreen` read `admin_content_reports`, which returns rows
+somebody has already **reported**. A moderator looking for a specific picture
+had no way to look, because most content that breaks the rules is never
+reported. There was no admin function that lists gallery photos at all.
+
+Migration 0126 adds four, each exercised in `tools/harness/replay_fee.sh` as
+the right actor *and* the wrong one:
+
+| Function | Purpose |
+|---|---|
+| `admin_public_image_gallery(city, limit, offset)` | every published image, with the **uploader's name, their business and their city**, across `provider_gallery`, `product_images` and `vehicle_images` |
+| `admin_set_gallery_image_public(id, public, reason)` | **hide without deleting** — reversible, and the provider keeps their copy |
+| `admin_warn_user(user, title, body)` | send a `CORRECTION_REQUIRED` notice from that section, written to the log whatever the delivery does |
+| `set_gallery_image_public(id, public)` | the provider's own unpublish/republish |
+
+**Hide is offered before delete, deliberately.** `admin_moderate_image`
+deletes the row *and* the object, irreversibly, taking the provider's copy
+with it. `is_active` already exists and already gates
+`provider_gallery_public_read`, so hiding is a one-column write the policy
+already honours. The reported need was "delete **or** suspend it from the
+public" — the second is the one to reach for by default.
+
+Restoring demands a reason: putting a photo back after a takedown overrides an
+earlier decision and the record should say why.
+
+### 7.1.11 A provider's photo is public the moment it uploads
+
+Reported as "after uploading there is no post option to public and it's not
+moving to public". Two facts read from the schema rather than assumed:
+
+- `add_gallery_image` inserts `is_active = true`. **An upload is public the
+  moment it lands.** Nothing is hidden.
+- `provider_gallery_public_read` requires `is_active = true` **and** the
+  provider's status `APPROVED`.
+
+So "it's not moving to public" is not a missing toggle — it is a photo
+belonging to an account that is not approved yet, or one an administrator has
+suspended. Inventing a "post" switch would have flipped a flag that is already
+on, and reported success while changing nothing.
+
+The honest fix is to **show** that, and to give the owner a real control.
+`set_gallery_image_public` lets a provider unpublish and republish their own
+photo, and its reply says plainly which of the two states they are in:
+
+```
+Photo published. It is now visible on your public profile.
+Photo published, but still not visible to customers: your account is
+pending approval. It appears once your account is approved.
+```
+
+`gallery_visibility_report()` exists so that "why is my photo not showing" has
+an answer read from the database rather than guessed at in a support thread. It
+reports all three numbers — total, active, and actually visible — because the
+gap between the last two **is** the answer.
+
+### 7.1.12 "Where to?" on the map, and a button that was not on screen
+
+Two reports, two causes.
+
+**The map had its own copy of the search.** `live_map_screen.dart` opened a
+private `_DestinationSearchSheet` — a second implementation of the same idea,
+living only there. It had **no nearby-areas list** and no GPS action, which is
+exactly "the where button is on the request page but not on the map". Both
+surfaces now open the same `WhereToPicker`; the duplicate is deleted.
+
+**"It stacks and does not proceed."** The picker's keyboard inset was a
+`SizedBox(height: viewInsets.bottom)` placed *between the map and the list*,
+**inside** a column the caller had already bounded to 0.94 of the screen. That
+adds up to ~300dp of content on top of a layout whose fixed children (grabber
++ search bar + a 210dp map) already used most of it, so the `Flexible` list
+received **zero** height — and because `_confirmButton()` was built *inside*
+`_list()`, the **"Go to …" control went with it**.
+
+Nothing was stacked. The primary action was squeezed off the screen. The inset
+now pads the sheet from **outside**, the map drops to 120dp while the keyboard
+is up, and the confirm button is a direct child of the column rather than a
+descendant of the scrollable list.
+
 ### 7.2 Edge Functions
 
 Deployed by the `Deploy function …` steps in `.github/workflows/deploy-supabase.yml`.

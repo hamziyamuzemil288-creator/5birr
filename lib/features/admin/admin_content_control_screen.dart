@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import 'widgets/public_image_gallery.dart';
 
 /// Content control: the queue of reports, the record of what has been taken
 /// down, and the two actions this screen exists for.
@@ -282,6 +283,28 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
                     children: [
                       _banner(),
+                      const SizedBox(height: 20),
+                      // The gallery comes FIRST. The report queue below it
+                      // only ever showed images somebody had already
+                      // complained about, which is why a moderator could not
+                      // find a picture that broke the rules until a customer
+                      // reported it. The question this section is opened with
+                      // is "what is published right now", and that is the
+                      // gallery, not the queue.
+                      const PublicImageGallery(),
+                      const SizedBox(height: 24),
+                      Text('Reported content',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.primaryGreenDark,
+                          )),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Images and accounts somebody has flagged.',
+                        style:
+                            TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      ),
                       const SizedBox(height: 14),
                       _filterChips(),
                       const SizedBox(height: 14),

@@ -51,7 +51,30 @@ rc4=$?
 python3 "$here/restated_body_diff.py"
 rc5=$?
 
-# 6. The Dart compiler, when a Flutter SDK is on PATH.
+# 6. Every `ON CONFLICT ... DO UPDATE SET col =` names a real column.
+#
+#    This one exists because gates 1-5 were ALL green over a function that had
+#    never once written a row. `admin_save_category_fee` set
+#    `booking_base_fare` on a table whose column is `booking_base_fee`, and
+#    PostgreSQL analyses that clause before it executes -- so every save died
+#    with 42703 and nothing behind it changed.
+#
+#    Nothing else could see it, and that is the point. 0124 proved the
+#    function EXISTS with the arity and parameter names the client sends. The
+#    Dart check proved the client sends no undeclared key. The fee check proved
+#    every field group is rendered AND sent. All three were correct, and all
+#    three describe the CALL rather than the STATEMENT. A body that is
+#    correctly named, correctly granted and correctly called can still be
+#    unable to run.
+#
+#    A restatement supersedes: the live database holds the last definition, so a
+#    bug in a superseded body is history and not a live defect. Flagging it
+#    anyway would leave this gate permanently red over a migration that can
+#    never be edited.
+python3 "$here/conflict_targets.py"
+rc6=$?
+
+# 7. The Dart compiler, when a Flutter SDK is on PATH.
 #
 #    Gates 1-5 all read Dart as TEXT. That is their structural limit, not an
 #    oversight: no regex can tell that `"…$"` inside a string literal is an
@@ -66,12 +89,13 @@ rc5=$?
 #    authoritative check never depends on this script.
 if command -v flutter >/dev/null 2>&1; then
   flutter analyze --no-fatal-infos --no-fatal-warnings
-  rc6=$?
+  rc7=$?
 else
   echo "skip: no Flutter SDK on PATH -- the Dart compiler did NOT run"
   echo "      (static checks cannot find compile errors; see ARCHITECTURE.md 7.1)"
-  rc6=0
+  rc7=0
 fi
 
-[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ $rc3 -eq 0 ] && [ $rc4 -eq 0 ] && [ $rc5 -eq 0 ] && [ $rc6 -eq 0 ]
+[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ $rc3 -eq 0 ] && [ $rc4 -eq 0 ] && \
+[ $rc5 -eq 0 ] && [ $rc6 -eq 0 ] && [ $rc7 -eq 0 ]
 exit $?

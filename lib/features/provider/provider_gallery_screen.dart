@@ -159,6 +159,38 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
     }
   }
 
+  /// Publish or unpublish one photo.
+  ///
+  /// WHAT THIS IS NOT
+  /// ---------------
+  /// It is not the missing "post" button the report asked for, because there is
+  /// nothing to post: `add_gallery_image` writes `is_active = true`, so an
+  /// upload is public the moment it lands. What makes a photo invisible is the
+  /// OTHER half of the public read policy -- `provider_gallery_public_read`
+  /// also requires the provider's account to be APPROVED. A photo on a pending
+  /// or suspended account is correctly hidden and no client-side switch can
+  /// change that.
+  ///
+  /// So the honest control is unpublish/republish: it changes what THIS person
+  /// decided to show, and the server's reply says plainly whether the photo is
+  /// now visible or whether the account status is the reason it is not.
+  Future<void> _setPublic(ProviderGalleryImage image, bool isPublic) async {
+    try {
+      final result = await _client.rpc('set_gallery_image_public', params: {
+        'p_image_id': image.id,
+        'p_public': isPublic,
+      });
+      await _load();
+      if (mounted) {
+        _toast(result is String ? result : 'Updated.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _toast(friendlyError(e, context: 'Could not change that photo'));
+      }
+    }
+  }
+
   void _toast(String m) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
@@ -211,8 +243,11 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
                                 img.storagePath,
                                 bucket: _bucket,
                                 onLongPress: () => _delete(img),
-                                overlay: _DeleteScrim(
-                                  onTap: () => _delete(img),
+                                overlay: _TileOverlay(
+                                  img: img,
+                                  onDelete: () => _delete(img),
+                                  onTogglePublic: () =>
+                                      _setPublic(img, !img.isPublic),
                                 ),
                               ),
                           ],
@@ -223,14 +258,54 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
   }
 }
 
-class _DeleteScrim extends StatelessWidget {
-  const _DeleteScrim({required this.onTap});
-  final VoidCallback onTap;
+/// The two controls on each tile: publish state, and remove.
+///
+/// A single "X" scrim used to be the only affordance, so a provider had no way
+/// to express "this photo is not one I offer" without deleting it -- and
+/// deletion here is the row, which cannot be undone. Two distinct buttons, and
+/// the eye is on the left so it is the easier one to hit by accident of
+/// thumb rather than the destructive one.
+class _TileOverlay extends StatelessWidget {
+  const _TileOverlay({
+    required this.img,
+    required this.onDelete,
+    required this.onTogglePublic,
+  });
+
+  final ProviderGalleryImage img;
+  final VoidCallback onDelete;
+  final VoidCallback onTogglePublic;
 
   @override
   Widget build(BuildContext context) {
     return Align(
-      alignment: Alignment.topRight,
+      alignment: Alignment.topLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _scrim(
+            icon: img.isPublic ? Icons.visibility : Icons.visibility_off,
+            tooltip: img.isPublic ? 'Hide this photo' : 'Publish this photo',
+            onTap: onTogglePublic,
+          ),
+          const SizedBox(width: 4),
+          _scrim(
+            icon: Icons.close,
+            tooltip: 'Remove this photo',
+            onTap: onDelete,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _scrim({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
       child: GestureDetector(
         onTap: onTap,
         child: Container(
@@ -240,7 +315,7 @@ class _DeleteScrim extends StatelessWidget {
             color: Colors.black.withOpacity(0.55),
             borderRadius: BorderRadius.circular(20),
           ),
-          child: const Icon(Icons.close, size: 14, color: Colors.white),
+          child: Icon(icon, size: 14, color: Colors.white),
         ),
       ),
     );
@@ -268,8 +343,10 @@ class _EmptyGallery extends StatelessWidget {
                     fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             const Text(
-              'Add photos of your work, premises or team. Customers see these '
-              'when they open your profile.',
+              'Add photos of your work, premises or team. They are published '
+              'as soon as they upload. Customers see them once your account is '
+              'approved — use the eye on a photo to hide one you do not want '
+              'advertised.',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
             ),

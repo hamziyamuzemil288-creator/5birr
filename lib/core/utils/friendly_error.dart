@@ -245,6 +245,54 @@ String friendlyError(Object error, {String? context}) {
   ])) {
     message = 'We could not complete that just now. Please try again in a '
         'moment — if it keeps happening, contact support.';
+  // ── Server refusals that mean "not your fault", checked BEFORE the
+  // missing-rows branch on purpose -- see the note below.
+  //
+  // Two of these used to wear the same mask as a missing record, because
+    // CATEGORY_NOT_FOUND contains the substring "not found" and the generic
+    // branch above matches on that. An administrator setting a price was told
+    // "this section may have been removed" — which blames a deployment for a
+    // value that was simply wrong, and is false.
+    //
+    // And the 42703 branch is here because of 0107: admin_save_category_fee
+    // named a column that does not exist, so EVERY save died with
+    // "column ... does not exist" while the screen reported the fee editor as
+    // broken in a way nobody could act on. It is a defect on our side, never
+    // the user's, so it must never read as a missing record.
+  } else if (_any(lower, [
+    'category_not_found',
+    'category_id_required',
+  ])) {
+    message = 'That category is no longer available. Reload the list and '
+        'choose another one.';
+  } else if (_any(lower, [
+    'only_the_owner_can_change_fees',
+    'fee_settings_can_only_be_viewed_by',
+  ])) {
+    message = 'Only the account owner can change what the platform charges.';
+  } else if (_any(lower, [
+    'city_name_is_not_a_city_name',
+  ])) {
+    message = 'That is not a city name the platform recognises.';
+  } else if (_any(lower, [
+    '42703',
+    'undefined_column',
+    // An undefined_column arrives from PostgREST with the message but not
+    // always the SQLSTATE in the text the client stringifies, so the message
+    // itself is matched too. This makes the not-found branch's own
+    // 'does not exist' arm unreachable, which is the correct outcome: when a
+    // query says something does not exist it is naming a SCHEMA object on our
+    // side, never a customer record of theirs.
+    'of relation',
+    'does not exist',
+  ])) {
+    message = 'We could not save that because of a problem on our side. '
+        'Nothing was changed — please tell us, and try again later.';
+  } else if (_any(lower, [
+    'a_reason_is_required',
+    'a_warning_needs',
+  ])) {
+    message = 'Please write a short reason first.';
   }
   // ── Missing rows / removed records ──
   else if (_any(lower, [
@@ -346,10 +394,35 @@ bool _any(String lower, List<String> needles) {
 /// ride that was never made.
 bool isNotFound(Object error) {
   final lower = error.toString().toLowerCase();
+
+  // NOTE, recorded because it was believed wrong for an hour: the app's own
+  // sentinels like CATEGORY_NOT_FOUND do NOT need an exclusion list here,
+  // even though they look like they do. The arm below matches the substring
+  // 'not found' WITH A SPACE, and the sentinel is 'category_not_found' with
+  // an UNDERSCORE, so it never matched in the first place. An exclusion list
+  // was added on the assumption that it did, and its own mutation run
+  // proved it was dead code -- a guard that guards nothing is worse than no
+  // guard, because the next person trusts it.
+  //
+  // What DID send the fee editor to "may have been removed" is the 42703
+  // arm, through 'does not exist', which this list no longer contains.
+
   return _any(lower, [
     'pgrst116',
+    // 'not found' really does stay, and its removal was a regression caught by
+    // this file's own mutation run: dropping it made every genuine missing
+    // record render an error state instead of a not-found state, which is the
+    // failure §7.1.8 was about, reintroduced from the other direction. The
+    // exclusion list above is what keeps it safe.
     'not found',
-    'does not exist',
+    //
+    // 'does not exist' is GONE, and that is the second half of the same fix.
+    // A query that says something "does not exist" is naming an object in OUR
+    // schema -- a column, a table, a function. The 42703 that broke the fee
+    // editor says `column "booking_base_fare" of relation ... does not exist`,
+    // and while this arm was here, every detail screen in the app rendered its
+    // "not found" state for a request that failed on our side and left the
+    // user with a record that was never missing.
     '404',
   ]);
 }

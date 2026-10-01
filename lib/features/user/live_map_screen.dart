@@ -19,6 +19,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/live_map.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/where_to_picker.dart';
 
 /// Whether this map is being used to hail a ride or to find work.
 enum LiveMapMode { rider, driver }
@@ -361,12 +362,23 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     }
   }
 
+  /// Opens the SHARED "Where to?" picker.
+  ///
+  /// This used to open `_DestinationSearchSheet`, a private second copy of the
+  /// same idea that lived only here. Two things it could not do, and both were
+  /// reported: it had no NEARBY-AREAS list (so "the where button is on the
+  /// request page but not on the map"), and it had no GPS action of its own,
+  /// relying on the map beneath it instead. One picker, reached from both
+  /// screens, is the only way those two surfaces can stay in step.
   Future<void> _openDestinationSearch() async {
-    final picked = await showModalBottomSheet<PlaceResult>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _DestinationSearchSheet(biasPoint: _self),
+    // Bias to the rider's fix when there is one, otherwise to whatever the map
+    // is currently looking at, so the nearby list describes where the sheet
+    /// opened rather than always the same city centre.
+    final centre = _self ?? _map.camera.center;
+    final picked = await WhereToPicker.open(
+      context,
+      title: 'Where to?',
+      initialCenter: GeoPoint(centre.latitude, centre.longitude),
     );
     if (picked != null) _setDestination(LatLng(picked.lat, picked.lng), picked.label);
   }
@@ -1199,151 +1211,6 @@ class _SafetyCenterSheet extends StatelessWidget {
             },
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Destination search, backed by the same geocoding engine the ride form and
-/// the product search already use. No second implementation.
-class _DestinationSearchSheet extends StatefulWidget {
-  const _DestinationSearchSheet({this.biasPoint});
-
-  final LatLng? biasPoint;
-
-  @override
-  State<_DestinationSearchSheet> createState() => _DestinationSearchSheetState();
-}
-
-class _DestinationSearchSheetState extends State<_DestinationSearchSheet> {
-  final TextEditingController _controller = TextEditingController();
-  Timer? _debounce;
-  List<PlaceResult> _results = const [];
-  bool _searching = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    if (value.trim().length < 3) {
-      setState(() {
-        _results = const [];
-        _error = null;
-      });
-      return;
-    }
-    _debounce = Timer(const Duration(milliseconds: 350), () => _search(value.trim()));
-  }
-
-  Future<void> _search(String query) async {
-    setState(() {
-      _searching = true;
-      _error = null;
-    });
-    try {
-      final bias = widget.biasPoint == null
-          ? null
-          : GeoPoint(widget.biasPoint!.latitude, widget.biasPoint!.longitude);
-      final results = await GeocodingService.instance
-          .searchPlaces(query, biasPoint: bias, limit: 8);
-      if (!mounted) return;
-      setState(() {
-        _results = results;
-        _searching = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _searching = false;
-        _error = friendlyError(e, context: 'Could not search for that place');
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Where to?',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _controller,
-              autofocus: true,
-              textInputAction: TextInputAction.search,
-              onChanged: _onChanged,
-              decoration: InputDecoration(
-                hintText: 'Search a place, street or landmark',
-                prefixIcon: const Icon(Icons.search, size: 20),
-                filled: true,
-                fillColor: AppTheme.surfaceVariant,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_searching)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 18),
-                child: Center(
-                  child: CircularProgressIndicator(color: AppTheme.primaryGreen),
-                ),
-              )
-            else if (_error != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                child: Text(_error!, style: const TextStyle(color: AppTheme.error, fontSize: 13)),
-              )
-            else if (_results.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 10),
-                child: Text(
-                  'Type at least three characters to search.',
-                  style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
-                ),
-              )
-            else
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: _results.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final r = _results[i];
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.place_outlined, color: AppTheme.primaryGreen),
-                      title: Text(r.label,
-                          maxLines: 2, overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 13.5)),
-                      subtitle: r.city.isEmpty
-                          ? null
-                          : Text(r.city, style: const TextStyle(fontSize: 12)),
-                      onTap: () => Navigator.of(context).pop(r),
-                    );
-                  },
-                ),
-              ),
-          ],
-        ),
       ),
     );
   }

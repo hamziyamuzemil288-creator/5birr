@@ -222,24 +222,46 @@ class _WhereToPickerState extends State<WhereToPicker>
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final media = MediaQuery.of(context);
+    final keyboard = media.viewInsets.bottom;
     // The results sheet is the top of a rounded card that sits OVER the map,
     // which is why the map can be full-bleed behind it.
     return Material(
       color: AppTheme.background,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
       clipBehavior: Clip.antiAlias,
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _grabber(),
-            _searchBar(),
-            _mapArea(),
-            SizedBox(height: bottomInset),
-            _list(),
-          ],
+      child: Padding(
+        // THE KEYBOARD INSET SHRINKS THE SHEET FROM OUTSIDE.
+        //
+        // It used to be a `SizedBox(height: bottomInset)` placed between the
+        // map and the list, INSIDE this column. That adds up to ~300dp of
+        // content on top of a layout the caller had already bounded to 0.94 of
+        // the screen, and the column's fixed children (grabber + search bar +
+        // a 210dp map) already used most of it. The `Flexible` list therefore
+        // received ZERO height -- the results disappeared, and because the
+        // confirm button was built inside `_list()`, the "Go to ..." control
+        // went with them. That is the report "it stacks and does not proceed":
+        // nothing was stacked, the primary action was simply not on screen.
+        //
+        // Padding outside the column does the opposite and correct thing: the
+        // sheet gets shorter, so the map and the button have room to shrink
+        // and the list keeps whatever is left.
+        padding: EdgeInsets.only(bottom: keyboard),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _grabber(),
+              _searchBar(),
+              _mapArea(keyboard > 0),
+              Flexible(child: _list(keyboard > 0)),
+              // Outside the Flexible on purpose. The button a rider has to
+              // press is never allowed to be the thing that gets squeezed out
+              // by a long list or an open keyboard.
+              _confirmButton(),
+            ],
+          ),
         ),
       ),
     );
@@ -353,9 +375,13 @@ class _WhereToPickerState extends State<WhereToPicker>
 
   /// The map, with the rider's own position drawn as a pulsing halo while a
   /// fix is being acquired.
-  Widget _mapArea() {
+  Widget _mapArea(bool compact) {
     return SizedBox(
-      height: 210,
+      // 210dp normally, 120dp with the keyboard up: the rider is typing a
+      // place name and the RESULTS are what they need to see, but the map
+      // must not vanish entirely either. 210 + keyboard + list + button does
+      // not fit a 480dp-tall sheet, which is the whole of the bug above.
+      height: compact ? 120 : 210,
       child: Stack(
         children: [
           FlutterMap(
@@ -417,20 +443,18 @@ class _WhereToPickerState extends State<WhereToPicker>
   }
 
   /// The results and the nearby-area locator, in one scrollable column.
-  Widget _list() {
+  Widget _list(bool compact) {
     // Nothing to show is a normal state, not an error: a rider with no network
     // still has the map.
     if (_results.isEmpty && _areas.isEmpty && !_searching) {
-      return _footer(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
-          child: Text(
-            _locating
-                ? 'Finding where you are…'
-                : 'Search above, or tap the map to drop a pin.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 13, color: AppTheme.textMuted),
-          ),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+        child: Text(
+          _locating
+              ? 'Finding where you are…'
+              : 'Search above, or tap the map to drop a pin.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 13, color: AppTheme.textMuted),
         ),
       );
     }
@@ -459,18 +483,17 @@ class _WhereToPickerState extends State<WhereToPicker>
       for (final a in _areas) rows.add(_placeTile(a, showDistance: true));
     }
 
-    return Flexible(
-      child: ConstrainedBox(
-        // Bounded so the map never disappears on a tall list, and so the sheet
-        // cannot exceed the 0.94 the caller allowed.
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.34,
-        ),
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.only(bottom: 8),
-          children: rows,
-        ),
+    return ConstrainedBox(
+      // Bounded so the map never disappears on a tall list, and so the sheet
+      // cannot exceed the 0.94 the caller allowed. Looser with the keyboard up,
+      // because the map has already given up 90dp to make room.
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * (compact ? 0.28 : 0.34),
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.only(bottom: 8),
+        children: rows,
       ),
     );
   }
@@ -542,16 +565,6 @@ class _WhereToPickerState extends State<WhereToPicker>
       trailing: selected
           ? const Icon(Icons.check_circle, size: 20, color: AppTheme.primaryGreen)
           : null,
-    );
-  }
-
-  Widget _footer({required Widget child}) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        child,
-        _confirmButton(),
-      ],
     );
   }
 

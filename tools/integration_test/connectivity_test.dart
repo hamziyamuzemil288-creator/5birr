@@ -1522,6 +1522,70 @@ void main() {
       print('    customer ride RPC reachability -> $detail');
     });
 
+    test('the category fee upsert can actually be planned', () async {
+      // The failure this exists for: `admin_save_category_fee` set
+      // `booking_base_fare` on a table whose column is `booking_base_fee`.
+      // PostgreSQL analyses an ON CONFLICT clause BEFORE it executes, so the
+      // statement raised 42703 on every single call and the per-category fee
+      // editor had never once written a row.
+      //
+      // Everything already in this repository was green over it. Migration
+      // 0124 proved the function EXISTS with the arity and parameter names the
+      // client sends. The Dart harness proved the client sends no undeclared
+      // key. The fee check proved every field group is rendered AND sent. All
+      // three describe the CALL. None of them executes the STATEMENT, and a
+      // correctly named, correctly granted, correctly called function can still
+      // be unable to run.
+      //
+      // This assertion EXPLAINs the upsert, which plans without executing and
+      // fails on a column that does not exist. No rows, no category, no
+      // fee-editor authority needed.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_category_fee_save_plans');
+      expect(detail, isNotNull,
+          reason: 'The assertion could not be run at all. With 0126 deployed '
+              'this function exists and is granted to anon; a null here means '
+              'the migration has not been applied or PostgREST has not '
+              'reloaded. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'The category fee upsert does not plan, so it can never '
+              'write a row and no fee an administrator sets has ever been '
+              'stored. This is the defect reported as "this section may have '
+              'been removed": $detail');
+      // ignore: avoid_print
+      print('    category fee upsert -> $detail');
+    });
+
+    test('the image moderation and fee RPCs are all callable', () async {
+      final (detail, error) =
+          await rpcTextDiagnosed('image_moderation_signature_report');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'At least one of the four image-moderation RPCs, or the fee '
+              'save, is missing at the signature the client sends, declares '
+              'different parameter names, or shares its name with an overload: '
+              '$detail');
+      // ignore: avoid_print
+      print('    image moderation RPCs -> $detail');
+    });
+
+    test('a provider photo is public the moment it uploads', () async {
+      // Read-only. It cannot distinguish "uploaded but the account is pending"
+      // from "uploaded and visible" without a provider account, so it reports
+      // both numbers and lets the difference be read rather than guessed at.
+      // The report is the instrument: without it, "my photo is not moving to
+      // public" has no answer except a guess.
+      final (detail, error) =
+          await rpcTextDiagnosed('gallery_visibility_report');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'The gallery visibility report failed: $detail');
+      // ignore: avoid_print
+      print('    gallery visibility -> $detail');
+    });
+
     test('a document submission records where the device was', () async {
       // The liveness signal. A document photo and the location it was
       // submitted from are very hard to fake together, which is the whole

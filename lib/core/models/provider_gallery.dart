@@ -10,6 +10,15 @@ class ProviderGalleryImage {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  /// Whether customers can see this photo.
+  ///
+  /// Named for what it means rather than what the column is called:
+  /// `is_active` gates `provider_gallery_public_read`, so the flag IS the
+  /// public state, and every screen that shows it is talking about
+  /// visibility. Saying "active" to a provider who is deciding what to
+  /// advertise says nothing they can act on.
+  bool get isPublic => isActive;
+
   const ProviderGalleryImage({
     required this.id,
     required this.providerId,
