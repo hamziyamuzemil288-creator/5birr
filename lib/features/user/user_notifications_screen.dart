@@ -1,8 +1,68 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/resilience/failure_mapper.dart';
 import '../../core/widgets/async_view.dart';
+
+/// Where tapping a notification row takes the reader.
+///
+/// Every `notify_*` call in this project writes a payload with the id of the
+/// thing it is about -- `order_id`, `ride_id`, `document_id`,
+/// `appeal_case_id`, `recharge_id` -- and until now the inbox read that
+/// payload and did nothing with it. The list had no `onTap` at all, so
+/// "A customer is asking whether you have 2 items available. Open it to
+/// confirm." was a sentence telling the reader to open something they had no
+/// way to reach from where they were reading it.
+///
+/// Returned as a path rather than navigated to directly so the mapping can be
+/// tested without a router: the ids come from JSON, and a cast on them is
+/// exactly the kind of thing that throws inside a build() and blanks the
+/// screen (the failure the content-control gallery had).
+///
+/// [viewerRole] is threaded into the order route because
+/// `/user/orders/:id` renders a different screen for the provider on the order
+/// -- that is where "Confirm Availability" lives -- and the router defaults it
+/// to 'user', which would hand a provider the buyer's view of their own
+/// request.
+///
+/// Returns null when the payload names nothing the router has a screen for.
+/// The row is still marked read; it just does not navigate, which is the
+/// honest outcome rather than a push to a route that does not exist.
+String? notificationTargetPath(
+  Map<String, dynamic> notification, {
+  String viewerRole = 'user',
+}) {
+  Map<String, dynamic> payload =
+      (notification['data'] as Map?)?.cast<String, dynamic>() ?? const {};
+
+  String? id(String key) {
+    final raw = payload[key];
+    if (raw == null) return null;
+    final text = raw.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
+  final orderId = id('order_id');
+  if (orderId != null) return '/user/orders/$orderId';
+
+  final rideId = id('ride_id') ?? id('request_id');
+  if (rideId != null) return '/user/ride-active';
+
+  final appealId = id('appeal_case_id') ?? id('appeal_id');
+  if (appealId != null) return '/appeals';
+
+  final rechargeId = id('recharge_id');
+  if (rechargeId != null) return '/wallet';
+
+  // A document decision. There is no per-document screen a reader can open --
+  // the owner reads it on their profile and a reviewer reads the queue -- so
+  // the owner is sent to the profile, which is where the verdict is shown.
+  final documentId = id('document_id');
+  if (documentId != null) return '/profile';
+
+  return null;
+}
 
 class UserNotificationsScreen extends StatefulWidget {
   const UserNotificationsScreen({super.key});
@@ -35,6 +95,63 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
     } catch (e) {
       throw AppFailureMapper.map(e, context: 'loading your notifications');
     }
+  }
+
+  /// True when the signed-in account runs a business, which decides whether an
+  /// order notification opens the provider's half of the order or the buyer's.
+  ///
+  /// Resolved once and cached rather than asked per row: it is one query, and
+  /// a tap that awaits it would make the list feel dead.
+  bool? _isProviderAccount;
+
+  Future<bool> _providerAccount() async {
+    if (_isProviderAccount != null) return _isProviderAccount!;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return false;
+    try {
+      final row = await Supabase.instance.client
+          .from('provider_profiles')
+          .select('id')
+          .eq('user_id', userId)
+          .limit(1);
+      final value = (row as List).isNotEmpty;
+      _isProviderAccount = value;
+      return value;
+    } catch (_) {
+      // Never fatal. A reader who cannot be classified still gets their
+      // notifications, opened with the buyer's view -- the order detail screen
+      // loads the same row either way.
+      return false;
+    }
+  }
+
+  /// Mark the row read, then follow the payload.
+  ///
+  /// The mark happens FIRST and is never awaited before the navigation. A
+  /// failed write must not strand the reader on a list they have already read,
+  /// and an unread dot on a row they acted on is a smaller lie than a tap that
+  /// does nothing.
+  Future<void> _open(Map<String, dynamic> n) async {
+    if (n['is_read'] != true) {
+      try {
+        await Supabase.instance.client
+            .from('notifications')
+            .update({'is_read': true, 'read_at': DateTime.now().toUtc().toIso8601String()})
+            .eq('id', n['id']);
+      } catch (_) {
+        // Best-effort; the navigation below is the part that matters.
+      }
+    }
+
+    final path = notificationTargetPath(
+      n,
+      viewerRole: await _providerAccount() ? 'provider' : 'user',
+    );
+    if (path == null || !mounted) return;
+    // The order route reads `extra` as the viewer role; anything else takes no
+    // argument, and passing one to a route that ignores it is harmless but
+    // passing one where the builder casts it is not.
+    context.push(path, extra: path.startsWith('/user/orders/') ? (await _providerAccount() ? 'provider' : 'user') : null);
   }
 
   Color _iconColor(String type) {
@@ -79,6 +196,7 @@ class _UserNotificationsScreenState extends State<UserNotificationsScreen> {
                               width: 0.5),
                         ),
                         child: ListTile(
+                          onTap: () => _open(n),
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 14, vertical: 4),
                           leading: Container(

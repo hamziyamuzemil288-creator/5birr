@@ -6925,7 +6925,471 @@ def check_category_fields_are_wired() -> list[str]:
     return problems
 
 
+REGISTRATION_MIGRATION = "20260927000130_a_submission_tells_both_sides.sql"
+
+
+def check_registration_notifications_are_wired() -> list[str]:
+    """A submitted application must tell the applicant AND the reviewers.
+
+    Nine of the twelve verification states already notify; the two that did
+    not were the SUBMITTED state (in either direction) and the reactivation
+    that a 0026 restatement silently dropped. Neither is a compile error and
+    neither shows up in a screenshot: the rows are simply absent.
+
+    The load-bearing part is that the send is a TRIGGER over approval_requests
+    rather than a call inside each of the three submitting functions. A trigger
+    is the only place the next caller cannot forget, and a per-caller call is
+    precisely how the document half of this went missing in the first place --
+    so a check that accepted three call sites would accept the shape that
+    caused the bug.
+    """
+    problems: list[str] = []
+
+    mig = MIGRATIONS / REGISTRATION_MIGRATION
+    if not mig.is_file():
+        return ["%s is missing -- a submitted application notifies nobody, so "
+                "the applicant cannot tell a received application from a lost "
+                "one and reviewers only find the queue by going to look"
+                % REGISTRATION_MIGRATION]
+    sql = _strip_comments(_read(mig))
+
+    # 1. Both triggers, by name. A DROP TRIGGER without its CREATE is how the
+    #    document gap reopened once already.
+    for trig, why in (
+        ("trg_registration_submitted",
+         "a signup, a partner application and a resubmission all write "
+         "approval_requests and none of them notifies anybody"),
+        ("trg_registration_resubmitted",
+         "a rejected application reopened by resubmit_rejected_application is "
+         "an UPDATE, so the insert trigger cannot see it"),
+    ):
+        if not re.search(
+                r"CREATE\s+TRIGGER\s+%s\b[\s\S]{0,400}?ON\s+"
+                r"(?:public\.)?approval_requests\b" % trig,
+                sql, re.IGNORECASE):
+            problems.append(
+                "%s does not create %s on approval_requests, so %s"
+                % (mig.name, trig, why))
+
+    # 2. Both sides of the submission. A trigger that only opens the queue for
+    #    staff leaves the person who applied in silence, which is the half
+    #    that matters most to them.
+    for fn in ("on_registration_submitted", "on_registration_resubmitted"):
+        target, body = last_migration_defining(fn)
+        if target is None:
+            problems.append("%s is undefined" % fn)
+            continue
+        if "notify_user_safe" not in body.lower():
+            problems.append(
+                "%s: %s() writes no notification, so the event is silent"
+                % (target.name, fn))
+
+    target, submitted = last_migration_defining("on_registration_submitted")
+    if target is not None:
+        # The reviewer fan-out is reached through the recipient set, and a
+        # mention of the name is not a call: the falsifier plants the reference
+        # with the loop emptied.
+        if not re.search(r"registration_review_recipients\s*\(\s*\)", submitted,
+                         re.IGNORECASE):
+            problems.append(
+                "%s: on_registration_submitted() never calls "
+                "registration_review_recipients(), so no reviewer is told an "
+                "application arrived and the queue is only found by looking"
+                % target.name)
+        if not re.search(r"\bFOR\s+v_recipient\s+IN\b", submitted, re.IGNORECASE):
+            problems.append(
+                "%s: on_registration_submitted() does not iterate the recipient "
+                "set" % target.name)
+
+    # 3. The enum value. REGISTRATION_RECEIVED has existed since 0001 and is
+    #    written by nothing else; using it is what keeps this off a second
+    #    parallel system.
+    if not re.search(r"'REGISTRATION_RECEIVED'", sql):
+        problems.append(
+            "%s never writes REGISTRATION_RECEIVED, so the notification that "
+            "reaches the applicant and the reviewers has no type" % mig.name)
+
+    # 4. unsuspend_provider: guarded AND telling. Both halves, because a
+    #    restatement that dropped the guard is caught elsewhere and one that
+    #    dropped the notice is caught nowhere.
+    target, unsuspend = last_migration_defining("unsuspend_provider")
+    if target is None:
+        problems.append("unsuspend_provider is undefined")
+    else:
+        low = unsuspend.lower()
+        for clause, why in (
+            ("admin_can('registrations')", "its permission check"),
+            ("staff_is_action_manager()", "its action-manager check"),
+            ("staff_scope_allows_category(", "its category scope"),
+            ("staff_scope_allows_city(", "its city scope"),
+        ):
+            if clause.lower() not in low:
+                problems.append(
+                    "%s: unsuspend_provider() has lost %s -- this restatement "
+                    "re-emits the body, and 0026 lost a whole notification "
+                    "this way once already" % (target.name, why))
+        if "notify_user_safe" not in low:
+            problems.append(
+                "%s: unsuspend_provider() reactivates an account without "
+                "telling the person, which is the notice 0022c sent and 0026 "
+                "dropped" % target.name)
+
+    # 5. The report, so the claim is countable in CI rather than readable.
+    if not re.search(r"FUNCTION\s+public\.registration_notification_wiring_report",
+                     sql, re.IGNORECASE):
+        problems.append(
+            "%s has no wiring report, so the coverage cannot be counted by "
+            "the connectivity suite" % mig.name)
+
+    return problems
+
+
+APPEAL_MIGRATION = "20260927000131_an_appeal_reaches_the_people_who_act_on_it.sql"
+
+
+def check_appeal_notifications_reach_reviewers() -> list[str]:
+    """A filed appeal must reach the people who can ACT on it.
+
+    Three separate failures hid behind one report -- "it is not showing at the
+    admin front dashboard and in notifications bars, but I get it when I go to
+    document verification" -- and two of them are in Dart, so this check reads
+    both sides:
+
+      1. the dashboard's count helper read `.count` off whatever a metric
+         returned. Ten of eleven metrics are table queries that carry it; the
+         document metric is an RPC returning a plain int, which does not, and
+         the `catch` turned the mismatch into 0 forever.
+      2. the bell badge summed four queues out of the six the dashboard counts,
+         so an open appeal or dispute was carded and invisible at the top.
+      3. `fn_notify_appeal_case_filed` told only the person the case was filed
+         AGAINST. Nobody who can open the queue was told anything.
+    """
+    problems: list[str] = []
+
+    dash = _read(LIB / "features" / "admin" / "admin_dashboard.dart")
+
+    # 1. The count helper. It must accept BOTH shapes explicitly; a bare
+    #    `.count` on `res` is the defect, and so is relying on the `catch` to
+    #    turn a shape mismatch into a zero.
+    helper = re.search(
+        r"Future<int> count\(Future<dynamic> Function\(\) query\) async \{(.*?)\n    \}",
+        dash, re.DOTALL)
+    if helper is None:
+        problems.append("admin_dashboard.dart: the count() helper is gone, so "
+                        "every dashboard metric is unverified")
+    else:
+        body = helper.group(1)
+        if "res is int" not in body:
+            problems.append(
+                "admin_dashboard.dart: count() does not accept a plain int, so "
+                "admin_pending_document_count() -- which RETURNS integer -- hits "
+                "`int.count`, raises NoSuchMethodError, and is swallowed to 0 "
+                "by the catch. The Document Verification card then reads 'No "
+                "documents waiting' forever while the screen behind it shows a "
+                "full queue.")
+        if re.search(r"return\s+\(res as dynamic\)\.count", body):
+            problems.append(
+                "admin_dashboard.dart: count() reads .count off the result "
+                "without checking its shape first, which is the original "
+                "defect.")
+
+    # 2. The badge. It must include every queue the dashboard counts, so a
+    #    queue cannot be carded below and absent from the number above.
+    badge = re.search(r"final pendingTotal = (.*?);", dash, re.DOTALL)
+    if badge is None:
+        problems.append("admin_dashboard.dart: there is no pendingTotal, so the "
+                        "badge is still being summed inline and can omit a queue")
+    else:
+        for field, why in (
+            ("_pendingDocuments", "documents waiting for a verdict"),
+            ("_openAppeals", "appeals waiting to be worked"),
+            ("_openDisputes", "orders a customer has disputed"),
+        ):
+            if field not in badge.group(1):
+                problems.append(
+                    "admin_dashboard.dart: the pending badge omits %s (%s), so "
+                    "it can read 0 while the card below it reads a non-zero "
+                    "count" % (field, why))
+
+    # 3. The trigger function.
+    mig = MIGRATIONS / APPEAL_MIGRATION
+    if not mig.is_file():
+        problems.append(
+            "%s is missing -- filing an appeal notifies only the person it is "
+            "filed AGAINST, so nobody who can open the queue is told one "
+            "arrived" % APPEAL_MIGRATION)
+        return problems
+    sql = _strip_comments(_read(mig))
+
+    if not re.search(r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\."
+                     r"fn_notify_appeal_case_filed", sql, re.IGNORECASE):
+        problems.append(
+            "%s does not restate fn_notify_appeal_case_filed, so the function "
+            "that only told the respondent is still the live one" % mig.name)
+
+    target, whole = last_migration_defining("fn_notify_appeal_case_filed")
+    if target is None:
+        problems.append("fn_notify_appeal_case_filed is undefined")
+    else:
+        # `last_migration_defining` returns the WHOLE FILE, not the body, and
+        # this file's header explains at length that it notifies
+        # `NEW.respondent_id` and that both sends go through notify_user_safe.
+        # Testing that text directly is the "a comment says X so the check for
+        # X passes" trap: the migration passes while the function does
+        # nothing. So the body is extracted AND stripped of comments first.
+        body = _strip_comments(function_body(whole, "fn_notify_appeal_case_filed"))
+        if not body:
+            problems.append(
+                "%s: fn_notify_appeal_case_filed() has no body this check can "
+                "read" % target.name)
+        else:
+            if "appeal_review_recipients" not in body:
+                problems.append(
+                    "%s: fn_notify_appeal_case_filed() never calls "
+                    "appeal_review_recipients(), so no reviewer is told an "
+                    "appeal arrived" % target.name)
+            if not re.search(r"FOR\s+v_recipient\s+IN\b", body, re.IGNORECASE):
+                problems.append(
+                    "%s: fn_notify_appeal_case_filed() does not iterate the "
+                    "recipient set" % target.name)
+            # The respondent notice must survive the restatement. Losing it
+            # would be a silent regression of a working feature, which is the
+            # exact failure 0026 had with unsuspend_provider.
+            if "respondent_id" not in body:
+                problems.append(
+                    "%s: fn_notify_appeal_case_filed() has stopped notifying "
+                    "NEW.respondent_id -- the person named in the case is no "
+                    "longer told, which is a regression of working behaviour"
+                    % target.name)
+            # A client write that raises would roll back the user's own appeal.
+            if "notify_user_safe" not in body:
+                problems.append(
+                    "%s: fn_notify_appeal_case_filed() calls notify_user "
+                    "directly. Filing an appeal is a client write, so a failure "
+                    "inside this trigger raises and ROLLS BACK the user's "
+                    "appeal." % target.name)
+
+    # The case type. Declared but never writable is the shape this repo keeps
+    # catching -- `registrations` once granted access to nothing at all.
+    #
+    # The value is asserted INSIDE the constraint, not merely anywhere in the
+    # file: the trigger function also mentions DOCUMENT_VERIFICATION when it
+    # words the notice, so a bare "does the string appear" test passes on a
+    # migration whose CHECK still refuses the value at runtime.
+    chk = re.search(
+        r"ADD\s+CONSTRAINT\s+appeal_cases_case_type_known\s*\n?\s*"
+        r"CHECK\s*\([^;]*?\)\s*;", sql, re.IGNORECASE | re.DOTALL)
+    if chk is None:
+        problems.append(
+            "%s does not re-add appeal_cases_case_type_known, so the old "
+            "two-value CHECK is still in force and DOCUMENT_VERIFICATION is "
+            "refused at runtime" % mig.name)
+    elif "DOCUMENT_VERIFICATION" not in chk.group(0):
+        problems.append(
+            "%s: the re-added appeal_cases_case_type_known CHECK does not admit "
+            "DOCUMENT_VERIFICATION, so a document appeal is refused by the "
+            "constraint at runtime" % mig.name)
+
+    # And the Dart that has to be able to produce it.
+    form = _read(LIB / "features" / "appeal" / "appeal_screen.dart")
+    if "'case_type'" not in form:
+        problems.append(
+            "appeal_screen.dart does not send case_type, so the new value can "
+            "never be produced by the form and the column is dead")
+    if not re.search(r"_about\s*=\s*", form):
+        problems.append(
+            "appeal_screen.dart has no _about state, so the issue type the "
+            "case_type is derived from is gone")
+
+    # The queue filter. Checked IN THE FILTER LIST, not anywhere in the file:
+    # the label map also names the value, so a bare search passes on a screen
+    # that cannot actually filter by it.
+    queue = _read(LIB / "features" / "admin" / "admin_appeals_screen.dart")
+    types = re.search(r"_types\s*=\s*\[(.*?)\];", queue, re.DOTALL)
+    if types is None:
+        problems.append(
+            "admin_appeals_screen.dart has no _types filter list, so a "
+            "reviewer cannot filter the appeal queue at all")
+    elif "DOCUMENT_VERIFICATION" not in types.group(1):
+        problems.append(
+            "admin_appeals_screen.dart does not offer DOCUMENT_VERIFICATION in "
+            "the filter list, so a reviewer can file the work and still never "
+            "see it")
+
+    return problems
+
+
+STORAGE_MIGRATION = "20260927000132_the_uploaded_files_go_too.sql"
+
+# Every (bucket, table, column) the account file sweep is expected to cover.
+# The first element is a BUCKET LITERAL and the second a `table.column` the
+# collector must read, which is why the body is searched for both: a list
+# that only proved the bucket was named would pass with every source dropped.
+_ACCOUNT_FILE_SOURCES = [
+    ("user-documents", "user_documents.storage_path"),
+    ("user-documents", "appeal_cases.photo_path"),
+    ("user-documents", "appeal_cases.response_photo_path"),
+    ("profile-avatars", "profiles.avatar_storage_path"),
+    ("provider-photos", "provider_profiles.photo_storage_path"),
+    ("product-images", "product_images.storage_path"),
+    ("product-images", "listing_images.storage_path"),
+    ("provider-gallery", "provider_gallery.storage_path"),
+    ("vehicle-images", "vehicle_images.storage_path"),
+    ("provider-gallery", "provider_stores.logo_storage_path"),
+    ("provider-gallery", "provider_stores.cover_image_storage_path"),
+    ("payment-screenshots", "wallet_recharge_requests.screenshot_storage_path"),
+]
+
+# The three ways an account is closed. A trigger on auth.users would be the
+# only thing that cannot be forgotten and it cannot be created here, so the
+# sweep is an explicit call and every path that skips it leaks a file.
+_ACCOUNT_DELETE_PATHS = [
+    ("ceo_delete_user_account", "supabase/migrations/"
+     + STORAGE_MIGRATION),
+    ("account-deletion-gateway", "supabase/functions/account-deletion-gateway/index.ts"),
+    ("user-admin", "supabase/functions/user-admin/index.ts"),
+]
+
+
+def check_account_deletion_removes_the_files() -> list[str]:
+    """Closing an account must remove the FILES, not only the rows naming them.
+
+    `DELETE FROM auth.users` takes thirty-six tables with it and stops there.
+    Every one of those tables is a POINTER to a bucket object, so before
+    20260927000132 an approved account deletion left the identity scans, the
+    appeal evidence photos, the avatar, the listing photos, the gallery, the
+    vehicle photos and the recharge screenshot in storage with nothing left to
+    find them by -- unreachable, so no screen ever showed the leak, and still
+    there, so the quota and the published privacy page were both wrong.
+
+    Three things have to hold, and each was a way this could be green while
+    broken:
+
+      1. the collector must read every SOURCE, not merely name every bucket.
+         A bucket with no query behind it sweeps nothing, and the file stays.
+      2. the retained rows must stay swept-out. `payment_proofs` belongs to a
+         transaction record that 0118 keeps for accounting, so its proof image
+         is deliberately NOT deleted; a sweep that took it would break a live
+         record to satisfy a tidier story.
+      3. all three delete paths must call it. The CEO screen goes through the
+         SQL wrapper, the deletion-request screen through one gateway, and
+         Staff Assignment through another -- the last of which bypasses
+         `delete_user_account()` entirely and calls the auth admin API, so it
+         needs its own call or the files of every account closed that way
+         survive.
+    """
+    problems: list[str] = []
+    path, sql = last_migration_defining("account_storage_objects")
+    if path is None or sql is None:
+        return ["account_storage_objects() is missing: nothing collects the "
+                "files an account owns, so every uploaded photo, document and "
+                "appeal evidence photo survives the deletion"]
+
+    collector = function_body(sql, "account_storage_objects")
+    if not collector:
+        return ["account_storage_objects() has no readable body, so the list "
+                "of what it sweeps cannot be checked"]
+    flat = re.sub(r"\s+", " ", collector)
+
+    for bucket, source in _ACCOUNT_FILE_SOURCES:
+        table, column = source.split(".")
+        if "'%s'" % bucket not in flat:
+            problems.append(
+                "account_storage_objects() no longer names the %s bucket, so "
+                "the files in it are never removed with the account" % bucket)
+        if ("public.%s" % table) not in flat or column not in flat:
+            problems.append(
+                "account_storage_objects() no longer reads %s, so the %s "
+                "objects it used to sweep are not collected"
+                % (source, bucket))
+
+    if "public.payment_proofs" in flat:
+        problems.append(
+            "account_storage_objects() now sweeps payment_proofs, whose rows "
+            "are RETAINED for accounting by 20260927000118 -- that would "
+            "leave a live transaction record pointing at a deleted proof "
+            "image. The recharge screenshot is covered, conditionally, and the "
+            "order proof must not be.")
+
+    # The conditional half. A provider's recharges hang off the wallet and
+    # cascade; a customer's do not and are kept. Reading the bucket without
+    # the condition would delete the proof of a transaction that survived.
+    recharge = flat[flat.find("wallet_recharge_requests"):] \
+        if "wallet_recharge_requests" in flat else ""
+    if recharge and "provider_id IN" not in recharge:
+        problems.append(
+            "the wallet_recharge_requests branch of account_storage_objects() "
+            "is no longer conditioned on the provider/wallet, so a CUSTOMER's "
+            "recharge proof would be deleted while the recharge row itself is "
+            "retained for accounting")
+
+    # The removal itself, and the privilege that guards it.
+    _, purge_sql = last_migration_defining("purge_account_storage")
+    purge = function_body(purge_sql or "", "purge_account_storage")
+    if not purge:
+        problems.append("purge_account_storage() is missing or unreadable: "
+                        "the files are collected and then nothing acts on them")
+    else:
+        if "DELETE FROM storage.objects" not in purge:
+            problems.append(
+                "purge_account_storage() no longer deletes from "
+                "storage.objects, so it counts objects without removing any")
+        if "account_storage_objects" not in purge:
+            problems.append(
+                "purge_account_storage() no longer calls "
+                "account_storage_objects(), so it has nothing to act on")
+
+    all_sql = "\n".join(_read(p) for p in migration_files())
+    if not re.search(
+            r"REVOKE\s+ALL\s+ON\s+FUNCTION\s+public\.purge_account_storage\(uuid\)"
+            r"\s*FROM\s+PUBLIC,\s*anon,\s*authenticated", all_sql, re.IGNORECASE):
+        problems.append(
+            "purge_account_storage(uuid) is not revoked from PUBLIC, anon and "
+            "authenticated. It deletes files, and any client role able to call "
+            "it could delete another account's identity documents")
+    if not re.search(
+            r"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.purge_account_storage"
+            r"\(uuid\)\s*TO\s+service_role", all_sql, re.IGNORECASE):
+        problems.append(
+            "purge_account_storage(uuid) is not granted to service_role, so "
+            "the gateways that close accounts would silently skip the sweep")
+
+    for name, where in _ACCOUNT_DELETE_PATHS:
+        if where.endswith(".ts"):
+            src = _read(ROOT / where)
+            # The CALL, not the word. Both gateways log
+            # `console.error("purge_account_storage failed:", ...)`, so a bare
+            # substring survives deleting the invocation and the check goes
+            # green on a gateway that leaks every file -- which is the defect
+            # it exists to catch.
+            called = re.search(
+                r"rpc\(\s*[\"']purge_account_storage[\"']"
+                r"|purge_account_storage\s*\(", src) is not None
+        else:
+            called = "purge_account_storage(" in function_body(sql, name)
+        if not called:
+            problems.append(
+                "%s closes an account without calling purge_account_storage, "
+                "so the uploaded files of every account deleted that way "
+                "survive" % name)
+
+    page = _read(ROOT / "docs" / "delete-account.html").lower()
+    # Prose, not the function name: this is the page a user and a Play
+    # reviewer read, and naming a SQL function on it would be noise. The
+    # words that carry the promise are the ones about FILE STORAGE, because
+    # without them the page already claims the documents are deleted.
+    if "file storage" not in page:
+        problems.append(
+            "docs/delete-account.html says nothing about file storage, so "
+            "the page tells a user their uploaded documents are removed when "
+            "only the row that named them was")
+
+    return problems
+
+
 CHECKS = [
+    ("closing an account removes the uploaded files, from every delete path",
+     check_account_deletion_removes_the_files),
     ("the public account-deletion page is reachable and matches the schema",
      check_account_deletion_page_is_public_and_true),
     ("no foreign key refuses the account deletion, on either side",
@@ -7037,6 +7501,12 @@ CHECKS = [
     ("every trade ranks its best and prices on its own terms (ranking + "
      "per-category fields reach end to end)",
      check_category_fields_are_wired),
+    ("a submitted or resubmitted application tells the applicant and the "
+     "reviewers, and a reactivation tells the person",
+     check_registration_notifications_are_wired),
+    ("a filed appeal reaches the dashboard, the badge, and the people who can "
+     "act on it",
+     check_appeal_notifications_reach_reviewers),
 ]
 
 

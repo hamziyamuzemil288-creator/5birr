@@ -127,6 +127,28 @@ Deno.serve(async (req) => {
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("user_id", targetId);
 
+    // The uploaded files, while the rows that name them still exist. Every
+    // profile, product image, gallery photo, vehicle photo and uploaded
+    // document is a POINTER to a bucket object, and the auth cascade removes
+    // the pointers only -- the identity scans and appeal evidence photos stay
+    // in `user-documents` with nothing left to find them by. This has to run
+    // BEFORE deleteUser, because after it there is no row left to read a path
+    // from. See 20260927000132.
+    //
+    // Best-effort, and deliberately so: the account must still be deletable
+    // when the cleanup fails, or a storage problem becomes a way to keep a
+    // deleted person's documents on the platform. The failure is logged loudly
+    // instead, and public.assert_account_storage_is_purged() proves the wiring
+    // on every run rather than trusting this call to exist.
+    const { data: purged, error: purgeError } = await admin.rpc(
+      "purge_account_storage",
+      { p_user_id: targetId },
+    );
+    if (purgeError) {
+      console.error("purge_account_storage failed:", purgeError.message);
+    }
+    const storageRemoved = typeof purged === "number" ? purged : 0;
+
     const { error: delErr } = await admin.auth.admin.deleteUser(targetId);
     if (delErr) {
       console.error("deleteUser failed:", delErr.message);
@@ -162,11 +184,17 @@ Deno.serve(async (req) => {
         caller_was_ceo: callerIsCeo,
         target_was_admin: targetIsAdmin,
         target_roles: (targetRoles ?? []).map((r) => r.role),
+        storage_objects_removed: storageRemoved,
       },
     });
     if (histErr) console.error("deletion audit write failed:", histErr.message);
 
-    return json({ ok: true, audited: !histErr, deleted_by_ceo: callerIsCeo });
+    return json({
+      ok: true,
+      audited: !histErr,
+      deleted_by_ceo: callerIsCeo,
+      storage_objects_removed: storageRemoved,
+    });
   }
 
   return json({ error: "unknown_action" }, 400);

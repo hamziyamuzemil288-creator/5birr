@@ -13,6 +13,7 @@ import '../../core/providers/auth_provider.dart';
 import '../../core/services/geocoding_service.dart';
 import '../../core/services/live_map_service.dart';
 import '../../core/services/location_service.dart';
+import '../../core/services/location_prompt.dart';
 import '../../core/services/points_service.dart';
 import '../../core/services/resilient_subscription.dart';
 import '../../core/theme/app_theme.dart';
@@ -40,7 +41,8 @@ class LiveMapScreen extends ConsumerStatefulWidget {
   ConsumerState<LiveMapScreen> createState() => _LiveMapScreenState();
 }
 
-class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
+class _LiveMapScreenState extends ConsumerState<LiveMapScreen>
+    with SingleTickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final MapController _map = MapController();
   final LiveMapService _service = LiveMapService();
@@ -74,6 +76,36 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
   /// re-hit the geocoder on every metre travelled.
   LatLng? _areaResolvedFor;
 
+  /// Map | Nearby. The two questions this screen answers are "where am I and
+  /// what is around me" and "what exactly is around me" -- and the second one
+  /// used to be hidden behind dragging the sheet taller, which is a gesture
+  /// nobody discovers and a fact nobody can act on without zooming out and
+  /// counting pins. A tab says it is there.
+  late final TabController _tabs =
+      TabController(length: 2, vsync: this);
+
+  /// Why there is no position, when there is none.
+  ///
+  /// Null means either "we have a fix" or "nothing has been tried yet", so it
+  /// is cleared the moment a fix lands -- including one the user typed in by
+  /// hand, which is why the typed location is stored beside it rather than
+  /// in the same slot.
+  LocationStatus? _locationProblem;
+
+  /// A location the user typed instead of a GPS fix. Kept apart from [_self]
+  /// so the map can keep saying which one it is showing: a hand-typed point
+  /// drawn as a live pulsing dot would be a lie about where someone is.
+  LatLng? _manualLocation;
+  String? _manualLocationLabel;
+
+  /// The phone's location settings have been opened once from this screen.
+  ///
+  /// Android hands control straight back to the app when the user comes back,
+  /// so the screen needs to know it already asked; without this, every rebuild
+  /// would re-launch the settings app and trap the user in a loop they cannot
+  /// escape. One offer per visit, then the screen waits for them.
+  bool _offeredSystemSettings = false;
+
   // Driver mode.
   String? _providerId;
   bool _driverApproved = false;
@@ -103,6 +135,7 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     _posSub?.cancel();
     _movement?.cancel();
     _rides?.cancel();
+    _tabs.dispose();
     _map.dispose();
     super.dispose();
   }
@@ -113,14 +146,20 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     if (_self == null) {
       setState(() {
         _loading = false;
-        _loadError = 'Turn on location access to see what is moving around you.';
+        _loadError = null;
       });
+      // No fix is a state this screen now RECOVERS from rather than a dead
+      // end: the map still draws, and the location panel offers the two
+      // things that actually help -- turning the radio on, or saying where
+      // you are in words. See _locationPanel().
+      await _offerLocationRecovery();
       return;
     }
 
     setState(() {
       _loading = false;
       _loadError = null;
+      _locationProblem = null;
     });
 
     await _loadChips();
@@ -133,6 +172,61 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     _loadPoints();
   }
 
+  /// The phone has no usable position. Open the OS location settings ONCE,
+  /// unprompted, because that is the whole fix on both platforms and a
+  /// second tap of the same kind is the thing people learn to dismiss.
+  ///
+  /// Not for a permission that was simply denied: the user said no at the
+  /// dialog, and re-opening a settings page over that is nagging, not
+  /// helping. Those two cases get the panel instead, which offers the same
+  /// buttons without taking the screen away first.
+  Future<void> _offerLocationRecovery() async {
+    final problem = _locationProblem;
+    if (problem == null) return;
+    if (problem != LocationStatus.serviceDisabled) return;
+    if (_offeredSystemSettings) return;
+    _offeredSystemSettings = true;
+    await LocationService.instance.openLocationSettings();
+  }
+
+  /// Re-read the position after the user says they have turned location on.
+  Future<void> _retryLocation() async {
+    setState(() => _loading = true);
+    await _resolveSelf();
+    if (!mounted) return;
+    if (_self == null) {
+      setState(() => _loading = false);
+      return;
+    }
+    await _bootstrap();
+  }
+
+  /// "I am at Bole, near the airport" -- typed, because the GPS is off and
+  /// cannot be turned on from inside an app.
+  ///
+  /// This is the half of the recovery that does not depend on the OS at all.
+  /// Without it a driver whose location services are switched off cannot
+  /// work from their phone at all; with it they can work, and the map is
+  /// honest about the difference because the typed point is drawn as an
+  /// ordinary pin rather than as the pulsing live dot.
+  Future<void> _typeMyLocation() async {
+    final centre = _self ?? _map.camera.center;
+    final picked = await WhereToPicker.open(
+      context,
+      title: 'Where are you?',
+      initialCenter: GeoPoint(centre.latitude, centre.longitude),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _manualLocation = LatLng(picked.lat, picked.lng);
+      _manualLocationLabel = picked.label;
+      _loading = false;
+      _loadError = null;
+    });
+    _map.move(_manualLocation!, 16);
+    await _bootstrap();
+  }
+
   /// The rider's own GPS fix. `getCurrentPositionDetailed` already falls back
   /// to the OS's last known position when a fresh fix is not available, which
   /// is what lets the map centre itself indoors.
@@ -143,9 +237,16 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
       if (position != null) {
         _self = LatLng(position.latitude, position.longitude);
         _accuracy = position.accuracy;
+        if (mounted) setState(() => _locationProblem = null);
+        return;
       }
+      // No position. Remember WHY, because "turn on location" and "allow
+      // location" are different instructions sent to the same person, and a
+      // screen that says only "no location" gets the wrong one tried.
+      if (mounted) setState(() => _locationProblem = result.status);
     } catch (_) {
       // Non-fatal: the map still works, it just cannot centre on the user.
+      if (mounted) setState(() => _locationProblem = LocationStatus.error);
     }
   }
 
@@ -185,6 +286,7 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
         setState(() {
           _self = here;
           _accuracy = pos.accuracy;
+          _locationProblem = null;
         });
         _resolveArea(here);
         // A driver's own position is what makes them discoverable, so it is
@@ -334,13 +436,38 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
   }
 
   void _recenter() {
-    final self = _self;
+    final self = _self ?? _manualLocation;
     if (self == null) {
       _snack('Waiting for a GPS fix');
       return;
     }
     _animateTo(self, 16);
   }
+
+  /// One zoom step in or out, around whatever the camera is already looking
+  /// at.
+  ///
+  /// Around the CURRENT centre rather than the user, deliberately: a zoom
+  /// button that yanks the camera back to your own dot every time it is
+  /// pressed is unusable while panning, which is the one thing a rider does
+  /// with a map. The recentre button is where "go back to me" lives.
+  void _zoomIn() => _zoomBy(1);
+
+  void _zoomOut() => _zoomBy(-1);
+
+  void _zoomBy(double steps) {
+    final camera = _map.camera;
+    final target = zoomTarget(camera.zoom, steps,
+        minZoom: _minZoom, maxZoom: _maxZoom);
+    if (target == camera.zoom) return;
+    _animateTo(camera.center, target);
+  }
+
+  /// Bounds shared with [LiveMap] so the buttons grey out at exactly the
+  /// levels the camera refuses to pass. 18 is the last zoom OpenStreetMap
+  /// standard tiles are published for; past it the map is grey squares.
+  static const double _minZoom = 3;
+  static const double _maxZoom = 18;
 
   /// flutter_map's controller moves instantly. A short tween reads as the
   /// app following you rather than as the map jumping under you.
@@ -454,11 +581,18 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
                       openRides: _isDriver && _online ? _openRides : const [],
                       selfPosition: self,
                       selfAccuracyMeters: _accuracy,
+                      handTypedPoint: _manualLocation,
+                      handTypedLabel: _manualLocationLabel,
                       destinationPoint: _destination,
                       onRecenter: _recenter,
+                      onZoomIn: _zoomIn,
+                      onZoomOut: _zoomOut,
+                      minZoom: _minZoom,
+                      maxZoom: _maxZoom,
                       onTapMap: _pickMode ? (_) {} : null,
                       overlayBottomInset: _sheetExpanded ? 250 : 170,
                     ),
+                    if (_self == null) _locationPanel(),
                     _buildTopBar(),
                     if (_pickMode) _buildPickModeBar(),
                     _buildSheet(),
@@ -559,7 +693,13 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
             children: [
               Center(
                 child: GestureDetector(
-                  onTap: () => setState(() => _sheetExpanded = !_sheetExpanded),
+                  onTap: () {
+                    setState(() => _sheetExpanded = !_sheetExpanded);
+                    // Dragging the sheet taller used to reveal the nearby
+                    // list. It now lives in its own tab, and the gesture
+                    // keeps meaning the same thing by taking you there.
+                    if (_sheetExpanded) _tabs.animateTo(1);
+                  },
                   child: Container(
                     width: 44,
                     height: 5,
@@ -571,7 +711,12 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              if (_isDriver) ..._driverSheet() else ..._riderSheet(),
+              _tabBar(),
+              const SizedBox(height: 12),
+              if (_tabs.index == 0)
+                if (_isDriver) ..._driverSheet() else ..._riderSheet()
+              else
+                _nearbyTab(),
             ],
           ),
         ),
@@ -652,11 +797,179 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
       const _TrustBanner(),
       const SizedBox(height: 8),
       _pointsBanner(),
-      if (_sheetExpanded) ...[
-        const SizedBox(height: 14),
-        _nearbyList(),
-      ],
     ];
+  }
+
+  /// Map | Nearby.
+  ///
+  /// A real [TabBar], not two buttons that look like one: the selection is
+  /// announced to accessibility services, the tabs are reachable by keyboard,
+  /// and the indicator animates. The label carries the count, because "is
+  /// anything actually around me" is the question the tab exists to answer
+  /// and an empty list alone does not tell a rider whether to wait.
+  Widget _tabBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: TabBar(
+        controller: _tabs,
+        onTap: (_) => setState(() {}),
+        labelColor: AppTheme.primaryGreenDark,
+        unselectedLabelColor: AppTheme.textSecondary,
+        indicatorColor: AppTheme.primaryGreen,
+        indicatorSize: TabBarIndicatorSize.tab,
+        dividerColor: Colors.transparent,
+        labelStyle: const TextStyle(
+          fontSize: 13.5,
+          fontWeight: FontWeight.w700,
+        ),
+        tabs: [
+          const Tab(text: 'Map', icon: Icon(Icons.map_outlined, size: 17)),
+          Tab(
+            text: _isDriver
+                ? 'Nearby (${_openRides.length})'
+                : 'Nearby (${_vehicles.length})',
+            icon: const Icon(Icons.near_me_outlined, size: 17),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The Nearby tab. Riders get what is moving around them; a driver gets the
+  /// open requests, which is the same question asked of a different side of
+  /// the market.
+  Widget _nearbyTab() {
+    if (_isDriver) return _driverNearbyTab();
+    return _nearbyList();
+  }
+
+  Widget _driverNearbyTab() {
+    if (_openRides.isEmpty) {
+      return const Text(
+        'No open ride requests within range right now.',
+        style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Open requests nearby (${_openRides.length})',
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 10),
+        _SheetButton(
+          label: 'Open the request queue',
+          onPressed: () => context.push('/vehicle/ride-requests'),
+          expanded: true,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Ride requests appear here as riders ask for them. Pull the queue '
+          'to accept one.',
+          style: const TextStyle(
+            fontSize: 12.5,
+            height: 1.4,
+            color: AppTheme.textSecondary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The no-position state, laid over the map rather than replacing it.
+  ///
+  /// The map draws perfectly well without a centre -- the city is still there
+  /// -- so replacing it with an error screen took away the one thing that
+  /// helps someone work out where they are. Two buttons, and both of them do
+  /// something: switch the radio on, or say where you are instead.
+  Widget _locationPanel() {
+    final problem = _locationProblem;
+    final needsSettings = LocationMessages.needsSettings(
+      problem ?? LocationStatus.serviceDisabled,
+    );
+
+    return Positioned(
+      left: 16,
+      right: 16,
+      top: MediaQuery.of(context).padding.top + 62,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.14),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.location_off_outlined,
+                    color: AppTheme.primaryGreen, size: 22),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    LocationMessages.forStatus(
+                      problem ?? LocationStatus.serviceDisabled,
+                    ),
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      height: 1.4,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _retryLocation,
+                    icon: const Icon(Icons.my_location, size: 17),
+                    label: Text(needsSettings ? 'Retry' : 'Try again'),
+                  ),
+                ),
+                if (needsSettings) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await LocationService.instance.openLocationSettings();
+                        if (mounted) await _retryLocation();
+                      },
+                      icon: const Icon(Icons.settings_outlined, size: 17),
+                      label: const Text('Phone settings'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: _typeMyLocation,
+                icon: const Icon(Icons.edit_location_alt_outlined, size: 17),
+                label: const Text('Type where I am instead'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// "You are in <area>" -- the nearest small area to the rider, plus the

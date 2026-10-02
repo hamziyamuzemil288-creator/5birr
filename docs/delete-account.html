@@ -175,6 +175,10 @@ here is anonymised &mdash; it is deleted.</p>
       chat messages, and the push tokens registered for your devices.</li>
   <li><strong>Your support appeals</strong> &mdash; the appeals you submitted, including
       the photo, description, phone number and email address you gave with them.</li>
+  <li><strong>The files behind those records.</strong> Every uploaded document, appeal
+      evidence photo, profile photo, product photo, gallery photo and vehicle
+      photo is removed from our file storage as well &mdash; not just the database
+      row that pointed at it.</li>
   <li><strong>Your one-time codes and rate-limit records.</strong></li>
   <li><strong>If you ran a business on 5birr</strong> (shop, service provider or
       driver): your business profile, product listings and their photos, your store
@@ -311,6 +315,12 @@ sign-in.</p>
     <li data-table="wallet_transactions">Your provider wallet ledger.</li>
     <li data-table="wallets">Your provider wallet and balance.</li>
   </ul>
+  <p class="note">The tables above are database tables. The files they pointed at
+  &mdash; the document scans, appeal evidence photos, avatars, listing photos,
+  gallery photos and vehicle photos &mdash; are removed from file storage by the
+  same deletion, bucket by bucket. A payment screenshot is the one case that
+  follows its record instead: if the transaction record is retained for
+  accounting, its proof image is retained with it.</p>
   <h3>Retained, with the link to your account removed</h3>
   <ul id="retained-tables">
     <li data-table="orders">Orders: kept for accounting. The delivery address you typed stays on the order.</li>

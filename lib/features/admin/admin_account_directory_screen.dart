@@ -221,13 +221,22 @@ class _AdminAccountDirectoryScreenState
     //    server-side; the client errors below only translate the refusals
     //    the CEO can actually trigger.
     try {
-      await Supabase.instance.client.rpc('ceo_delete_user_account', params: {
-        'p_target_user_id': userId,
-        'p_reason': reason,
-      });
+      final res = await Supabase.instance.client.rpc('ceo_delete_user_account',
+          params: {'p_target_user_id': userId, 'p_reason': reason});
       if (!mounted) return;
+      // How many uploaded files went with the account. The server folds it
+      // into the same object it already returned, so this costs no extra
+      // round trip -- and it is the part of the deletion the operator cannot
+      // see any other way, because the rows are gone whether or not the
+      // photos are.
+      final removed = res is Map
+          ? (res['storage_objects_removed'] as num?)?.toInt()
+          : null;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$name\'s account was deleted')),
+        SnackBar(
+          content: Text('$name\'s account was deleted'
+              '${removed == null ? '' : ' — $removed uploaded files removed'}'),
+        ),
       );
       _load();
     } catch (e) {

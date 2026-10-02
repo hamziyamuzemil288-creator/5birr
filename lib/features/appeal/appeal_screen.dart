@@ -59,8 +59,25 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
     'provider': 'Provider / selling issue',
     'dispute': 'Buyer–seller dispute',
     'account': 'Account status (ban / suspension / approval)',
+    'document': 'ID / document verification decision',
     'general': 'Something else',
   };
+
+  /// The `_about` values that are stored as `appeal_cases.case_type` rather
+  /// than only being read by a human.
+  ///
+  /// Until 0131 a document dispute could only be filed as a GENERAL appeal:
+  /// it arrived, it worked, and it was invisible -- mixed into a queue of
+  /// disputes about other people and filtered out of every document view. A
+  /// real column is the only thing a reviewer can filter on, so the choice the
+  /// person already makes here is written down where the server can see it.
+  /// Everything else stays GENERAL, which is what the column already defaults
+  /// to, so no existing case changes meaning.
+  static const _caseTypeForAbout = {
+    'document': 'DOCUMENT_VERIFICATION',
+  };
+
+  String get _caseType => _caseTypeForAbout[_about] ?? 'GENERAL';
 
   @override
   void initState() {
@@ -214,6 +231,7 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
                 ? null
                 : _emailCtrl.text.trim(),
             'captcha_id': _captchaId,
+            'case_type': _caseType,
             if (_respondentId != null) 'respondent_id': _respondentId,
           })
           .select('id')
@@ -349,6 +367,35 @@ class _AppealScreenState extends ConsumerState<AppealScreen> {
                   ),
                 ],
               ),
+            ),
+            const SizedBox(height: 20),
+
+            // What kind of problem is this? The first question a reviewer
+            // asks, and until now the only way to answer it was to read the
+            // prose. `_about` existed but was only ever set by a chat deep
+            // link, so choosing "ID / document verification decision" was
+            // unreachable for anybody filing an appeal directly -- which is
+            // how a document dispute ended up as an untagged GENERAL appeal in
+            // a queue of disputes about other people.
+            Text('What is this about?',
+                style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: _about,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Type of issue'),
+              items: _aboutLabels.entries
+                  .map((e) => DropdownMenuItem<String>(
+                        value: e.key,
+                        child: Text(e.value,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ))
+                  .toList(),
+              onChanged: _submitting
+                  ? null
+                  : (v) {
+                      if (v != null) setState(() => _about = v);
+                    },
             ),
             const SizedBox(height: 20),
 

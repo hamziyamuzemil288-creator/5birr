@@ -2070,4 +2070,75 @@ void main() {
           reason: 'the assertion returned nothing');
     });
   });
+
+  group('a submitted application tells both sides', () {
+    test('the submission and reactivation wiring is live', () async {
+      final (detail, error) =
+          await rpcTextDiagnosed('registration_notification_wiring_report');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'A submitted application does not reach the applicant and '
+              'the reviewers. Every signup and every Become a Partner '
+              'application converges on one INSERT into approval_requests, '
+              'and that table had no trigger at all -- so the person who '
+              'applied was never told it was received, and nobody holding '
+              'registrations was told one arrived. The same report asserts '
+              'that unsuspend_provider still carries all four of its '
+              'authorization clauses AND its reactivation notice, because '
+              'the 0026 restatement dropped that notice silently. $detail');
+      // ignore: avoid_print
+      print('    registration notifications -> $detail');
+    });
+
+    // registration_review_recipients() is deliberately NOT called from here.
+    // It is a list of account ids, so it stays a server-side definition, and
+    // the trigger that uses it is SECURITY DEFINER and needs no caller
+    // privilege. A test that called it to watch the call fail would name the
+    // function in a suite that runs as anon, and the RPC-reachability check
+    // would then read the denial as a call with no path and demand a grant
+    // that must not exist. The privilege is asserted where it can be seen
+    // exactly -- inside the report above, against the live grant.
+  });
+
+  group('an appeal reaches the people who can act on it', () {
+    test('the appeal notification wiring is live', () async {
+      final (detail, error) =
+          await rpcTextDiagnosed('appeal_notification_wiring_report');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'A filed appeal does not reach the people who have to work '
+              'it. fn_notify_appeal_case_filed notified only the person the '
+              'case was filed AGAINST, so the accounts that can actually OPEN '
+              'the queue -- is_admin() and staff holding support_chat, which is '
+              'exactly the set appeal_cases own SELECT policy admits -- were '
+              'never told one arrived. The same report asserts that '
+              'DOCUMENT_VERIFICATION is admitted by the case_type CHECK: a '
+              'person whose ID was rejected had no way to file a dispute a '
+              'reviewer could filter on. $detail');
+      // ignore: avoid_print
+      print('    appeal notifications -> $detail');
+    });
+  });
+
+  group('closing an account removes the files, not just the rows', () {
+    test('the account file sweep is live and reachable by its owner only',
+        () async {
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_account_storage_is_purged');
+      expect(detail, isNotNull,
+          reason: 'The report could not be run at all. Diagnostic: $error');
+      expect(detail, startsWith('ok'),
+          reason: 'Deleting an account removes thirty-six tables and none of '
+              'the files they pointed at: the identity, business and driving '
+              'document scans, every appeal evidence photo, the avatar, the '
+              'listing photos, the gallery, the vehicle photos. Nothing in '
+              'this project deleted a bucket object on the account path '
+              'before migration 0132, so the rows are gone and the files stay. '
+              '$detail');
+      // ignore: avoid_print
+      print('    account file sweep -> $detail');
+    });
+  });
 }

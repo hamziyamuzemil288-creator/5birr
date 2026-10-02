@@ -37,6 +37,56 @@ import '../../../core/widgets/photo_grid.dart';
 /// irreversible and takes the provider's copy with it; the report was "delete
 /// the image OR suspend it from the public", and the second of those is the
 /// one a moderator should reach for by default.
+
+/// One row's tile, or null when the row cannot be rendered.
+///
+/// The two reads are `as String?`, not `as String`, and that is the whole
+/// fix. `admin_public_image_gallery` declares its output as
+/// `RETURNS TABLE (..., bucket text, storage_path text, ...)`, and a
+/// RETURNS TABLE column is nullable by definition -- PostgREST hands the
+/// client JSON `null` for one regardless of what the query wrote. An
+/// unchecked `as String` on a null throws, and because it threw inside the
+/// list literal that assembled the grid, it took out the WHOLE panel for that
+/// city rather than skipping one photo. That is what "images are not loading
+/// in this section" looked like, while the same files rendered correctly in
+/// every other screen -- product_card, the vehicle form and the document queue
+/// all read these same columns defensively.
+///
+/// A row with no path or no bucket is skipped rather than rendered as a broken
+/// tile: there is nothing to sign, so a tile would only ever be a grey
+/// placeholder opening an action sheet for a file that is not there.
+PhotoGridItem? galleryTileItem(
+  Map<String, dynamic> row, {
+  void Function(Map<String, dynamic>)? onTap,
+}) {
+  final path = row['storage_path'] as String?;
+  final bucket = row['bucket'] as String?;
+  if (path == null || path.isEmpty || bucket == null || bucket.isEmpty) {
+    return null;
+  }
+  return PhotoGridItem.stored(
+    path,
+    bucket: bucket,
+    onTap: onTap == null ? null : () => onTap(row),
+  );
+}
+
+/// The tiles for one city's rows, in the order the RPC returned them.
+///
+/// Top level and pure so the exact assembly that shipped -- and broke -- can
+/// be exercised without a Supabase client, which `PhotoGrid`'s signing branch
+/// requires. The test asserts on THIS function rather than on a copy of it, so
+/// a refactor cannot leave the tests green against logic the screen no longer
+/// runs.
+List<PhotoGridItem> galleryTileItems(
+  List<Map<String, dynamic>> rows, {
+  void Function(Map<String, dynamic>)? onTap,
+}) =>
+    [
+      for (final r in rows)
+        if (galleryTileItem(r, onTap: onTap) case final item?) item,
+    ];
+
 class PublicImageGallery extends StatefulWidget {
   const PublicImageGallery({super.key});
 
@@ -407,14 +457,7 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
 
   Widget _grid(List<Map<String, dynamic>> rows) {
     return PhotoGrid(
-      items: [
-        for (final r in rows)
-          PhotoGridItem.stored(
-            r['storage_path'] as String,
-            bucket: r['bucket'] as String,
-            onTap: () => _sheet(r),
-          ),
-      ],
+      items: galleryTileItems(rows, onTap: _sheet),
     );
   }
 

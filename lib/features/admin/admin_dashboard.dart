@@ -51,10 +51,31 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
     // Each metric is loaded independently: one failing query must never
     // abort the whole load (previously a single bad query zeroed every
     // counter and silently hid pending approvals from the admin).
+    //
+    // TWO SHAPES COME BACK FROM THESE QUERIES, and reading only one of them is
+    // exactly what hid the document queue from this dashboard.
+    //
+    //   `.count(CountOption.exact)` on a table  -> a PostgrestList, which
+    //     carries `.count`
+    //   an RPC declared `RETURNS integer`        -> a plain int, which does
+    //     NOT
+    //
+    // `admin_pending_document_count` is the second kind. `(7 as dynamic).count`
+    // throws NoSuchMethodError, the `catch (_)` below turned that into 0, and
+    // the Document Verification card read "No documents waiting" forever while
+    // the screen behind it showed a full queue -- which is reported as "it is
+    // not on the dashboard, but I get it when I go to document verification".
+    //
+    // Both shapes are read explicitly rather than by `catch`, because a
+    // swallowed mismatch and a genuine zero are indistinguishable from the
+    // outside, and that ambiguity is what hid this for so long.
     Future<int> count(Future<dynamic> Function() query) async {
       try {
         final res = await query();
-        return (res as dynamic).count as int? ?? 0;
+        if (res is int) return res;
+        if (res is num) return res.toInt();
+        final c = (res as dynamic).count;
+        return c is int ? c : 0;
       } catch (_) {
         return 0;
       }
@@ -185,10 +206,21 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
-    final hasPending = _pendingProviders > 0 ||
-        _pendingUsers > 0 ||
-        _pendingRecharges > 0 ||
-        _pendingDocuments > 0;
+    // EVERY queue this dashboard already counts, and nothing else.
+    //
+    // Appeals and order disputes used to be missing here even though both were
+    // loaded into fields further down and shown as cards: an open appeal was
+    // counted, carded, and absent from the one number meant to say "there is
+    // work waiting". That is the "it is not showing at the top" half of the
+    // report, and it is why the badge could read 0 while the Appeals card two
+    // inches below it read "3 open cases".
+    final pendingTotal = _pendingProviders +
+        _pendingUsers +
+        _pendingRecharges +
+        _pendingDocuments +
+        _openAppeals +
+        _openDisputes;
+    final hasPending = pendingTotal > 0;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
@@ -208,24 +240,43 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
               icon: const Icon(Icons.workspace_premium),
               onPressed: () => context.push('/ceo'),
             ),
+          // The admin's own inbox. The bell below carries a PENDING-WORK count
+          // and routes to the queue that is holding it, which is a different
+          // thing: an application submitted or resubmitted writes a
+          // notification to this account, and until there was a link here an
+          // administrator had no way to read one. The screen and the
+          // /admin-notifications route already existed and are owner-scoped,
+          // so this adds a door rather than a feature.
+          IconButton(
+            tooltip: 'Notifications',
+            icon: const Icon(Icons.notifications_none_rounded),
+            onPressed: () => context.push('/admin-notifications'),
+          ),
           if (hasPending)
             Badge(
-              label: Text('${_pendingProviders + _pendingUsers + _pendingRecharges + _pendingDocuments}',
+              label: Text('$pendingTotal',
                   style: const TextStyle(fontSize: 10, color: Colors.white)),
               backgroundColor: AppTheme.error,
               child: IconButton(
                 tooltip: 'Pending items',
                 icon: const Icon(Icons.notifications_outlined),
                 // Was `() {}` — a bell carrying a count of pending work that
-                // did nothing when tapped. The badge counts three queues, so
-                // it goes to whichever is actually holding the work:
-                // approvals first, and the payment queue when the only thing
-                // outstanding is a recharge. The per-queue cards further down
-                // the same screen remain the precise way in.
+                // did nothing when tapped. It goes to whichever queue is
+                // actually holding the work, checked in the order a case
+                // arrives: an account or provider awaiting a decision, then a
+                // document, then a filed appeal, then a disputed order, then
+                // money. The per-queue cards further down the same screen
+                // remain the precise way in.
                 onPressed: () => context.push(
                   _pendingProviders + _pendingUsers > 0
                       ? '/admin/approvals'
-                      : '/admin/payments',
+                      : _pendingDocuments > 0
+                          ? '/admin/document-verification'
+                          : _openAppeals > 0
+                              ? '/admin/appeals'
+                              : _openDisputes > 0
+                                  ? '/admin/disputes'
+                                  : '/admin/payments',
                 ),
               ),
             ),

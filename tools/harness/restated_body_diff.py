@@ -326,6 +326,56 @@ def check_case(fn: str, src_glob: str, dst_glob: str, allowed: tuple[str, ...],
 #  must appear, must not appear)
 FIXES: list[tuple[str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = [
     (
+        # `fn_notify_order_status_change` is the AFTER UPDATE trigger on
+        # `orders`, and 0088 restated it with `NEW.order_number`. That column
+        # was never created -- 0037 was marked applied without executing and
+        # no CREATE TABLE declares it -- so the trigger raised
+        # `record "new" has no field "order_number"` on every order UPDATE and
+        # rolled it back. The whole availability chain is made of order
+        # UPDATEs, so not one of its arrows could fire.
+        #
+        # 0115 found the identical bug in `create_order_secure` and fixed the
+        # INSERT path; the UPDATE path was left. This entry pins the repair so
+        # the broken shape cannot come back, and pins the two provider notices
+        # the same restatement adds, so "fixing" it by dropping them is also
+        # caught.
+        "fn_notify_order_status_change",
+        "20260927000088",
+        "20260927000133",
+        # The vocabulary the repair is allowed to introduce. `order_number` is
+        # the name being removed; the rest name the two new provider notices
+        # and the short reference that replaces the broken read. It is a
+        # vocabulary and not a whitelist of lines -- this function is the one
+        # place a line like "a customer submitted a payment proof" has to be
+        # writable at all -- so the `present`/`absent` pins below are what
+        # actually hold the repair and the two notices in place.
+        (
+            "order_number",
+            "v_short_ref",
+            "PAYMENT_VERIFICATION",
+            "payment proof",
+            "proof",
+            "notify_user_once",
+            "v_provider_user",
+            "provider_profiles",
+            "ELSIF NEW.status",
+            "IF OLD.status",
+            "administrator",
+            "back with the buyer",
+        ),
+        (
+            # the repaired label
+            "v_label := 'Order ' || coalesce('#' || v_short_ref, 'update');",
+            # and the two provider notices, which exist for the whole point
+            "'order-proof-submitted:' || new.id::text",
+            "'order-proof-rejected:' || new.id::text",
+        ),
+        (
+            # the broken read
+            "new.order_number",
+        ),
+    ),
+    (
         # 0115 wrapped `unnest` in a subquery that projected the constant 1 and
         # then filtered on a column of the derived table, so the assertion this
         # function exists to make raised 42703 twice instead of counting. 0116

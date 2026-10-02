@@ -123,6 +123,25 @@ Deno.serve(async (req) => {
     return json({ error: "approval_failed" }, 500);
   }
 
+  // The files, before the cascade. Every uploaded document, appeal evidence
+  // photo, avatar, listing photo and gallery photo is a pointer to a bucket
+  // object; delete_user_account removes the pointers and leaves the objects.
+  // After the RPC below there is no row left to read a path from, so this has
+  // to happen first. See 20260927000132.
+  //
+  // Best-effort on purpose, for the same reason the auth deletion below is
+  // reported rather than retried: an account that cannot be closed because
+  // storage is unhappy would be worse than an account that is closed with one
+  // orphaned file, and the operator gets the number either way.
+  const { data: purged, error: purgeError } = await admin.rpc(
+    "purge_account_storage",
+    { p_user_id: request.user_id as string },
+  );
+  if (purgeError) {
+    console.error("purge_account_storage failed:", purgeError.message);
+  }
+  const storageRemoved = typeof purged === "number" ? purged : 0;
+
   // The cascade. p_actor_id is passed EXPLICITLY: this is a service-role call
   // with no end-user JWT, so auth.uid() would be NULL inside the function and
   // the permission check could never pass. Mirrors delete_staff.
@@ -142,7 +161,7 @@ Deno.serve(async (req) => {
       return json({ error: "only_staff_with_permission_can_approve" }, 403);
     }
     console.error("delete_user_account failed:", msg);
-    return json({ error: "delete_failed", approved: true }, 500);
+    return json({ error: "delete_failed", approved: true, storage_objects_removed: storageRemoved }, 500);
   }
 
   const deleted = (result ?? {}) as {
@@ -165,6 +184,7 @@ Deno.serve(async (req) => {
         error: "auth_user_delete_failed",
         approved: true,
         data_deleted: true,
+        storage_objects_removed: storageRemoved,
         user_id: deleted.deleted_user_id ?? request.user_id,
       },
       500,
@@ -179,6 +199,9 @@ Deno.serve(async (req) => {
       // Surfaced so the staff member can see what was kept, not destroyed.
       orders_retained: deleted.orders_retained ?? 0,
       provider_profiles_retained: deleted.provider_profiles_retained ?? 0,
+      // Surfaced so the staff member can see how many uploaded files went
+      // with the account, not just how many records were kept.
+      storage_objects_removed: storageRemoved,
     },
   });
 });

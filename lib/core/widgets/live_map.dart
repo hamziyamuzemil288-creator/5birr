@@ -31,11 +31,17 @@ class LiveMap extends StatefulWidget {
     this.openRides = const [],
     this.selfPosition,
     this.selfAccuracyMeters,
+    this.handTypedPoint,
+    this.handTypedLabel,
     this.pickupPoint,
     this.destinationPoint,
     this.showRecenter = true,
     this.recenterLabel = 'My location',
     this.onRecenter,
+    this.onZoomIn,
+    this.onZoomOut,
+    this.minZoom = 3,
+    this.maxZoom = 18,
     this.onMapReady,
     this.onCameraChanged,
     this.onTapMap,
@@ -58,12 +64,34 @@ class LiveMap extends StatefulWidget {
   final LatLng? selfPosition;
   final double? selfAccuracyMeters;
 
+  /// Where the user SAYS they are, when GPS could not tell us.
+  ///
+  /// Deliberately not [selfPosition]. The pulsing live dot means "the phone
+  /// knows where you are, to within this many metres", and drawing a typed
+  /// address in that same dot would claim a precision nobody has -- and would
+  /// put a placeholder in the middle of a traffic map as though it were a
+  /// real fix. Amber pin with a label instead.
+  final LatLng? handTypedPoint;
+  final String? handTypedLabel;
+
   final LatLng? pickupPoint;
   final LatLng? destinationPoint;
 
   final bool showRecenter;
   final String recenterLabel;
   final VoidCallback? onRecenter;
+
+  /// Zoom controls. Supplied together or not at all: the caller owns the
+  /// camera (it passes [mapController]) and therefore owns what "one step
+  /// closer" means. Supplying only one of the two draws a single button, which
+  /// is never what anyone wants, so the pair is rendered together.
+  final VoidCallback? onZoomIn;
+  final VoidCallback? onZoomOut;
+
+  /// Bounds the buttons refuse to step past, so a user can neither zoom out
+  /// into an empty grey void nor into a tile level the bucket does not serve.
+  final double minZoom;
+  final double maxZoom;
 
   final VoidCallback? onMapReady;
   final ValueChanged<LatLng>? onCameraChanged;
@@ -213,6 +241,17 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
           height: 62,
           child: _SelfDot(pulse: pulse),
         ),
+      if (widget.handTypedPoint != null)
+        Marker(
+          point: widget.handTypedPoint!,
+          width: 46,
+          height: 46,
+          alignment: Alignment.topCenter,
+          child: Tooltip(
+            message: widget.handTypedLabel ?? 'Your typed location',
+            child: const Icon(Icons.place, color: AppTheme.gold, size: 38),
+          ),
+        ),
     ];
 
     return Stack(
@@ -248,6 +287,36 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
             right: 12,
             bottom: 12 + widget.overlayBottomInset,
             child: _RecenterButton(label: widget.recenterLabel, onPressed: widget.onRecenter),
+          ),
+        // Above the recentre button, in the same right-hand column. Below it
+        // rather than beside it, so a thumb reaching for either one never has
+        // to cross over the map, and so neither control can cover the other's
+        // tap target when the sheet is expanded.
+        if (widget.onZoomIn != null && widget.onZoomOut != null)
+          Positioned(
+            right: 12,
+            bottom: 12 + widget.overlayBottomInset +
+                (widget.showRecenter ? 44 + 10 : 0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _ZoomButton(
+                  icon: Icons.add,
+                  tooltip: 'Zoom in',
+                  onPressed: widget.maxZoom > _map.camera.zoom
+                      ? widget.onZoomIn
+                      : null,
+                ),
+                const SizedBox(height: 8),
+                _ZoomButton(
+                  icon: Icons.remove,
+                  tooltip: 'Zoom out',
+                  onPressed: widget.minZoom < _map.camera.zoom
+                      ? widget.onZoomOut
+                      : null,
+                ),
+              ],
+            ),
           ),
       ],
     );
@@ -502,6 +571,63 @@ class _RecenterButton extends StatelessWidget {
             width: 44,
             height: 44,
             child: Icon(Icons.my_location, size: 21, color: AppTheme.primaryGreen),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The zoom a [+1]/[-1] step actually lands on.
+///
+/// Pure, and clamped, and therefore the only part of the zoom control worth
+/// pinning down on its own: the buttons and the tween are paint, but this is
+/// the rule, and the rule has two ways to be wrong that a tap cannot reveal.
+/// An unclamped step lets a held-down button zoom past the last published
+/// OpenStreetMap tile into grey squares; a clamp applied before the step
+/// instead of after it refuses the last legitimate step, so the order matters.
+/// Returns [currentZoom] unchanged when the step would not move, which is what
+/// makes "already at the limit" a no-op rather than a jump.
+double zoomTarget(double currentZoom, double steps,
+    {double minZoom = 3, double maxZoom = 18}) {
+  final target = (currentZoom + steps).clamp(minZoom, maxZoom);
+  return target == currentZoom ? currentZoom : target;
+}
+
+/// One half of the zoom pair. A disabled step is drawn greyed and does not
+/// fire, so reaching the last zoom level is visibly the end rather than a
+/// button that silently does nothing.
+class _ZoomButton extends StatelessWidget {
+  const _ZoomButton({
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onPressed != null;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 3,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Icon(
+              icon,
+              size: 21,
+              color: enabled ? AppTheme.primaryGreen : AppTheme.textMuted,
+            ),
           ),
         ),
       ),

@@ -28,7 +28,26 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
   /// it goes stale in a way an appeal does not, because the person is still
   /// locked out while it sits. So it gets its own filter rather than being
   /// mixed into ALL and forgotten.
-  static const _types = ['ALL TYPES', 'GENERAL', 'PASSWORD_RESET'];
+  static const _types = [
+    'ALL TYPES',
+    'GENERAL',
+    'PASSWORD_RESET',
+    'DOCUMENT_VERIFICATION',
+  ];
+
+  /// Readable label per type.
+  ///
+  /// The filter is a work list, so a reviewer needs to recognise the queue
+  /// from its name without opening it. `DOCUMENT_VERIFICATION` arrived in
+  /// 20260927000131 and is filtered on separately for the same reason
+  /// PASSWORD_RESET is: a dispute about somebody's ID is reviewed against the
+  /// document queue and nowhere else, so mixing it into ALL is how it gets
+  /// lost.
+  static const _typeLabels = {
+    'GENERAL': 'Appeals',
+    'PASSWORD_RESET': 'Password resets',
+    'DOCUMENT_VERIFICATION': 'Document decisions',
+  };
 
   String _filter = 'OPEN';
   String _typeFilter = 'ALL TYPES';
@@ -373,9 +392,9 @@ class _AdminAppealsScreenState extends State<AdminAppealsScreen> {
                           padding: const EdgeInsets.only(right: 8),
                           child: ChoiceChip(
                             label: Text(
-                              t == 'ALL TYPES' ? 'All types' : t == 'GENERAL'
-                                  ? 'Appeals'
-                                  : 'Password resets',
+                              t == 'ALL TYPES'
+                                  ? 'All types'
+                                  : (_typeLabels[t] ?? t),
                               style: const TextStyle(fontSize: 12),
                             ),
                             selected: _typeFilter == t,

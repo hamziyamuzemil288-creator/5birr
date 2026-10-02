@@ -27,6 +27,22 @@ class _ServiceProviderDashboardState
   Map<String, dynamic>? _providerProfile;
   int _productCount = 0;
   int _orderCount = 0;
+
+  /// Orders sitting at PENDING_PROVIDER — the provider is the only actor who
+  /// can move them, so this is work that is blocked on THEM and nobody else.
+  ///
+  /// `_orderCount` above is every order ever, which is a vanity number: it
+  /// cannot change when new work arrives, so a provider watching it has no way
+  /// to tell a quiet week from a queue of three bookings they have not
+  /// answered. This is the number that moves.
+  int _awaitingMe = 0;
+
+  /// Of those, the ones whose listing asked for an availability confirmation.
+  ///
+  /// Counted separately because they are the ones with a deadline attached: a
+  /// buyer is sitting on "Waiting for the provider to confirm availability" and
+  /// cannot pay until this is answered.
+  int _awaitingAvailability = 0;
   int _points = 0;
   RankProgress? _rankProgress;
   double? _walletBalance;
@@ -74,6 +90,15 @@ class _ServiceProviderDashboardState
           .select('id')
           .eq('provider_id', prov['id'])
           .count(CountOption.exact);
+      // The queue. `.eq('status', 'PENDING_PROVIDER')` rather than a client
+      // filter over the 200 rows the orders screen loads: this has to be right
+      // the moment the dashboard opens, not only after a list has paged in.
+      final waiting = await client
+          .from('orders')
+          .select('id, requires_availability_confirmation')
+          .eq('provider_id', prov['id'])
+          .eq('status', 'PENDING_PROVIDER');
+      final waitingRows = List<Map<String, dynamic>>.from(waiting as List);
       final points = await PointsService.instance.getProviderPoints(prov['id'] as String);
       // Ladder from the server; best-effort so a rank hiccup never blocks the
       // dashboard itself.
@@ -99,6 +124,10 @@ class _ServiceProviderDashboardState
           _providerProfile = prov;
           _productCount = prods.count ?? 0;
           _orderCount = orders.count ?? 0;
+          _awaitingMe = waitingRows.length;
+          _awaitingAvailability = waitingRows
+              .where((o) => o['requires_availability_confirmation'] == true)
+              .length;
           _points = points;
           _rankProgress = progress;
           _walletBalance = (wallet?['balance'] as num?)?.toDouble();

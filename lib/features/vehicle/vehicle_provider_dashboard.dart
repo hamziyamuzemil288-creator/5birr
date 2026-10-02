@@ -117,64 +117,26 @@ class _VehicleProviderDashboardState
     }
   }
 
+  /// The availability switch is now an entrance to the map, not a second,
+  /// parallel way of going online.
+  ///
+  /// It used to prompt, then bounce the driver out to the OS settings app, then
+  /// try to dispatch them from whatever fix the phone happened to have. Three
+  /// places to fix one problem, and the failure the driver actually hit --
+  /// "I turned location on and nothing happened" -- was invisible here
+  /// because the fix happened somewhere else.
+  ///
+  /// The map is where the position, the nearby work and the same switch all
+  /// live, and it recovers from a missing fix in place: it opens the phone's
+  /// location settings itself, and if the radio cannot be turned on at all it
+  /// offers to take the driver's location in words so they can still work.
   Future<void> _toggleOnline() async {
     if (_providerProfile == null) return;
-    setState(() => _togglingOnline = true);
-    try {
-      final isCurrentlyOnline = _driverStatus?['is_online'] ?? false;
-      if (!isCurrentlyOnline) {
-        // Going available. Ask ONCE for location, and let the driver say no:
-        // staying available without a live fix is allowed, because the
-        // alternative is a driver who cannot work because a permission
-        // dialog annoyed them. "Not now" is recorded, and re-arms only when
-        // they deliberately toggle availability again.
-        if (!LocationPrompt.instance.answered) {
-          final wantsIt = await LocationPrompt.offerOnce(
-            context,
-            title: 'Turn on location?',
-            reason: 'Turn on location to receive nearby ride requests. '
-                'You can still go available without it.',
-          );
-          if (!mounted) return;
-          if (wantsIt) {
-            await LocationService.instance.openLocationSettings();
-          }
-        }
-
-        // Need a real GPS fix (and the runtime permission) to be dispatched
-        // to at all. Failure here is a LOCATION problem and is described in
-        // location words - never "offline", which would send the driver to
-        // troubleshoot their internet connection for a switched-off GPS.
-        final r = await LocationService.instance.getCurrentPositionDetailed();
-        if (!r.success) {
-          if (mounted) {
-            setState(() => _locationHint = r.status);
-          }
-          setState(() => _togglingOnline = false);
-          return;
-        }
-        final pos = r.position!;
-        await LocationService.instance.setDriverOnline(
-            _providerProfile!['id'], true,
-            lat: pos.latitude, lng: pos.longitude);
-        if (mounted) setState(() => _locationHint = null);
-        // Start location updates
-        _startLocationUpdates(_providerProfile!['id']);
-      } else {
-        // Going offline
-        await LocationService.instance
-            .setDriverOnline(_providerProfile!['id'], false);
-        _posSub?.cancel();
-      }
-      _load();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(friendlyError(e, context: 'Could not load your dashboard'))));
-      }
-    } finally {
-      if (mounted) setState(() => _togglingOnline = false);
-    }
+    await context.push('/vehicle/map');
+    if (!mounted) return;
+    // Re-read on the way back: the driver may have gone online, opened the
+    // phone settings, or typed their location while they were over there.
+    _load();
   }
 
   void _startLocationUpdates(String providerId) {

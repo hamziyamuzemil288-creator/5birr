@@ -79,8 +79,16 @@ class _AdminDeletionRequestsScreenState
       await _load();
       if (!mounted) return;
       final kept = deleted is Map ? deleted['orders_retained'] : null;
+      // The number of files that went with it. Reported because it is the
+      // half of the deletion a staff member cannot otherwise see: the rows
+      // are gone either way, and the uploaded scans and photos are what
+      // actually leave the platform's storage.
+      final files = deleted is Map
+          ? (deleted['storage_objects_removed'] as num?)?.toInt()
+          : null;
       _toast('${_name(row)}’s account was deleted'
-          '${kept == null ? '' : ' ($kept orders kept for accounting)'}.');
+          '${kept == null ? '' : ' ($kept orders kept for accounting)'},'
+          '${files == null ? '' : ' $files uploaded files removed'}.');
     } catch (e) {
       if (mounted) _toast(friendlyError(e, context: 'Could not approve'));
     } finally {
