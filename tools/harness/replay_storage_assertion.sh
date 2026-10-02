@@ -26,16 +26,18 @@ PGBIN=${PGBIN:-/usr/lib/postgresql/14/bin}
 PGSOCK=${PGSOCK:-/tmp/pgrun}
 PGPORT=${PGPORT:-5433}
 DB=${PGDB:-assert_replay}
-FIX=20260927000134_the_check_that_guarded_the_file_sweep.sql
+FIX=20260927000136_the_file_sweep_check_could_not_see_the_buckets.sql
 OLD=20260927000132_the_uploaded_files_go_too.sql
+MID=20260927000134_the_check_that_guarded_the_file_sweep.sql
 
-if [ "$1" = "--without-fix" ]; then
-  MIGRATION="$OLD"
-  LABEL="WITHOUT the fix (0132, as deployed)"
-else
-  MIGRATION="$FIX"
-  LABEL="WITH the fix (0134)"
-fi
+# Three states, because the assertion had TWO independent defects and the
+# first fix alone did not make it work. A replay that only compared "before"
+# with "after" would have called 0134 the fix -- and it was not one.
+case "$1" in
+  --without-fix) MIGRATION="$OLD"; LABEL="0132 as deployed: array read is NULL, no SECURITY DEFINER" ;;
+  --array-only)   MIGRATION="$MID"; LABEL="0134: array fixed, still cannot see storage.buckets under RLS" ;;
+  *)              MIGRATION="$FIX"; LABEL="0136: array read twice, SECURITY DEFINER" ;;
+esac
 
 as_postgres() { su postgres -c "$1"; }
 
@@ -46,13 +48,29 @@ as_postgres "$PGBIN/psql -h $PGSOCK -p $PGPORT -d postgres -q -c 'DROP DATABASE 
 # The minimum schema the assertion reads. Every name here is also a row in the
 # function's own source list, so the assertion verifies itself against a schema
 # that really has them.
+#
+# `storage.buckets` is given ROW LEVEL SECURITY and no policy, and the call is
+# made as a non-superuser role. That is the shape of the live database, and it
+# is the whole point of this replay: without SECURITY DEFINER the function
+# reads zero rows from that table, every `NOT EXISTS` is vacuously true, every
+# source looks missing, and the check silently verifies nothing. A replay that
+# ran as the superuser would have called 0134 "fixed" while it was still broken.
 as_postgres "$PGBIN/psql -h $PGSOCK -p $PGPORT -d $DB -q -v ON_ERROR_STOP=1" <<'SQL'
 CREATE SCHEMA IF NOT EXISTS storage;
 CREATE TABLE storage.buckets (id text PRIMARY KEY);
+ALTER TABLE storage.buckets ENABLE ROW LEVEL SECURITY;
 INSERT INTO storage.buckets (id) VALUES
   ('user-documents'), ('profile-avatars'), ('provider-photos'),
   ('product-images'), ('provider-gallery'), ('vehicle-images'),
   ('payment-screenshots');
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon_replay') THEN
+    CREATE ROLE anon_replay NOLOGIN;
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA public, storage, information_schema TO anon_replay;
+GRANT SELECT ON storage.buckets TO anon_replay;
 
 CREATE TABLE public.user_documents         (user_id uuid, storage_path text);
 CREATE TABLE public.appeal_cases           (user_id uuid, respondent_id uuid,
@@ -91,15 +109,17 @@ j = s.find('$$', i + 2)
 sys.stdout.write(s[m.start():j + 2] + ';\n')
 PY
 
+# Called as anon_replay, so SECURITY DEFINER is load-bearing -- exactly as the
+# connectivity suite calls it with the anon key.
 set +e
 as_postgres "cat /tmp/assert_replay_body.sql | $PGBIN/psql -h $PGSOCK -p $PGPORT -d $DB -q -v ON_ERROR_STOP=1" \
-  && as_postgres "$PGBIN/psql -h $PGSOCK -p $PGPORT -d $DB -q -A -t -c 'SELECT public.assert_account_storage_is_purged();'"
+  && as_postgres "$PGBIN/psql -h $PGSOCK -p $PGPORT -d $DB -q -A -t -c 'SET ROLE anon_replay; SELECT public.assert_account_storage_is_purged();'"
 STATUS=$?
 set -e
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-  echo "replay: assertion PASSED against real PostgreSQL"
+  echo "replay: assertion PASSED as a non-superuser caller with RLS on storage.buckets"
 else
   echo "replay: assertion FAILED -- this is the behaviour the migration has to fix"
 fi
