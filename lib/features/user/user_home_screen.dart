@@ -1341,10 +1341,10 @@ class _CategoryTile extends StatelessWidget {
     // This tile belongs to a category; the product rows under it carry the
     // user-visible image. We do not have the product rows here, so we fall
     // back to the provider's gallery photo, then a placeholder.
-    return const Center(
+    return Center(
       child: Icon(
-        Icons.image_not_found_outlined,
-        color: Colors.white.withOpacity(0.35),
+        Icons.photo_library_outlined,
+        color: Colors.white38,
         size: 40,
       ),
     );

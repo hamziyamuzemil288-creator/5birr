@@ -188,11 +188,10 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
                           // product form and the listing embeds `product_images(*)`,
                           // so this tile always renders a photo, its caption, and
                           // the price tag.
-                          final img = (p['image'] as Map<String, dynamic>?)??
-                              {};
+                          final img = (p['image'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k.toString(), v))?.toList() ?? [];
                           final photoPath =
-                              (img['storage_path'] as String?)?.trim() ?? '';
-                          final caption = (img['caption'] as String?)?.trim() ?? '';
+                              (img is List && (img[0] as Map<String, dynamic>?)?['storage_path'] as String?)?.trim() ?? '';
+                          final caption = (img is List && (img[0] as Map<String, dynamic>?)?['caption'] as String?)?.trim() ?? '';
                           return Card(
                             margin: const EdgeInsets.only(bottom: 10),
                             child: InkWell(
