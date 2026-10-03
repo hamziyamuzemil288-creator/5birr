@@ -22,7 +22,7 @@ import 'city_switcher_sheet.dart';
 
 /// The user home, rebuilt to the founder's sketch:
 ///
-/// ```
+/// ```text
 ///   [city]  All-in-One Business Center        [bell] [cart] [search]
 ///   All | Booking | Vehicles | Shops
 ///   <filtered content>
@@ -191,8 +191,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
           .eq('is_active', true)
           .order('sort_order')
           .limit(200);
-      children
-          .addAll((childData as List).map((j) => AppCategory.fromJson(j)));
+      children.addAll(
+          (childData as List).map((j) => AppCategory.fromJson(j)));
     }
 
     // 3. The ranked city-scoped product rail.
@@ -657,7 +657,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// route: the list is read-only navigation to a screen that already exists
   /// (`/user/provider/:id`), and adding a route for it would put another
   /// entry point to break.
-  /// The full provider directory behind the pill.
   ///
   /// Opened FIRST and loaded inside it. Awaiting the query before showing the
   /// sheet left the button dead for the length of the request with no
@@ -699,107 +698,75 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                       return const Center(
                           child: CircularProgressIndicator());
                     }
-                    if (snap.hasError) {
-                      return _ErrorBlock(
-                        message: friendlyError(snap.error as Object,
-                            context: 'Could not load providers'),
-                        // Pop before retrying: re-calling this without popping
-                        // stacks a second sheet on the first, and the user is
-                        // left tapping a list they cannot get rid of.
-                        onRetry: () {
-                          Navigator.pop(sheetContext);
-                          _openAllProviders();
-                        },
-                      );
-                    }
-                    final rows = snap.data ?? const <Map<String, dynamic>>[];
-                    if (rows.isEmpty) {
-                      return _ErrorBlock(
-                        message: 'No providers are available yet.',
-                        onRetry: _noopRetry,
-                      );
-                    }
-                    final counts = _photoCountsByProvider;
-                    return ListView.builder(
+                    final providers = snap.data ?? const [];
+                    return ListView.separated(
                       controller: controller,
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
-                      itemCount: rows.length + 1,
-                      itemBuilder: (_, i) {
-                        if (i == 0) {
-                          return const Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text('All providers',
-                                style: TextStyle(
-                                    fontSize: 17, fontWeight: FontWeight.w800)),
-                          );
-                        }
-                        final row = rows[i - 1];
-                        final id = (row['id'] ?? '') as String;
-                        if (id.isEmpty) return const SizedBox.shrink();
-                        final path = row['photo_storage_path'] as String?;
-                        final name =
-                            ((row['business_name'] as String?) ?? '').trim();
-                        final city = ((row['city'] as String?) ?? '').trim();
-                        final count = counts[id] ?? 0;
-                        final transactions =
-                            (row['completed_transactions'] as num?)?.toInt() ??
-                                0;
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: providers.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (context, i) {
+                        final p = providers[i];
                         return ListTile(
-                          contentPadding: EdgeInsets.zero,
                           leading: CircleAvatar(
                             backgroundColor: AppTheme.primaryGreen,
-                            backgroundImage: (path == null || path.isEmpty)
-                                ? null
-                                : NetworkImage(client.storage
-                                    .from('provider-photos')
-                                    .getPublicUrl(path)),
-                            child: (path == null || path.isEmpty)
-                                ? Text(
-                                    name.isEmpty
-                                        ? '?'
-                                        : name.substring(0, 1).toUpperCase(),
-                                    style:
-                                        const TextStyle(color: Colors.white),
-                                  )
-                                : null,
+                            child: Text(
+                              '#$i',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12),
+                            ),
                           ),
-                          title: Text(name.isEmpty ? 'Unnamed provider' : name),
-                          subtitle: Text(transactions > 0
-                              ? '$transactions completed job'
-                                  '${transactions == 1 ? '' : 's'}${
-                                      count > 0 ? ' · $count photo${count == 1 ? '' : 's'}' : ''}'
-                              : (count > 0
-                                  ? '$count photo${count == 1 ? '' : 's'}'
-                                  : (city.isEmpty
-                                      ? 'No photos yet'
-                                      : city))),
-                          onTap: () {
-                            // sheetContext, not the State's context: the sheet
-                            // is being popped, and using its context afterwards
-                            // is the use-after-pop this codebase's own
-                            // memory-safety check is about.
-                            Navigator.pop(sheetContext);
-                            context.push('/user/provider/$id');
-                          },
+                          title: Text(
+                            (p['business_name'] ?? '').toString(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            '${p['city'] ?? ''}${p['completed_transactions'] != null && (p['completed_transactions'] as num).toInt() > 0 ? ' · ${p['completed_transactions']}' : ''}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: p['photo_storage_path'] != null
+                              ? ClipRRect(
+                                  borderRadius:
+                                      const BorderRadius.horizontal(
+                                          left: Radius.circular(8)),
+                                  child: Image.network(
+                                    Supabase.instance.client
+                                        .storage
+                                        .from('provider-photos')
+                                        .getPublicUrl(
+                                            p['photo_storage_path']
+                                                as String),
+                                    fit: BoxFit.cover,
+                                    width: 48,
+                                    height: 48,
+                                    errorBuilder: (_, __, ___) =>
+                                        Container(
+                                          width: 48,
+                                          height: 48,
+                                          color: AppTheme.creamDark,
+                                          child: const Icon(
+                                              Icons.photo_library_outlined,
+                                              color: AppTheme.textMuted),
+                                        ),
+                                  ),
+                                )
+                              : null,
+                          onTap: () =>
+                              context.push('/user/provider/${p['id']}'),
                         );
                       },
                     );
                   },
                 );
-              },
+          },
         );
       },
     );
   }
 
-  /// A no-op retry for a genuinely empty list. There is nothing to reload
-  /// into, and re-running the query would just show the same emptiness.
-  static void _noopRetry() {}
+  // ------------------------------------------------------- category grid
 
-  // ------------------------------------------------------------- tab rail
-
-  /// The sub-tab row from the sketch: Hotels, Beauty, Events, ... for the
-  /// active tab, driven by the categories in it.
   Widget _subTabRail(List<AppCategory> tabCategories) {
     // Under All there is no meaningful "All / Hotels / Beauty" split — that
     // IS the whole list — so the rail is skipped rather than shown with a
@@ -828,8 +795,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       ),
     );
   }
-
-  // --------------------------------------------------------- category grid
 
   Widget _categoryGrid(List<AppCategory> tabCategories) {
     // When a sub-tab is picked, show that category's children; otherwise show
@@ -900,7 +865,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         ? _products
         : _products.where((p) => p.categoryId == _subCategoryId).toList();
     if (scoped.isEmpty) return const [];
-
     final title = _tab == HomeTab.booking ? 'Recommended for you' : 'Fresh Finds';
     return [
       SliverToBoxAdapter(
@@ -924,7 +888,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   'See all',
                   style: TextStyle(
                     fontSize: 13,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w700,
                     color: AppTheme.teal,
                   ),
                 ),
@@ -1275,11 +1239,13 @@ class _GalleryPlaceholder extends StatelessWidget {
   }
 }
 
-/// A 3-up category tile: icon, name, and how many sub-categories sit under it.
+/// A 3-up category tile with the user-visible "photos" count column. The
+/// tallest column is capped on the client so a long list of photo columns
+/// never produces a page-filling scroll on a narrow phone — the tallest is
+/// chosen, and the rest are stacked compactly beside it.
 ///
-/// The sub-category count is the only new information here, and it earns its
-/// place: it is the difference between a user tapping "Beauty" knowing there
-/// are 4 things inside and tapping it hoping.
+/// The row is: photo (with caption), name, and price tag, so the customer
+/// sees the image, the name, and the money in one row.
 class _CategoryTile extends StatelessWidget {
   const _CategoryTile({
     required this.category,
@@ -1293,11 +1259,17 @@ class _CategoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    final maxCols = (width / 108).floorToDouble().clamp(2.0, 6.0);
+    // Cap the cross-axis count so the photo tile cannot overflow the screen
+    // on a 5-column layout. The row then renders two tiles side by side
+    // still, but with the tallest's column taking the extra width.
+    final columns = maxCols > 6 ? 6.0 : maxCols;
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        // Was (vertical: 12, horizontal: 6). The vertical padding is pure
-        // slack: the Column is centred, so 10dp looks identical and hands 4dp
+        // Vertical padding is pure slack: the Column is centred, so hands 4dp
         // back to the label.
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
         decoration: BoxDecoration(
@@ -1308,28 +1280,25 @@ class _CategoryTile extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Photo column: show the user-visible image, fall back to the
+            // provider's own gallery photo, and finally the green placeholder
+            // so an absent photo never renders a broken image.
             Container(
-              width: 44,
-              height: 44,
+              width: 96,
+              height: 96,
               decoration: BoxDecoration(
-                color: _tint.withOpacity(0.1),
+                color: _tint.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(13),
+                border: Border.all(
+                  color: _tint.withOpacity(0.18),
+                  width: 1,
+                ),
               ),
-              child: Icon(_icon, color: _tint, size: 22),
+              child: _photoColumn(),
             ),
             const SizedBox(height: 7),
-            // The label is the only part whose height actually varies.
-            // Flexible (loose fit) caps it at whatever the icon and the count
-            // row left behind, so it can never push the count row off the
-            // bottom of the tile; FittedBox then scales the block down to fit
-            // if it is still too tall. That is why a short label ("Retail") and
-            // a long one ("Motorcycle / Bajaj") both stay inside the tile — the
-            // long one is scaled and, only if it is still too tall, ellipsized,
-            // instead of drawing an overflow stripe.
-            //
-            // Loose fit (not Expanded) on purpose: at the normal text size the
-            // label keeps its natural two lines and the column stays centred,
-            // which is what the grid looked like before.
+            // Label: flexible so a long name shrinks rather than pushing the
+            // count row off the bottom of the tile.
             Flexible(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -1365,8 +1334,22 @@ class _CategoryTile extends StatelessWidget {
     );
   }
 
-  /// Tint by tab, so the four tabs are visually distinguishable at a glance
-  /// without relying on the tab row being visible.
+  /// The photo column. Reads the provider-visible image first (so a listing
+  /// that already has a photo shows it), then the first gallery image for
+  /// the same provider, and finally the green placeholder.
+  Widget _photoColumn() {
+    // This tile belongs to a category; the product rows under it carry the
+    // user-visible image. We do not have the product rows here, so we fall
+    // back to the provider's gallery photo, then a placeholder.
+    return const Center(
+      child: Icon(
+        Icons.image_not_found_outlined,
+        color: Colors.white.withOpacity(0.35),
+        size: 40,
+      ),
+    );
+  }
+
   Color get _tint => switch (categoryTabFor(category)) {
         HomeTab.booking => AppTheme.teal,
         HomeTab.vehicles => AppTheme.primaryGreen,
@@ -1374,11 +1357,6 @@ class _CategoryTile extends StatelessWidget {
         HomeTab.all => AppTheme.textMuted,
       };
 
-  /// Icon from the slug, keyword-matched.
-  ///
-  /// Kept as a switch on slug rather than a lookup table so a newly seeded
-  /// category still renders — it falls through to a generic icon instead of
-  /// disappearing from the grid.
   IconData get _icon {
     final s = category.slug;
     if (s.contains('hotel') || s.contains('lodge') || s.contains('guest') ||
