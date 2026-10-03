@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -76,7 +77,13 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
         setState(() {
           _category = cat;
           _subcategories = List<Map<String, dynamic>>.from(subs as List);
-          _products = prodsRaw;
+          _products = prodsRaw
+              .map<Map<String, dynamic>>((p) => {
+                    ...p,
+                    'image': imagesByProduct[p['id'] as String] ??
+                        const <Map<String, dynamic>>[],
+                  })
+              .toList();
           _providers = ranked;
           _loading = false;
           _error = null;
@@ -181,17 +188,28 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
                           child: Center(
                               child: Text('No products in this category',
                                   style: TextStyle(
-                                      color: AppTheme.textMuted)))),
+                                      color: AppTheme.textMuted))))
                       else
                         ..._products.map((p) {
                           // User-visible image column. A provider sets it on the
                           // product form and the listing embeds `product_images(*)`,
                           // so this tile always renders a photo, its caption, and
                           // the price tag.
-                          final img = (p['image'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k.toString(), v))?.toList() ?? [];
-                          final photoPath =
-                              (img is List && (img[0] as Map<String, dynamic>?)?['storage_path'] as String?)?.trim() ?? '';
-                          final caption = (img is List && (img[0] as Map<String, dynamic>?)?['caption'] as String?)?.trim() ?? '';
+                          final img = (p['image'] as List?)
+                                  ?.cast<Map<String, dynamic>>() ??
+                              const <Map<String, dynamic>>[];
+                          final storagePath = img.isNotEmpty
+                              ? (img.first['storage_path'] as String?)?.trim() ??
+                                  ''
+                              : '';
+                          final photoPath = storagePath.isEmpty
+                              ? ''
+                              : Supabase.instance.client.storage
+                                  .from('product-images')
+                                  .getPublicUrl(storagePath);
+                          final caption = img.isNotEmpty
+                              ? (img.first['caption'] as String?)?.trim() ?? ''
+                              : '';
                           return Card(
                             margin: const EdgeInsets.only(bottom: 10),
                             child: InkWell(
