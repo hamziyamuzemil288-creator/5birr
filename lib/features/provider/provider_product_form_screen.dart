@@ -235,8 +235,7 @@ class _State extends State<ProviderProductFormScreen> {
         duration: const Duration(seconds: 4),
       ));
       return;
-    }
-    // A listing without a location cannot be found by proximity search:
+    }    // A listing without a location cannot be found by proximity search:
     // search_products computes distance_km only when p.location is set, and
     // its ST_DWithin predicate short-circuits on `p.location IS NULL`, so the
     // radius filter never even runs. Every location-less listing is therefore
@@ -247,16 +246,43 @@ class _State extends State<ProviderProductFormScreen> {
     // blocking an edit of an existing listing until the provider finds GPS
     // would trap them, and editing without setting a location does not add
     // any new location-less rows.
-    if (!_isEdit && (_lat == null || _lng == null)) {
+    //
+    // If neither a captured nor a profile-derived position is available, the
+    // form does not block on a fresh GPS capture by default: forcing location
+    // service on when the provider is not ready to share it is what made this
+    // screen feel like it "required GPS" for every save. The provider may
+    // still tap "Use GPS" above, and proximity search is only accurate when a
+    // real point exists.
+    if (!_isEdit && _lat == null && _lng == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text(
-          'Set a GPS location before saving — listings without one cannot be '
-          'found by nearby search.',
+          'Save anyway? This listing will not be found by nearby search until '
+          'a location is set. Tap "Use GPS" above to add one before saving.',
         ),
-        backgroundColor: AppTheme.error,
-        duration: Duration(seconds: 4),
+        backgroundColor: AppTheme.warning,
+        duration: const Duration(seconds: 5),
       ));
-      return;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Save without a location?'),
+          content: const Text(
+            'You can still save this product. It will not appear in nearby '
+            'search until you set a GPS location on it.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Go back'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save anyway'),
+            ),
+          ],
+        ),
+      );
+      if (!ok == true) return;
     }
     setState(() => _saving = true);
     try {
@@ -271,6 +297,11 @@ class _State extends State<ProviderProductFormScreen> {
       String productId;
       // Real listing GPS: geography point from the captured device position
       // (falls back to the business profile location).
+      // Prefer a freshly captured point; fall back to the business profile
+      // location so an edit can save without a new capture. Both of these are
+      // nullable and neither forces a GPS capture: the screen above only asks
+      // for location when the provider wants a precise point, and a listing is
+      // not published until it is actually saved.
       final lat = _lat;
       final lng = _lng;
       final locationValue =

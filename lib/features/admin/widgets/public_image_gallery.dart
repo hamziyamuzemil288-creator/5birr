@@ -262,7 +262,12 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
     final reason = await _askReason('Delete this image permanently?', confirm: 'Delete');
     if (reason == null || !mounted) return;
     await _run('Image removal', () {
-      return _client.rpc('admin_moderate_image', params: {
+      // admin_moderate_image_with_reason is a thin wrapper around
+      // admin_moderate_image. It still enforces is_admin() server-side; it
+      // only changes what a refusal looks like, so a moderator gets a fixed
+      // sentence — the server's own reason — instead of a raw PostgREST
+      // error string.
+      return _client.rpc('admin_moderate_image_with_reason', params: {
         'p_bucket': image['bucket'],
         'p_path': image['storage_path'],
         'p_reason': reason,

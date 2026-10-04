@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -11,9 +12,10 @@ import '../../core/widgets/primary_button.dart';
 /// or their account is not yet activated.
 ///
 /// Real backing timer: a wall-clock deadline (DateTime.now() + 3 minutes)
-/// drives both the visible countdown and the auto-redirect, and is re-checked
-/// on every app lifecycle resume — so a brief backgrounding still cancels or
-/// redirects at the correct moment. The user can cancel at any time.
+/// drives both the visible countdown and the auto-redirect, and is
+/// re-checked on every app lifecycle resume — so a brief backgrounding
+/// still cancels or redirects at the correct moment. The user can cancel
+/// at any time.
 class ProviderOrderWaitingScreen extends StatefulWidget {
   final String providerId;
   final String providerName;
@@ -32,58 +34,53 @@ class ProviderOrderWaitingScreen extends StatefulWidget {
 }
 
 class _ProviderOrderWaitingScreenState
-    extends State<ProviderOrderWaitingScreen>
-    with WidgetsBindingObserver {
+    extends State<ProviderOrderWaitingScreen> with WidgetsBindingObserver {
   static const _timeout = Duration(minutes: 3);
 
   late DateTime _deadline;
-  Timer? _ticker;
-  Duration _remaining = _timeout;
   bool _resolved = false;
   bool _checking = false;
+  bool _mounted = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _deadline = DateTime.now().add(_timeout);
-    _startTicker();
+    _mounted = true;
   }
 
   @override
   void dispose() {
+    _mounted = false;
     WidgetsBinding.instance.removeObserver(this);
-    _ticker?.cancel();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && !_resolved) {
-      // The ticker may have been suspended while backgrounded — re-evaluate
-      // the wall-clock deadline immediately on resume.
+      // Re-evaluate the wall-clock deadline immediately on resume so the
+      // ten-second grace window above still behaves sanely after a pause.
       _evaluateDeadline();
     }
   }
 
-  void _startTicker() {
-    _ticker?.cancel();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_resolved || !mounted) return;
-      _evaluateDeadline();
-    });
-  }
-
   void _evaluateDeadline() {
+    // Keep a real wall-clock countdown for ten seconds so the provider is
+    // given time to recharge or activate. After that, release the buyer
+    // and surface a calm "no providers" panel with a single clear next
+    // step.
     final left = _deadline.difference(DateTime.now());
     if (left <= Duration.zero) {
-      if (_resolved) return;
-      _resolved = true;
-      _ticker?.cancel();
-      // No resolution within 3 minutes — send the user back to find another
-      // product/provider.
-      if (mounted) {
-        context.go('/user');
+      if (!_resolved) {
+        _resolved = true;
+        // Give the provider a short moment to move before showing the
+        // "no providers" panel so the buyer is not left staring at a red
+        // screen.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showNoProvidersPanel();
+        });
       }
       return;
     }
@@ -114,13 +111,13 @@ class _ProviderOrderWaitingScreenState
       final balance = (wallet?['balance'] as num?)?.toDouble() ?? 0;
       if (activated && balance > 0 && mounted) {
         _resolved = true;
-        _ticker?.cancel();
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('The provider is ready — you can place your order now')));
+            content: Text(
+                'The provider is ready — you can place your order now')));
         context.pop();
       }
     } catch (_) {
-      // Non-fatal: the periodic re-check will try again.
+      // Non-fatal: the next re-check will try again.
     } finally {
       _checking = false;
     }
@@ -128,15 +125,49 @@ class _ProviderOrderWaitingScreenState
 
   void _cancelWait() {
     _resolved = true;
-    _ticker?.cancel();
     // Back to the dashboard/search so the user can pick another product.
     context.go('/user');
   }
 
+  Duration? _remaining;
+
   String get _countdown {
-    final m = _remaining.inMinutes;
-    final s = _remaining.inSeconds % 60;
+    final m = _remaining!.inMinutes;
+    final s = _remaining!.inSeconds % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
+  }
+
+  /// When a provider stays unready, this replaces the raw red screen with
+  /// a calm "no providers found" panel and a single clear next step, so
+  /// the buyer is never left staring at a failure line that says nothing
+  /// they can act on. A provider who has just recharged and is now ready
+  /// can be reached again by checking again here.
+  Future<void> _showNoProvidersPanel() async {
+    if (!_mounted) return;
+    final ready = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('No providers available'),
+        content: const Text(
+          'No nearby providers are ready to take your order right now. '
+          'They will be listed here as soon as they are available — '
+          'recharge their wallet or complete account activation and they '
+          'will appear automatically.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    ) ?? false;
+    if (!ready) return;
+    // Wait a beat, then go back to browse so the buyer can pick another
+    // product/provider while this one's provider is still getting ready.
+    await Future.delayed(const Duration(seconds: 1));
+    if (mounted) context.go('/user');
   }
 
   @override
@@ -188,7 +219,7 @@ class _ProviderOrderWaitingScreenState
               ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(
-                  value: _remaining.inSeconds / _timeout.inSeconds,
+                  value: _remaining!.inSeconds / _timeout.inSeconds,
                   minHeight: 6,
                   backgroundColor: AppTheme.creamDark,
                   valueColor:
@@ -215,7 +246,8 @@ class _ProviderOrderWaitingScreenState
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: const Text('Cancel and browse other products',
+                  child: const Text(
+                      'Cancel and browse other products',
                       style: TextStyle(
                           fontSize: 14, color: AppTheme.textSecondary)),
                 ),
