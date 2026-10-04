@@ -47,8 +47,16 @@ begin
 end;
 $$;
 
-create trigger if not exists trg_provider_payment_methods_updated
-  before update on provider_payment_methods
-  for each row execute function public.set_updated_at();
-  before update on provider_payment_methods
-  for each row execute function public.set_updated_at();
+DO $func$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_provider_payment_methods_updated'
+      AND tgrelid = 'provider_payment_methods'::regclass
+  ) THEN
+    CREATE TRIGGER trg_provider_payment_methods_updated
+    BEFORE UPDATE ON provider_payment_methods
+    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+  END IF;
+END
+$func$;
