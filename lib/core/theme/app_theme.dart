@@ -29,6 +29,10 @@ class AppTheme {
   static const Color textOnPrimary = Colors.white;
 
   // ── Surface Colors ────────────────────────────────────────────
+  // Light-green lightening of the primary green: soft surfaces instead of
+  // white, so the login and signup pages stop looking flat and cheap.
+  static const Color lightGreen = Color(0xFFE8F5E9);
+  static const Color lightGreenSurface = Color(0xFFC8E6C9);
   static const Color surface = Colors.white;
   static const Color surfaceVariant = Color(0xFFF8F6F2);
   static const Color background = cream;

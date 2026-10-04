@@ -17,6 +17,7 @@ import '../features/user/user_profile_screen.dart';
 import '../features/user/user_notifications_screen.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
+import '../features/provider/provider_location_detail_screen.dart';
 import '../features/user/user_category_screen.dart';
 import '../features/user/user_favorites_screen.dart';
 import '../features/user/user_cart_screen.dart';
@@ -32,6 +33,7 @@ import '../features/provider/provider_business_profile_screen.dart';
 import '../features/provider/provider_category_settings_screen.dart';
 import '../features/admin/admin_category_fields_screen.dart';
 import '../features/provider/provider_subscription_screen.dart';
+import '../features/provider/provider_payment_methods_screen.dart';
 import '../features/provider/provider_product_list_screen.dart';
 import '../features/provider/provider_product_form_screen.dart';
 import '../features/vehicle/vehicle_provider_dashboard.dart';
@@ -412,7 +414,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
       // ── Service Provider ──
       GoRoute(path: '/provider', builder: (_, __) => const ServiceProviderDashboard()),
-      GoRoute(path: '/provider/business', builder: (_, __) => const ProviderBusinessProfileScreen()),
+      GoRoute(
+        path: '/provider/payment-methods',
+        builder: (_, __) => const ProviderPaymentMethodsScreen(),
+      ),
+      // Buyer-visible approved destination: the exact GPS + contact a buyer
+      // reads only after a payment screenshot is uploaded and approved by the
+      // provider or an admin.
+      GoRoute(
+        path: '/provider/location/:id',
+        builder: (_, s) => ProviderLocationDetailScreen(providerId: s.pathParameters['id']!),
+      ),
       // The trade-specific settings and pricing form. The fields are defined
       // per category by an administrator; this is where a provider fills them
       // in.

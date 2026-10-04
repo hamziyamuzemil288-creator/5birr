@@ -14,6 +14,7 @@ import '../../core/widgets/publish_readiness_banner.dart';
 import '../../core/widgets/rank_badge.dart';
 import '../../core/widgets/dashboard_top_tabs.dart';
 import '../../core/widgets/quick_action_pill.dart';
+import 'provider_payment_methods_screen.dart';
 
 class ServiceProviderDashboard extends ConsumerStatefulWidget {
   const ServiceProviderDashboard({super.key});
@@ -329,6 +330,8 @@ class _ServiceProviderDashboardState
                                       '/provider/gallery/${_providerProfile!['id']}')),
                             _action(Icons.card_membership, 'Subscription',
                                 () => context.push('/provider/subscription')),
+                            _action(Icons.payment_outlined, 'Payment Methods',
+                                () => context.push('/provider/payment-methods')),
                           ]),
                         ),
                         DashboardTab(
