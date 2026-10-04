@@ -35,7 +35,7 @@ create policy provider_payment_methods_admin_read on provider_payment_methods
   for select
   using (is_admin());
 
-create function public.set_updated_at()
+create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
 security definer
@@ -47,6 +47,8 @@ begin
 end;
 $$;
 
-create trigger trg_provider_payment_methods_updated
+create trigger if not exists trg_provider_payment_methods_updated
+  before update on provider_payment_methods
+  for each row execute function public.set_updated_at();
   before update on provider_payment_methods
   for each row execute function public.set_updated_at();
