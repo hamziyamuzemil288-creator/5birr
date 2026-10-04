@@ -853,11 +853,12 @@ void main() {
                 'it is not reporting what it claims to. The safety net is '
                 'reporting silence as success.');
       }
-      expect(byKind['expected'], hasLength(22),
+      expect(byKind['expected'], hasLength(23),
           reason: 'The expected list in client_write_surface_report() is the '
               'contract for what the app writes client-side. It has drifted '
-              'from test/client_write_surface_test.dart, which pins 22 '
-              '(20 plus client_error_logs and product_likes).');
+              'from test/client_write_surface_test.dart, which pins 23 '
+              '(20 plus client_error_logs, product_likes and '
+              'provider_payment_methods).');
     });
 
     test('REPORT: every client write policy, quoted', () async {
@@ -966,10 +967,29 @@ void main() {
           reason: 'One of three: a client role can write user_roles, '
               'email_otp_codes or order_items again (a user_roles row with '
               'role=ADMIN is is_admin() for every policy in the schema); a '
-              'table outside the twenty the app writes became client-writable; '
-              'or a write policy a client can reach never names a caller. Run '
-              'public.client_write_surface_report() and '
+              'table outside the twenty-plus the app writes became '
+              'client-writable; or a write policy a client can reach never '
+              'names a caller. Run public.client_write_surface_report() and '
               'public.client_write_policy_detail() for the offending names.');
+    });
+
+    test('the payment-gated tables are NOT writable by a client', () async {
+      // The same class as the field tables above, caught by the same run.
+      // approved_location_for_buyers and payment_approval_screenshots were
+      // created with the Supabase default grant and a FOR ALL policy, so they
+      // counted as client-writable tables outside the expected list. Neither
+      // is written anywhere in lib/: the approved point is set server-side and
+      // read through get_approved_location_for_buyer(), and the screenshot
+      // decision goes through approve_payment_screenshot()/..._provider().
+      // 20260929000002 revokes the default grant. This pins it: a later
+      // migration that re-grants, or an ALTER DEFAULT PRIVILEGES, fails here
+      // instead of silently re-opening the surface.
+      expect(await ok('assert_gated_tables_are_not_client_writable'), isTrue,
+          reason: 'approved_location_for_buyers or payment_approval_screenshots '
+              'is writable by anon or authenticated, so any client can insert '
+              'or edit an approved provider location or a payment-approval '
+              'record directly, bypassing the server path that owns those '
+              'writes.');
     });
 
     test('a staff password change leaves a record of who did it', () async {

@@ -57,6 +57,14 @@ const Set<String> expectedClientWrites = {
   'order_messages',
   'payment_methods',
   'payment_proofs',
+  // The provider's OWN payment methods, created/edited/deleted straight from
+  // the provider dashboard (PaymentMethodsService.insert/update/delete),
+  // owner-scoped by the provider_payment_methods_owner policy -- the same
+  // shape as products or vehicles. Migration 20260927000142 added the table;
+  // 20260929000002 added it here and to the SQL expected list. Leaving it out
+  // reads as a new writable hole rather than a missing entry, which is
+  // exactly how Connectivity CI caught it.
+  'provider_payment_methods',
   'product_images',
   // A like is written directly under RLS, with no SECURITY DEFINER wrapper:
   // the ownership policy IS the check. Migration 68 added the table, 70 added
@@ -152,12 +160,13 @@ void main() {
     // of one list is exactly how they drift, so the size is pinned here and a
     // mismatch surfaces in review rather than as a permission error later.
     //
-    // 21, not 20: client_error_logs was added to the list above and to the
-    // SQL expected list, but this pin was left at 20 — which is the drift this
-    // test exists to catch, sitting inside the test itself.
+    // 22 was the count before provider_payment_methods joined (migration
+    // 20260929000002); 21, not 20, before that: client_error_logs was added to
+    // the list above and to the SQL expected list, but this pin was left at 20
+    // — the drift this test exists to catch, sitting inside the test itself.
     expect(
       expectedClientWrites.length,
-      22,
+      23,
       reason: 'expectedClientWrites changed size. If a table was added or '
           'removed, the expected list inside client_write_surface_report() in '
           'supabase/migrations/20260927000042_... must change to match, or the '

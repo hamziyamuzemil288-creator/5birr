@@ -27,10 +27,18 @@ create index if not exists idx_provider_payment_methods_active
 
 -- Provider personal methods are private to the owner; admins (support) can read
 -- them for dispute/reconciliation purposes.
+-- Idempotent: PostgreSQL has no `CREATE POLICY IF NOT EXISTS`, and this
+-- table already exists in the live DB (pasted via the SQL editor before the
+-- CLI ever recorded the migration), so a bare CREATE POLICY re-run raised
+-- 42710 `policy "provider_payment_methods_owner" already exists` and took the
+-- whole `supabase db push` down with it. DROP IF EXISTS + CREATE is the same
+-- pattern 20260929000001 uses for its policies.
+drop policy if exists provider_payment_methods_owner on provider_payment_methods;
 create policy provider_payment_methods_owner on provider_payment_methods
   for all
   using (owns_provider_profile(provider_id));
 
+drop policy if exists provider_payment_methods_admin_read on provider_payment_methods;
 create policy provider_payment_methods_admin_read on provider_payment_methods
   for select
   using (is_admin());
