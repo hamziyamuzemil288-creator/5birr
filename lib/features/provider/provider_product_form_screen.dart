@@ -282,7 +282,7 @@ class _State extends State<ProviderProductFormScreen> {
           ],
         ),
       );
-      if (!ok == true) return;
+      if (ok != true) return;
     }
     setState(() => _saving = true);
     try {

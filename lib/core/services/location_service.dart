@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, TargetPlatform;
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -288,43 +288,6 @@ class LocationService {
   }
 
   /// Calculate distance between two points in km (Haversine).
-  /// Opens the device's dialer to [phone]. Web-safe: returns false when no
-  /// handler can be launched, and never throws.
-  ///
-  /// Intentionally not a dart:io path — callers on the web build (and any
-  /// fallback where the platform was mis-detected) get a clean, silent
-  /// no-op rather than an exception.
-  Future<bool> openPhoneCall(String phone) async {
-    try {
-      final normal = phone.startsWith('+') || phone.contains(' ') || phone.contains('-');
-      final cleaned = normal
-          ? phone.replaceAll(' ', '').replaceAll('-', '').replaceAll('(', '').replaceAll(')', '')
-          : phone;
-      if (cleaned.length < 6 || cleaned.contains(RegExp(r'[^0-9+]')) || cleaned.startsWith('00')) {
-        return false;
-      }
-      final uri = Uri.parse('tel:$cleaned');
-      if (cleaned.startsWith('+')) {
-        if (!await canLaunchUrl(uri)) return false;
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-      if (defaultTargetPlatform == TargetPlatform.web) {
-        // Phone URIs are not launchable on the web; fall back to Google
-        // Maps which can display a tel: result without crashing.
-        final google = Uri.parse(
-            'https://www.google.com/maps/?api=1&query=geo:$cleaned');
-        if (await _tryLaunch(google)) return true;
-        return false;
-      } else {          if (await canLaunchUrl(uri)) {
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Calculate distance between two points in km (Haversine).
   double calculateDistance(double lat1, double lng1, double lat2, double lng2) {
     return Geolocator.distanceBetween(lat1, lng1, lat2, lng2) / 1000;
   }
@@ -404,7 +367,7 @@ class LocationService {
         if (!await canLaunchUrl(uri)) return false;
         return await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
-      if (defaultTargetPlatform == TargetPlatform.web) {
+      if (kIsWeb) {
         // Phone URIs are not launchable on the web; avoid panic and do a
         // best-effort deep link that is unlikely to block the caller.
         final google = Uri.parse(
