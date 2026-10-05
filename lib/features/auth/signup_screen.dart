@@ -280,122 +280,157 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                   ),
                 ),
               ),
-              // Form content
+              // Form content — a soft pale-lemon card so the signup form
+              // reads as a warm panel instead of bare cream. Inputs keep their
+              // own fills; the card is the aesthetic frame around them.
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(20),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildFormFields(),
-                        const SizedBox(height: 12),
-                        if (_error != null)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.error.withOpacity(0.08),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color: AppTheme.error.withOpacity(0.2)),
-                            ),
-                            child: Text(_error!,
-                                style: const TextStyle(
-                                    fontSize: 13, color: AppTheme.error)),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      child: Card(
+                        elevation: 0,
+                        margin: EdgeInsets.zero,
+                        color: AppTheme.lightLemonPale,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          side: const BorderSide(
+                            color: AppTheme.lightLemonAccent,
+                            width: 1.25,
                           ),
-                        const SizedBox(height: 24),
-                        // Terms & Privacy agreement (final step, every flow).
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: Checkbox(
-                                value: _agreedToTerms,
-                                activeColor: AppTheme.primaryGreen,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                                onChanged: (v) =>
-                                    setState(() => _agreedToTerms = v ?? false),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Wrap(
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                children: [
-                                  const Text('I agree to the ',
-                                      style: AppTheme.bodyMedium),
-                                  GestureDetector(
-                                    onTap: () =>
-                                        context.push('/terms', extra: true),
-                                    child: const Text('Terms & Privacy Policy',
-                                        style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w600,
-                                            color: AppTheme.teal,
-                                            decoration:
-                                                TextDecoration.underline,
-                                            decorationColor: AppTheme.teal)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 22, vertical: 20),
+                          child: Form(
+                            key: _formKey,
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                _buildFormFields(),
+                                const SizedBox(height: 12),
+                                if (_error != null)
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.error.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                          color: AppTheme.error.withOpacity(0.2)),
+                                    ),
+                                    child: Text(_error!,
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            color: AppTheme.error)),
+                                  ),
+                                const SizedBox(height: 24),
+                                // Terms & Privacy agreement (final step, every flow).
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: Checkbox(
+                                        value: _agreedToTerms,
+                                        activeColor: AppTheme.primaryGreen,
+                                        materialTapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
+                                        onChanged: (v) =>
+                                            setState(
+                                                () => _agreedToTerms = v ?? false),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Wrap(
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        children: [
+                                          const Text('I agree to the ',
+                                              style: AppTheme.bodyMedium),
+                                          GestureDetector(
+                                            onTap: () =>
+                                                context.push('/terms',
+                                                    extra: true),
+                                            child: const Text(
+                                                'Terms & Privacy Policy',
+                                                style: TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight:
+                                                        FontWeight.w600,
+                                                    color: AppTheme.teal,
+                                                    decoration: TextDecoration.underline,
+                                                    decorationColor: AppTheme.teal)),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (_captchaRequired) ...[
+                                  const SizedBox(height: 16),
+                                  CaptchaChallengeField(
+                                    onVerified: (id) =>
+                                        setState(() => _captchaId = id),
                                   ),
                                 ],
-                              ),
+                                const SizedBox(height: 16),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: PrimaryButton(
+                                    label: 'CONTINUE',
+                                    isLoading: _isLoading,
+                                    onPressed: _agreedToTerms &&
+                                            (!_captchaRequired ||
+                                                _captchaId != null)
+                                        ? _handleSubmit
+                                        : null,
+                                  ),
+                                ),
+                                // Task 15: Google OAuth signup — the provider-
+                                // verified email replaces the OTP step for these
+                                // accounts; admin approval still gates the account,
+                                // so this button intentionally ignores the CAPTCHA
+                                // and terms flow (Google users confirm terms via
+                                // the standard approval pipeline).
+                                const SizedBox(height: 12),
+                                GoogleSignInButton(
+                                  isLoading: _isLoading,
+                                  onPressed: _handleGoogleSignUp,
+                                ),
+                                const SizedBox(height: 16),
+                                // Sign in link
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.center,
+                                  children: [
+                                    const Text(
+                                        'Already have an account? ',
+                                        style: TextStyle(
+                                            fontSize: 14,
+                                            color: AppTheme.textSecondary)),
+                                    GestureDetector(
+                                      onTap: () => context.go('/login'),
+                                      child: const Text('Sign In',
+                                          style: TextStyle(
+                                              fontSize: 14,
+                                              fontWeight:
+                                                  FontWeight.w600,
+                                          color: AppTheme.teal)),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 24),
+                              ],
                             ),
-                          ],
-                        ),
-                        if (_captchaRequired) ...[
-                          const SizedBox(height: 16),
-                          CaptchaChallengeField(
-                            onVerified: (id) => setState(() => _captchaId = id),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
-                        SizedBox(
-                          width: double.infinity,
-                          child: PrimaryButton(
-                            label: 'CONTINUE',
-                            isLoading: _isLoading,
-                            onPressed: _agreedToTerms &&
-                                    (!_captchaRequired || _captchaId != null)
-                                ? _handleSubmit
-                                : null,
                           ),
                         ),
-                        // Task 15: Google OAuth signup — the provider-
-                        // verified email replaces the OTP step for these
-                        // accounts; admin approval still gates the account,
-                        // so this button intentionally ignores the CAPTCHA
-                        // and terms flow (Google users confirm terms via
-                        // the standard approval pipeline).
-                        const SizedBox(height: 12),
-                        GoogleSignInButton(
-                          isLoading: _isLoading,
-                          onPressed: _handleGoogleSignUp,
-                        ),
-                        const SizedBox(height: 16),
-                        // Sign in link
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text('Already have an account? ',
-                                style: TextStyle(
-                                    fontSize: 14,
-                                    color: AppTheme.textSecondary)),
-                            GestureDetector(
-                              onTap: () => context.go('/login'),
-                              child: const Text('Sign In',
-                                  style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppTheme.teal)),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 24),
-                      ],
+                      ),
                     ),
                   ),
                 ),
@@ -409,12 +444,24 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
                 child: Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: AppTheme.surface,
+                    color: AppTheme.lightLemonSurface,
                     borderRadius: BorderRadius.circular(16),
+                    border: Border(
+                      top: const BorderSide(
+                        color: AppTheme.lightLemonAccent,
+                        width: 3,
+                      ),
+                    ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 20,
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 18,
+                        offset: const Offset(0, 6),
+                      ),
+                      BoxShadow(
+                        color: AppTheme.lightLemonAccent.withOpacity(0.25),
+                        blurRadius: 24,
+                        spreadRadius: 2,
                         offset: const Offset(0, 4),
                       ),
                     ],

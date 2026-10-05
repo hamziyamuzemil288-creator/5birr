@@ -233,12 +233,15 @@ class _State extends State<AdminPaymentVerificationScreen>
               children: [
                 _chip(method?['name'] ?? 'Unknown'),
                 const SizedBox(width: 8),
-                _chip('${date.day}/${date.month}/${date.year}'),
-                if (r['payment_reference'] != null) ...[
+                _chip('${date.day}/${date.month}/${date.year}'),              if (r['payment_reference'] != null) ...[
                   const SizedBox(width: 8),
                   _chip('Ref: ${r['payment_reference']}'),
                 ],
+              if ((r['source'] as String?) == 'PROVIDER_PAYMENT_METHOD') ...[
+                const SizedBox(width: 8),
+                _chip('Wallet funding (provider method)'),
               ],
+            ],
             ),
             if (r['screenshot_storage_path'] != null) ...[
               const SizedBox(height: 8),

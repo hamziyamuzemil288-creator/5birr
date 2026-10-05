@@ -17,18 +17,55 @@ Deno.serve(async (req) => {
     const admin = getAdminClient();
     let data, error;
 
+    // Pick the RPC by the request's recorded source so the same admin
+    // approve/reject endpoint works for the existing admin-cash path and for
+    // the new provider-funded path (20261005000001).
+    //
+    // Legacy rows have source NULL (no recorded source) and must still go
+    // through the original approve_wallet_recharge / reject_wallet_recharge,
+    // which are the only RPCs that know about the registration-fee/activation
+    // branch (0038). Providers-funded rows go through the new pair, which
+    // credits in full and does not touch registration_fee_paid.
     if (action === "approve") {
-      ({ data, error } = await admin.rpc("approve_wallet_recharge", {
-        p_recharge_id: recharge_id,
-        p_admin_id: user.id,
-      }));
+      const row = await admin
+        .from("wallet_recharge_requests")
+        .select("source")
+        .eq("id", recharge_id)
+        .maybeSingle();
+
+      if (row?.source === "PROVIDER_PAYMENT_METHOD") {
+        ({ data, error } = await admin.rpc("approve_provider_wallet_funding", {
+          p_recharge_id: recharge_id,
+          p_admin_id: user.id,
+        }));
+      } else {
+        ({ data, error } = await admin.rpc("approve_wallet_recharge", {
+          p_recharge_id: recharge_id,
+          p_admin_id: user.id,
+        }));
+      }
     } else if (action === "reject") {
       if (!reason) return json({ error: "reason required for rejection" }, 400);
-      ({ data, error } = await admin.rpc("reject_wallet_recharge", {
-        p_recharge_id: recharge_id,
-        p_admin_id: user.id,
-        p_reason: reason,
-      }));
+
+      const row = await admin
+        .from("wallet_recharge_requests")
+        .select("source")
+        .eq("id", recharge_id)
+        .maybeSingle();
+
+      if (row?.source === "PROVIDER_PAYMENT_METHOD") {
+        ({ data, error } = await admin.rpc("reject_provider_wallet_funding", {
+          p_recharge_id: recharge_id,
+          p_admin_id: user.id,
+          p_reason: reason,
+        }));
+      } else {
+        ({ data, error } = await admin.rpc("reject_wallet_recharge", {
+          p_recharge_id: recharge_id,
+          p_admin_id: user.id,
+          p_reason: reason,
+        }));
+      }
     } else {
       return json({ error: "Unsupported action" }, 400);
     }

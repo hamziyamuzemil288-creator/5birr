@@ -33,6 +33,17 @@ class AppTheme {
   // white, so the login and signup pages stop looking flat and cheap.
   static const Color lightGreen = Color(0xFFE8F5E9);
   static const Color lightGreenSurface = Color(0xFFC8E6C9);
+
+  // Light lemon: a warm cream-lemon tint used on auth cards and overlays.
+  // It replaces the flat white parts of the login/signup screens so those
+  // screens read as warm and on-brand rather than stark white blocks.
+  // Palette: pale backdrop 0xFBF7EE, card fill 0xF6EFD9, stronger tint
+  // 0xF1E2B8 for accents only. All three stay light enough for dark text
+  // (textPrimary on lightLemonSurface is ~10:1).
+  static const Color lightLemonPale = Color(0xFFFBF7EE);
+  static const Color lightLemonSurface = Color(0xFFF6EFD9);
+  static const Color lightLemonAccent = Color(0xFFF1E2B8);
+
   static const Color surface = Colors.white;
   static const Color surfaceVariant = Color(0xFFF8F6F2);
   static const Color background = cream;

@@ -333,7 +333,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: AppTheme.surface,
+      backgroundColor: AppTheme.lightLemonSurface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -472,17 +472,34 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         color: Colors.white.withOpacity(0.75),
                         letterSpacing: 2)),
                 const SizedBox(height: 36),
-                // Login card
+                // Login card — light lemon surface instead of flat white.
+                // A thin lemon accent along the top edge keeps it warm and
+                // tethered to the green header rather than floating as a white
+                // block.
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: AppTheme.surface,
+                    color: AppTheme.lightLemonSurface,
                     borderRadius: BorderRadius.circular(16),
+                    border: Border(
+                      top: const BorderSide(
+                        color: AppTheme.lightLemonAccent,
+                        width: 3,
+                      ),
+                    ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 20,
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 18,
+                        offset: const Offset(0, 6),
+                      ),
+                      // A soft lemon glow under the card so it lifts off the
+                      // gradient instead of sitting on it.
+                      BoxShadow(
+                        color: AppTheme.lightLemonAccent.withOpacity(0.25),
+                        blurRadius: 24,
+                        spreadRadius: 2,
                         offset: const Offset(0, 4),
                       ),
                     ],
