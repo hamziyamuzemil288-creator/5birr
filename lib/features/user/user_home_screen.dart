@@ -12,7 +12,6 @@ import '../../core/resilience/safe_call.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/async_view.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/product_card.dart';
@@ -392,7 +391,9 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             // feed on every tab rather than only via Profile -> Live map.
             SliverToBoxAdapter(child: _rideQuickAction()),
             SliverToBoxAdapter(child: _gallerySection()),
-            SliverToBoxAdapter(child: _subTabRail(tabCategories)),
+            SliverToBoxAdapter(child: _categorySection()),
+            if (_tab != HomeTab.all)
+              SliverToBoxAdapter(child: _subTabRail(tabCategories)),
             SliverToBoxAdapter(child: _categoryGrid(tabCategories)),
             if (_activeRide != null && _tab == HomeTab.vehicles)
               SliverToBoxAdapter(child: _rideBanner(_activeRide!)),
@@ -537,7 +538,9 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         ),
         const SizedBox(height: 14),
         SizedBox(
-          height: 168,
+          // Taller than the old 168 so the BOOK action has room without
+          // squeezing the photo or the name line into a clipped label.
+          height: 196,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -553,6 +556,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                 photoCount: counts[(p['id'] ?? '') as String] ?? 0,
                 transactions:
                     (p['completed_transactions'] as num?)?.toInt() ?? 0,
+                priceRange: ((p['price_range'] as String?) ?? '').trim(),
               );
             },
           ),
@@ -568,6 +572,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     required String? photoPath,
     required int photoCount,
     required int transactions,
+    required String priceRange,
   }) {
     // An id is the only thing the route needs; a row without one would push a
     // path matching no route at all, so it is dropped rather than rendered
@@ -582,72 +587,99 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     // a card that is now ordered by that work -- leading with "3 photos" on
     // the busiest provider in the city says the wrong thing about why it is
     // first. A provider with no completed job keeps the old subtitle.
-    final subtitle = transactions > 0
+    final base = transactions > 0
         ? '$transactions completed job${transactions == 1 ? '' : 's'}${
             photoCount > 0 ? ' · $photoCount photo${photoCount == 1 ? '' : 's'}' : ''}'
         : (photoCount > 0
             ? '$photoCount photo${photoCount == 1 ? '' : 's'}'
             : (city.isEmpty ? 'No photos yet' : city));
+    // A provider's published price range, when they set one. It leads the
+    // subtitle because it is the number a buyer is actually weighing; the
+    // job/photo count is context for it.
+    final subtitle = priceRange.isEmpty ? base : '$priceRange · $base';
 
+    // At least 50% smaller than the old 152x196 tile: ~110x104.
+    // The image is the card background (cover fit, rounded), with the
+    // name under the card and a verified badge next to it.
     return SizedBox(
-      width: 152,
-      child: Material(
-        color: AppTheme.primaryGreen,
-        // 16, not the pill's 20. A pill is an ACTION and a photo card is
-        // CONTENT; giving the card the pill's exact geometry is how a screen
-        // ends up unable to tell the reader which one is a button. The brand
-        // green, the white w700 label and the entry-point pill above are what
-        // make this read as the same section, and `QuickActionPill` stays the
-        // single definition of the action shape.
-        borderRadius: BorderRadius.circular(16),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => context.push('/user/provider/$id'),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
+      width: 110,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Card: image cover background, rounded, with a subtle overlay so
+          // the white text below reads well.
+          InkWell(
+            onTap: () => context.push('/user/provider/$id'),
+            borderRadius: BorderRadius.circular(12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                height: 104,
                 child: url == null
-                    ? const _GalleryPlaceholder()
-                    : Image.network(
-                        url,
-                        fit: BoxFit.cover,
-                        // A public bucket on a provider's own photo: a missing
-                        // file must fall back to the placeholder rather than
-                        // painting Flutter's red error box into the rail.
-                        errorBuilder: (_, __, ___) => const _GalleryPlaceholder(),
-                      ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name.isEmpty ? 'Unnamed provider' : name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.78),
-                        fontSize: 11,
+                    ? _providerFallback(name)
+                    : Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.network(
+                            url,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                _providerFallback(name),
+                          ),
+                          // Subtle gradient at the bottom so the card feels
+                          // grounded; the name sits below the card, not on it.
+                          Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.bottomCenter,
+                                end: Alignment.topCenter,
+                                colors: [
+                                  Colors.transparent,
+                                  Colors.transparent,
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          // Name UNDER the card with verified badge next to it.
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  name.isEmpty ? 'Unnamed' : name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
                 ),
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Soft brand-green fallback for a provider with no photo. Not the hard
+  /// dark-green flat fill the old tiles used — a muted green-grey reads as
+  /// "no photo yet" rather than "this provider is dark green".
+  Widget _providerFallback(String name) {
+    return Container(
+      color: AppTheme.primaryGreenLight.withOpacity(0.18),
+      child: Center(
+        child: Icon(
+          Icons.business,
+          size: 28,
+          color: AppTheme.primaryGreenDark.withOpacity(0.5),
         ),
       ),
     );
@@ -796,6 +828,167 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     );
   }
 
+  /// The 3 big main categories plus the quick-action row.
+  ///
+  /// Replaces the old 3-up category grid. The three big cards are the
+  /// top-level navigation; tapping one shows that group's sub-categories in the
+  /// tabbed grid below. The quick-action row (Book a ride + All providers) sits
+  /// above the big cards, equal width, same height.
+  Widget _categorySection() {
+    // Quick actions: Book a ride + All providers, equal width, same height.
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final halfWidth = (screenWidth - 16 - 12) / 2; // 16 padding, 12 gap
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Quick actions row
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: _QuickActionCard(
+                  icon: Icons.local_taxi_outlined,
+                  title: 'Book a ride',
+                  subtitle: 'Request a driver',
+                  tint: AppTheme.primaryGreen,
+                  onTap: () => context.push('/user/ride-request'),
+                  width: halfWidth,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _QuickActionCard(
+                  icon: Icons.photo_library_outlined,
+                  title: 'All providers',
+                  subtitle: 'Browse every business',
+                  tint: AppTheme.teal,
+                  onTap: _openAllProviders,
+                  width: halfWidth,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        // 3 big main category cards
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: _MainCategoryCard(
+                  title: 'Transport & Rides',
+                  subtitle: _groupedCount(_transportCategories).toString(),
+                  icon: Icons.directions_car_outlined,
+                  tint: AppTheme.primaryGreen,
+                  count: _transportCategories.length,
+                  childCategories: _transportCategories,
+                  onTap: _transportCategories.isNotEmpty
+                      ? () => _selectGroup('transport')
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: _MainCategoryCard(
+                  title: 'Shops & Products',
+                  subtitle: _groupedCount(_shopCategories).toString(),
+                  icon: Icons.storefront_outlined,
+                  tint: AppTheme.gold,
+                  count: _shopCategories.length,
+                  childCategories: _shopCategories,
+                  onTap: _shopCategories.isNotEmpty
+                      ? () => _selectGroup('shops')
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: _MainCategoryCard(
+                  title: 'Services & Booking',
+                  subtitle: _groupedCount(_serviceCategories).toString(),
+                  icon: Icons.book_online_outlined,
+                  tint: AppTheme.teal,
+                  count: _serviceCategories.length,
+                  childCategories: _serviceCategories,
+                  onTap: _serviceCategories.isNotEmpty
+                      ? () => _selectGroup('services')
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  /// Groups of categories mapped into the 3 big sections.
+  List<AppCategory> get _transportCategories {
+    return _categories.where((c) => c.sector == 'VEHICLE').toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+  }
+
+  List<AppCategory> get _shopCategories {
+    return _categories
+        .where((c) =>
+            c.marketplaceSector == 'FOOD' ||
+            c.marketplaceSector == 'RETAIL' ||
+            c.marketplaceSector == 'OTHER')
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+  }
+
+  List<AppCategory> get _serviceCategories {
+    return _categories
+        .where((c) =>
+            c.marketplaceSector == 'ACCOMMODATION' ||
+            c.marketplaceSector == 'SERVICES' ||
+            c.serviceGroup == 'BOOKING_BASED')
+        .toList()
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+  }
+
+  int _groupedCount(List<AppCategory> list) => list.length;
+
+  /// When a big category card is tapped, switch to the matching tab and pick
+  /// the first sub-category so the user lands inside the group.
+  void _selectGroup(String group) {
+    HomeTab target;
+    String? firstId;
+    if (group == 'transport') {
+      target = HomeTab.vehicles;
+      firstId = _transportCategories.isNotEmpty ? _transportCategories[0].id : null;
+    } else if (group == 'shops') {
+      target = HomeTab.shops;
+      firstId = _shopCategories.isNotEmpty ? _shopCategories[0].id : null;
+    } else {
+      target = HomeTab.booking;
+      firstId = _serviceCategories.isNotEmpty ? _serviceCategories[0].id : null;
+    }
+    setState(() {
+      _tab = target;
+      _subCategoryId = firstId;
+    });
+  }
+
   Widget _categoryGrid(List<AppCategory> tabCategories) {
     // When a sub-tab is picked, show that category's children; otherwise show
     // the tab's categories. Both are the shared 3-up tile grid.
@@ -831,16 +1024,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         physics: const NeverScrollableScrollPhysics(),
         itemCount: items.length,
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          // Three per row, per the sketch.
-          //
-          // 0.80 (was 0.82) gives a 101x126dp tile on a 360dp screen instead
-          // of 101x124. The tile used to need ~121dp for a 2-line label and
-          // overflowed with ~1dp to spare, so anything that made the label
-          // taller — a word that wrapped onto a third line, a wider text scale
-          // — drew the "BOTTOM OVERFLOWED" stripe. The extra height plus the
-          // smaller internal padding and the Flexible/FittedBox label in
-          // _CategoryTile below give real headroom, and the label shrinks
-          // rather than clipping if the headroom is used up anyway.
           crossAxisCount: 3,
           mainAxisSpacing: 12,
           crossAxisSpacing: 12,
@@ -1098,9 +1281,8 @@ class _HeaderIcon extends StatelessWidget {
 }
 
 /// Pinned tab row. Kept as a [SliverPersistentHeader] so it stays reachable
-/// while scrolling a long category list.
-class _TabBarHeader extends SliverPersistentHeaderDelegate {
-  const _TabBarHeader({
+/// while scrolling a long category list.  class _TabBarHeader extends SliverPersistentHeaderDelegate {
+    const _TabBarHeader({
     required this.tabs,
     required this.selected,
     required this.onSelect,
@@ -1173,10 +1355,8 @@ class _TabBarHeader extends SliverPersistentHeaderDelegate {
   @override
   bool shouldRebuild(covariant _TabBarHeader oldDelegate) =>
       oldDelegate.selected != selected || oldDelegate.tabs != tabs;
-}
-
-class _SubTabChip extends StatelessWidget {
-  const _SubTabChip({
+}  class _SubTabChip extends StatelessWidget {
+    const _SubTabChip({
     required this.label,
     required this.selected,
     required this.onTap,
@@ -1214,26 +1394,197 @@ class _SubTabChip extends StatelessWidget {
   }
 }
 
-/// The tile face for a provider with no cover photo, or one whose photo 404s.
+/// Equal-width, equal-height quick action card for the home row.
 ///
-/// A provider with no photo is the NORMAL case, not an edge case — a brand new
-/// approved business has none, and an approved gallery section that renders
-/// those as broken-image boxes looks broken rather than empty. So the fallback
-/// is the tile's own brand green with a photo glyph: the row still reads as a
-/// provider, it still taps through, and the absence of a photo is honest
-/// rather than noisy.
-class _GalleryPlaceholder extends StatelessWidget {
-  const _GalleryPlaceholder();
+/// Used for "Book a ride" and "All providers": two cards side by side that
+/// look like one unified row.class _QuickActionCard extends StatelessWidget {
+    const _QuickActionCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.tint,
+    required this.onTap,
+    required this.width,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color tint;
+  final VoidCallback onTap;
+  final double width;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: AppTheme.primaryGreenDark,
-      alignment: Alignment.center,
-      child: Icon(
-        Icons.photo_library_outlined,
-        color: Colors.white.withOpacity(0.55),
-        size: 28,
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: Material(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+            ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: tint.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: tint, size: 22),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: AppTheme.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A big main category card: large, clean, with icon, title, count, and a
+/// subtle background tint. Tapping opens the group's sub-categories.class _MainCategoryCard extends StatelessWidget {
+    const _MainCategoryCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.tint,
+    required this.count,
+    required this.childCategories,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color tint;
+  final int count;
+  final List<AppCategory> childCategories;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasChildren = childCategories.isNotEmpty;
+    return Material(
+      color: AppTheme.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          height: 120,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.cardBorder, width: 0.5),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                tint.withOpacity(0.04),
+                Colors.white,
+              ],
+            ),
+          ),
+          child: Row(
+            children: [
+              // Left: icon block
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: tint.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: tint, size: 28),
+              ),
+              const SizedBox(width: 14),
+              // Right: text
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                  Text(                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary,
+
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textMuted,
+                          ),
+                        ),
+                        if (hasChildren) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: tint.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$count categories',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: tint,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.keyboard_arrow_right,
+                color: tint.withOpacity(0.6),
+                size: 22,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1245,9 +1596,8 @@ class _GalleryPlaceholder extends StatelessWidget {
 /// chosen, and the rest are stacked compactly beside it.
 ///
 /// The row is: photo (with caption), name, and price tag, so the customer
-/// sees the image, the name, and the money in one row.
-class _CategoryTile extends StatelessWidget {
-  const _CategoryTile({
+/// sees the image, the name, and the money in one row.  class _CategoryTile extends StatelessWidget {
+    const _CategoryTile({
     required this.category,
     required this.onTap,
     this.childCount = 0,
@@ -1450,8 +1800,7 @@ class _CategoryTile extends StatelessWidget {
 // ============================================================== small views
 
 /// City chip, top-left of the header.
-class _CityChip extends ConsumerWidget {
-  const _CityChip({required this.onOpen});
+class _CityChip extends ConsumerWidget {    const _CityChip({required this.onOpen});
 
   final VoidCallback onOpen;
 
@@ -1494,9 +1843,8 @@ class _CityChip extends ConsumerWidget {
 }
 
 /// "Couldn't refresh" strip. Same rule as AsyncView: content stays, the
-/// failure is stated quietly and the whole strip is a retry target.
-class _StaleBanner extends StatelessWidget {
-  const _StaleBanner({required this.message, required this.onRetry});
+/// failure is stated quietly and the whole strip is a retry target.  class _StaleBanner extends StatelessWidget {
+    const _StaleBanner({required this.message, required this.onRetry});
 
   final String message;
   final VoidCallback onRetry;
@@ -1541,10 +1889,8 @@ class _StaleBanner extends StatelessWidget {
       ),
     );
   }
-}
-
-class _ErrorBlock extends StatelessWidget {
-  const _ErrorBlock({required this.message, required this.onRetry});
+}  class _ErrorBlock extends StatelessWidget {
+    const _ErrorBlock({required this.message, required this.onRetry});
 
   final String message;
   final VoidCallback onRetry;

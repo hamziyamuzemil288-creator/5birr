@@ -432,6 +432,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           path: '/provider/category-settings',
           builder: (_, __) => const ProviderCategorySettingsScreen()),
       GoRoute(path: '/provider/orders', builder: (_, __) => const ProviderOrdersScreen()),
+      // Provider-side buyer-payment verification. A payment from a buyer INTO
+      // the provider's own account may be confirmed by the provider (who can
+      // see the money arrived) or by an admin. A platform wallet top-up stays
+      // admin-only and lives at /admin/payments instead.
+      GoRoute(
+        path: '/provider/payment-verification',
+        builder: (_, __) =>
+            const AdminOrderPaymentsScreen(providerMode: true),
+      ),
       GoRoute(path: '/provider/products', builder: (_, __) => const ProviderProductListScreen()),
       // Read-only billing view. The charge itself is performed server-side by
       // subscription-process on an n8n schedule, so this never writes.

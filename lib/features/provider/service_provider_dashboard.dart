@@ -351,6 +351,13 @@ class _ServiceProviderDashboardState
                           builder: (_) => _actionList([
                             _action(Icons.receipt_long_outlined, 'Orders',
                                 () => context.push('/provider/orders')),
+                            // The money a buyer paid into this account. The
+                            // provider can confirm it here as well as an admin
+                            // can; the platform wallet top-up stays
+                            // admin-only and is not on this screen.
+                            _action(Icons.verified_outlined,
+                                'Verify Buyer Payments',
+                                () => context.push('/provider/payment-verification')),
                           ]),
                         ),
                         DashboardTab(

@@ -482,19 +482,21 @@ void main() {
       //  * orders were created as CREATED and nothing ever moved them —
       //    the provider had no Accept button and the buyer no transition,
       //    so no order could leave CREATED;
-      //  * PAYMENT_VERIFICATION can only be left by an admin, and no admin
+      //  * PAYMENT_VERIFICATION could only be left by an admin, and no admin
       //    screen existed for it, so a customer who had paid sat there
       //    forever and the provider never got APPROVED to start work.
       //
       // The check asserts both that each non-terminal status has an onward
-      // branch, and that PAYMENT_VERIFICATION is STILL admin-only — the
-      // second is an assertion of the restriction, because loosening it
-      // would let a customer approve their own payment.
+      // branch, and that PAYMENT_VERIFICATION is restricted to an admin OR the
+      // order's own provider — the second is an assertion of the restriction,
+      // because loosening it to the BUYER would let a customer approve their
+      // own payment. (Migration 20260930000001 added the provider, who is the
+      // party the money was actually transferred to; the buyer stays out.)
       expect(await ok('assert_order_chain_has_no_dead_ends'), isTrue,
           reason: 'transition_order_status no longer lets every order status '
-              'be advanced, or no longer restricts PAYMENT_VERIFICATION to '
-              'admins. Either way an order can get stuck with nobody able to '
-              'move it.');
+              'be advanced, or no longer restricts PAYMENT_VERIFICATION to an '
+              'admin or the order\'s provider. Either way an order can get '
+              'stuck, or a buyer can approve their own payment.');
     });
   });
 

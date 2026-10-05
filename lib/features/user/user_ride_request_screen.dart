@@ -6,17 +6,17 @@ import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/widgets/birr_text_field.dart';
-import '../../core/widgets/map_tile_layer.dart';
-import '../../core/widgets/primary_button.dart';
 import '../../core/services/geocoding_service.dart';
+import '../../core/services/location_prompt.dart';
 import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
-import '../../core/services/location_prompt.dart';
 import '../../core/widgets/where_to_picker.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/birr_text_field.dart';
+import '../../core/widgets/primary_button.dart';
+import '../../core/widgets/map_tile_layer.dart';
 
 class UserRideRequestScreen extends StatefulWidget {
   const UserRideRequestScreen({
@@ -691,34 +691,64 @@ class _State extends State<UserRideRequestScreen>
     }
   }
 
+  /// Minimum sensible straight-line distance for a ride, in km. Below this,
+  /// the pickup and destination are effectively the same point and the request
+  /// is rejected before it reaches the server — a rider who never chose a
+  /// destination and got a default nearby placeholder should not be able to
+  /// submit a ride that is 0.5 km long by default.
+  static const double _minTripDistanceKm = 0.15;
+
   Future<void> _submit() async {
-    // No GPS fix yet? Try the typed address before giving up.
+    // Both ends must be known before anything else. The server needs real
+    // coordinates, not labels, so a missing end is a missing ride.
     if (_pickupPoint == null) {
+      // No GPS fix and nothing typed yet: try one forward geocode of whatever
+      // is in the pickup field — a user who typed an address but never tapped
+      // a suggestion can still submit from the text.
       final found = await _geocodeTypedPickup();
       if (!mounted) return;
       if (!found) {
-        setState(() => _error =
-            'Pickup location is required — use current location, type an address, or pick on the map');
+        setState(() {
+          _error = 'Pickup is required — use current location, type an address, or pick on the map';
+        });
         return;
       }
     }
     if (_destLatLng == null) {
-      // Typed destination that never resolved via a suggestion or the map
-      // picker: attempt one forward-geocode of the text before failing.
+      // Same deal for the destination: try the typed text once before saying
+      // the destination is missing. Without this, a user who typed "Bole" and
+      // never tapped a suggestion is told the destination is required, even
+      // though the text was good — the search bar's suggestions just never got
+      // tapped.
       final found = await _geocodeTypedDestination();
       if (!mounted) return;
       if (!found) {
-        setState(() => _error =
-            'Destination is required — type an address and pick a suggestion, or pick on the map');
+        setState(() {
+          _error = 'Destination is required — type an address, pick a suggestion, or pick on the map';
+        });
         return;
       }
     }
+
+    // Both coordinates are now known. Reject absurdly short trips before
+    // spending a server call on them — the server prices these at the minimum,
+    // so a 0.5 km default trip looks fine to the backend and only the user is
+    // confused about why their ride is so short.
+    final km = _tripDistanceKm;
+    if (km != null && km < _minTripDistanceKm) {
+      setState(() {
+        _error =
+            'Pickup and destination are too close — move the map pin to a real destination';
+      });
+      return;
+    }
+
     setState(() {
       _submitting = true;
       _error = null;
     });
     try {
-      await RideService.instance.createRideRequest(
+      final result = await RideService.instance.createRideRequest(
         pickupLat: _pickupPoint!.latitude,
         pickupLng: _pickupPoint!.longitude,
         destLat: _destLatLng!.latitude,
@@ -727,16 +757,19 @@ class _State extends State<UserRideRequestScreen>
         destText: _destCtrl.text,
         vehicleCategoryId: _selectedVehicleCategory,
       );
-      if (mounted) {
-        context.go('/user/ride-active');
-      }
+      if (!mounted) return;
+      // Success — the ride request was created and stamped with real coords.
+      // Forward to the active-ride screen so the rider can track the driver.
+      context.go('/user/ride-active');
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _submitting = false;
-          _error = friendlyError(e, context: 'Could not request this ride');
-        });
-      }
+      if (!mounted) return;
+      // Keep the real message. The old wrapper swallowed the cause and showed
+      // a generic "problem on our side" even when the failure was a validation
+      // error the user could act on (bad vehicle category, missing city, etc.).
+      setState(() {
+        _submitting = false;
+        _error = friendlyError(e, context: 'Could not request this ride');
+      });
     }
   }
 
@@ -748,188 +781,209 @@ class _State extends State<UserRideRequestScreen>
           ? const Center(
               child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : _loadError != null
-              ? LoadErrorView(message: _loadError!, onRetry: _loadCategories)
-              : SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+              ? LoadErrorView(
+                  message: _loadError!, onRetry: _loadCategories)
+              : _body(),
+    );
+  }
+
+  Widget _body() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [          // Error banner at the top, above the form, so a user who scrolls
+          // sees what went wrong before the controls. Retry is inline when the
+          // error is a failed fetch (categories), and below the form when it is
+          // a submit failure that the user can fix by changing inputs.
+          if (_error != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.error.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (_error != null) ...[
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.error.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(8),
+                  Text(_error!,
+                      style:
+                          const TextStyle(fontSize: 13, color: AppTheme.error)),
+                  if (_loadError != null)
+                    TextButton.icon(
+                      onPressed: _loadCategories,
+                      icon: const Icon(Icons.refresh, size: 14),
+                      label: const Text('Retry'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppTheme.error,
                       ),
-                      child: Text(_error!,
-                          style: const TextStyle(
-                              fontSize: 13, color: AppTheme.error)),
                     ),
-                    const SizedBox(height: 16),
-                  ],
-                  // Task 13 item 1: live pickup map on the ride screen itself.
-                  // "Use current location" centers this map on the real GPS
-                  // fix; the pin shows the effective pickup point.
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: SizedBox(
-                      height: 200,
-                      width: double.infinity,
-                      child: Stack(
-                        children: [
-                          FlutterMap(
-                            mapController: _mapController,
-                            options: MapOptions(
-                              initialCenter: _initialMapCenter(),
-                              initialZoom: 15,
-                              onMapReady: () {
-                                _mapReady = true;
-                                final pending = _pendingCenter;
-                                if (pending != null) {
-                                  _pendingCenter = null;
-                                  _mapController.move(pending, 16);
-                                }
-                              },
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+          // Task 13 item 1: live pickup map on the ride screen itself.
+          // "Use current location" centers this map on the real GPS
+          // fix; the pin shows the effective pickup point.
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: SizedBox(
+              height: 200,
+              width: double.infinity,
+              child: Stack(
+                children: [
+                  FlutterMap(
+                    mapController: _mapController,
+                    options: MapOptions(
+                      initialCenter: _initialMapCenter(),
+                      initialZoom: 15,
+                      onMapReady: () {
+                        _mapReady = true;
+                        final pending = _pendingCenter;
+                        if (pending != null) {
+                          _pendingCenter = null;
+                          _mapController.move(pending, 16);
+                        }
+                      },
+                    ),
+                    children: [
+                      const ResilientTileLayer(),
+                      if (_pickupPoint != null)
+                        MarkerLayer(
+                          markers: [
+                            Marker(
+                              point: _pickupPoint!,
+                              width: 36,
+                              height: 36,
+                              alignment: Alignment.topCenter,
+                              child: const Icon(Icons.location_pin,
+                                  color: AppTheme.primaryGreen, size: 36),
                             ),
-                            children: [
-                              const ResilientTileLayer(),
-                              if (_pickupPoint != null)
-                                MarkerLayer(
-                                  markers: [
-                                    Marker(
-                                      point: _pickupPoint!,
-                                      width: 36,
-                                      height: 36,
-                                      alignment: Alignment.topCenter,
-                                      child: const Icon(Icons.location_pin,
-                                          color: AppTheme.primaryGreen,
-                                          size: 36),
-                                    ),
-                                  ],
-                                ),
-                              const RichAttributionWidget(
-                                attributions: [
-                                  TextSourceAttribution(
-                                      '© OpenStreetMap contributors'),
-                                ],
-                              ),
-                            ],
-                          ),
-                          Positioned(
-                            right: 10,
-                            bottom: 10,
-                            child: SizedBox(
-                              width: 38,
-                              height: 38,
-                              child: FloatingActionButton(
-                                heroTag: 'rideMapRecenter',
-                                onPressed: _resolvePickupLocation,
-                                backgroundColor: AppTheme.primaryGreen,
-                                foregroundColor: Colors.white,
-                                child: const Icon(Icons.my_location, size: 20),
-                              ),
-                            ),
-                          ),
+                          ],
+                        ),
+                      const RichAttributionWidget(
+                        attributions: [
+                          TextSourceAttribution(
+                              '© OpenStreetMap contributors'),
                         ],
                       ),
-                    ),
+                    ],
                   ),
-                  // Known/registered places near the GPS fix (Task 13).
-                  // Areas come first: a kebele is the answer a rider can
-                  // give a driver, and this row is the only place one was
-                  // ever going to appear.
-                  if (_nearbyAreas.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Icon(Icons.grid_view_outlined,
-                            size: 14, color: AppTheme.primaryGreenDark),
-                        const SizedBox(width: 5),
-                        Text('Nearby areas',
-                            style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.textSecondary)),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    SizedBox(
-                      height: 40,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: _nearbyAreas.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (context, i) {
-                          final area = _nearbyAreas[i];
-                          final metres = area.distanceMeters;
-                          return ActionChip(
-                            avatar: const Icon(Icons.location_on_outlined,
-                                size: 16, color: AppTheme.primaryGreen),
-                            label: Text(
-                              metres == null
-                                  ? area.label
-                                  : '${area.label} · '
-                                      '${(metres / 1000).toStringAsFixed(1)} km',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            visualDensity: VisualDensity.compact,
-                            backgroundColor:
-                                AppTheme.primaryGreen.withOpacity(0.10),
-                            side: BorderSide(
-                                color:
-                                    AppTheme.primaryGreen.withOpacity(0.35)),
-                            labelStyle: const TextStyle(
-                                fontSize: 12, color: AppTheme.textPrimary),
-                            onPressed: () => _selectPickupSuggestion(area),
-                          );
-                        },
+                  Positioned(
+                    right: 10,
+                    bottom: 10,
+                    child: SizedBox(
+                      width: 38,
+                      height: 38,
+                      child: FloatingActionButton(
+                        heroTag: 'rideMapRecenter',
+                        onPressed: _resolvePickupLocation,
+                        backgroundColor: AppTheme.primaryGreen,
+                        foregroundColor: Colors.white,
+                        child: const Icon(Icons.my_location, size: 20),
                       ),
                     ),
-                  ],
-                  if (_nearbyPois.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      height: 40,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: _nearbyPois.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
-                        itemBuilder: (context, i) {
-                          final poi = _nearbyPois[i];
-                          return ActionChip(
-                            avatar: const Icon(Icons.place_outlined,
-                                size: 16, color: AppTheme.primaryGreen),
-                            label: Text(
-                              poi.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            visualDensity: VisualDensity.compact,
-                            backgroundColor:
-                                AppTheme.primaryGreen.withOpacity(0.06),
-                            side: BorderSide(
-                                color: AppTheme.primaryGreen.withOpacity(0.3)),
-                            labelStyle: const TextStyle(
-                                fontSize: 12, color: AppTheme.textPrimary),
-                            onPressed: () => _selectPickupSuggestion(poi),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 16),
-                  const Text('Pickup Location',
-                      style: TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  BirrTextField(
-                    label: 'Pickup',
-                    controller: _pickupCtrl,
-                    focusNode: _pickupFocus,
-                    hint: 'Type an address, or use current location',
                   ),
+                ],
+              ),
+            ),
+          ),
+          // Known/registered places near the GPS fix (Task 13).
+          // Areas come first: a kebele is the answer a rider can
+          // give a driver, and this row is the only place one was
+          // ever going to appear.
+          if (_nearbyAreas.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(Icons.grid_view_outlined,
+                    size: 14, color: AppTheme.primaryGreenDark),
+                const SizedBox(width: 5),
+                Text('Nearby areas',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textSecondary)),
+              ],
+            ),            const SizedBox(height: 6),
+            SizedBox(
+              height: 40,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _nearbyAreas.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, i) {
+                  final area = _nearbyAreas[i];
+                  final metres = area.distanceMeters;
+                  return ActionChip(
+                    avatar:
+                        const Icon(Icons.location_on_outlined,
+                            size: 16, color: AppTheme.primaryGreen),
+                    label: Text(
+                      metres == null
+                          ? area.label
+                          : '${area.label} · '
+                              '${(metres / 1000).toStringAsFixed(1)} km',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor:
+                        AppTheme.primaryGreen.withOpacity(0.10),
+                    side: BorderSide(
+                        color: AppTheme.primaryGreen.withOpacity(0.35)),
+                    labelStyle:
+                        const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    onPressed: () => _selectPickupSuggestion(area),
+                  );
+                },
+              ),
+            ),
+          ],
+          if (_nearbyPois.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 40,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _nearbyPois.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, i) {
+                  final poi = _nearbyPois[i];
+                  return ActionChip(
+                    avatar: const Icon(Icons.place_outlined,
+                        size: 16, color: AppTheme.primaryGreen),
+                    label: Text(
+                      poi.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor:
+                        AppTheme.primaryGreen.withOpacity(0.06),
+                    side: BorderSide(
+                        color: AppTheme.primaryGreen.withOpacity(0.3)),
+                    labelStyle:
+                        const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    onPressed: () => _selectPickupSuggestion(poi),
+                  );
+                },
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          const Text('Pickup Location',
+              style: TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          BirrTextField(
+            label: 'Pickup',
+            controller: _pickupCtrl,
+            focusNode: _pickupFocus,
+            hint: 'Type an address, or use current location',
+          ),
                   const SizedBox(height: 4),
                   if (_pickupAreaLabel != null)
                     Padding(
@@ -955,29 +1009,29 @@ class _State extends State<UserRideRequestScreen>
                   Row(
                     children: [
                       TextButton.icon(
-                    onPressed: () async {
-                      final r =
-                          await LocationService.instance
-                              .getCurrentPositionDetailed();
-                      if (!mounted) return;
-                      setState(() => _locStatus = r.status);
-                      if (r.success) {
-                        _applyPickupPosition(r.position!);
-                      } else if (r.status == LocationStatus.deniedForever ||
-                          r.status == LocationStatus.serviceDisabled) {
-                        // Recovery path: jump straight to the OS settings;
-                        // when the user returns, one fix is re-attempted
-                        // automatically (see didChangeAppLifecycleState).
-                        _afterResumePending = true;
-                        await LocationService.instance.openLocationSettings();
-                      } else {
-                        setState(() => _error =
-                            'Could not get your location — check GPS and try again');
-                      }
-                    },
-                    icon: const Icon(Icons.my_location, size: 16),
-                    label: const Text('Use current location'),
-                  ),
+                        onPressed: () async {
+                          final r =
+                              await LocationService.instance
+                                  .getCurrentPositionDetailed();
+                          if (!mounted) return;
+                          setState(() => _locStatus = r.status);
+                          if (r.success) {
+                            _applyPickupPosition(r.position!);
+                          } else if (r.status == LocationStatus.deniedForever ||
+                              r.status == LocationStatus.serviceDisabled) {
+                            // Recovery path: jump straight to the OS settings;
+                            // when the user returns, one fix is re-attempted
+                            // automatically (see didChangeAppLifecycleState).
+                            _afterResumePending = true;
+                            await LocationService.instance.openLocationSettings();
+                          } else {
+                            setState(() => _error =
+                                'Could not get your location — check GPS and try again');
+                          }
+                        },
+                        icon: const Icon(Icons.my_location, size: 16),
+                        label: const Text('Use current location'),
+                      ),
                       const SizedBox(width: 8),
                       TextButton.icon(
                         onPressed: _pickPickupOnMap,
@@ -1032,8 +1086,8 @@ class _State extends State<UserRideRequestScreen>
                         },
                       ),
                     ),
-                  const SizedBox(height: 16),
-                  const Text('Destination',
+                const SizedBox(height: 16),
+                const Text('Destination',
                       style: TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
@@ -1063,10 +1117,9 @@ class _State extends State<UserRideRequestScreen>
                               }
                             },
                           )
-                        : null,
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
+                        : null,                    ),
+                const SizedBox(height: 4),
+                Row(
                     children: [
                       // The primary destination action: search bar + kebele
                       // chips + the GPS animation, in one sheet.
@@ -1078,6 +1131,7 @@ class _State extends State<UserRideRequestScreen>
                           foregroundColor: AppTheme.primaryGreenDark,
                         ),
                       ),
+                      const SizedBox(width: 8),
                       TextButton.icon(
                         onPressed: _geocoding ? null : _pickDestinationOnMap,
                         icon: const Icon(Icons.map_outlined, size: 16),
@@ -1094,9 +1148,8 @@ class _State extends State<UserRideRequestScreen>
                                 color: AppTheme.primaryGreen),
                           ),
                         ),
-                    ],
-                  ),
-                  if (_destFieldFocused && _destSuggestions.isNotEmpty)
+                    ],                    ),
+                if (_destFieldFocused && _destSuggestions.isNotEmpty)
                     Container(
                       margin: const EdgeInsets.only(top: 4),
                       decoration: BoxDecoration(
@@ -1130,7 +1183,7 @@ class _State extends State<UserRideRequestScreen>
                         },
                       ),
                     ),
-                  if (_destLatLng != null)
+                if (_destLatLng != null)
                     Padding(
                       padding: const EdgeInsets.only(left: 4),
                       child: Builder(builder: (context) {
@@ -1156,9 +1209,9 @@ class _State extends State<UserRideRequestScreen>
                           ),
                         );
                       }),
-                    ),
-                  const SizedBox(height: 16),
-                  // Vehicle category selection
+                  ),
+                const SizedBox(height: 16),
+                // Vehicle category selection
                   const Text('Vehicle Type',
                       style: TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w600)),
@@ -1264,14 +1317,11 @@ class _State extends State<UserRideRequestScreen>
                         style:
                             TextStyle(fontSize: 12, color: AppTheme.textMuted),
                       ),
-                    ),
-                ],
-              ),
+                    ),          ],
             ),
     );
   }
 }
-
 /// Full-screen OpenStreetMap location picker with address search.
 /// Search a place, drag the map, or tap to drop a pin; confirm returns the
 /// picked [LatLng]. Shared by pickup and destination picking.

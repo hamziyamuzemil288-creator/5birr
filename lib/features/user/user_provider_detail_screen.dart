@@ -8,6 +8,8 @@ import '../../core/utils/category_field_value.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/photo_grid.dart';
+import '../../core/widgets/product_buy_button.dart';
+import '../../core/widgets/product_engagement.dart';
 import '../../core/widgets/provider_trust_section.dart';
 import '../../core/widgets/rank_badge.dart';
 
@@ -720,6 +722,30 @@ class _State extends State<UserProviderDetailScreen> {
                         style: const TextStyle(
                             color: AppTheme.primaryGreen,
                             fontWeight: FontWeight.w600)),
+                    // Same reaction pair and BUY action as the grid cards, so
+                    // a product behaves identically wherever it is listed.
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DislikeButton(
+                          productId: prod['id'] as String,
+                          fallbackCount:
+                              (prod['like_count'] as num?)?.toInt() ?? 0,
+                        ),
+                        const SizedBox(width: 6),
+                        LikeButton(
+                          productId: prod['id'] as String,
+                          fallbackCount:
+                              (prod['like_count'] as num?)?.toInt() ?? 0,
+                        ),
+                        const SizedBox(width: 8),
+                        ProductBuyButton(
+                          productId: prod['id'] as String,
+                          providerId: widget.providerId,
+                          compact: true,
+                        ),
+                      ],
+                    ),
                   );
                 },
               ),

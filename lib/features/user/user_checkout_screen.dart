@@ -805,9 +805,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                       const SizedBox(height: 24),
                       SizedBox(
                         width: double.infinity,
+                        // On a gated listing the press does not pay and does
+                        // not claim the booking: it ASKS the provider. So the
+                        // button says what it does — "check availability" —
+                        // rather than "request order", which reads as a
+                        // purchase the buyer has not made yet.
                         child: PrimaryButton(
                           label: _needsAvailabilityConfirmation
-                              ? 'REQUEST ORDER'
+                              ? 'CHECK AVAILABILITY'
                               : 'PLACE ORDER',
                           isLoading: _submitting,
                           onPressed: _placeOrder,

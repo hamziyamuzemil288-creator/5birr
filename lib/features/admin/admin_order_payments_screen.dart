@@ -44,7 +44,15 @@ import '../../core/widgets/primary_button.dart';
 /// transition the order — in that order, and the screen does them together so
 /// an admin cannot half-complete one.
 class AdminOrderPaymentsScreen extends StatefulWidget {
-  const AdminOrderPaymentsScreen({super.key});
+  /// When true the screen runs as the PROVIDER's own queue: it shows only the
+  /// orders of the signed-in provider and titles itself for that role. The
+  /// decision it makes is identical — a buyer payment on a real order may be
+  /// verified by an admin or by the provider who received the money
+  /// (migration 20260930000001). A provider still cannot verify a platform
+  /// wallet recharge; those remain admin-only.
+  final bool providerMode;
+
+  const AdminOrderPaymentsScreen({super.key, this.providerMode = false});
 
   @override
   State<AdminOrderPaymentsScreen> createState() =>
@@ -69,9 +77,34 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
       _error = null;
     });
     try {
-      final data = await Supabase.instance.client
-          .from('orders')
-          .select(
+      final client = Supabase.instance.client;
+
+      // In provider mode, resolve the signed-in provider's own profile id and
+      // scope the queue to it. A provider with no profile yet has no orders to
+      // verify, so the screen simply shows the empty state rather than every
+      // provider's queue.
+      String? providerId;
+      if (widget.providerMode) {
+        final userId = client.auth.currentUser?.id;
+        if (userId != null) {
+          final prov = await client
+              .from('provider_profiles')
+              .select('id')
+              .eq('user_id', userId)
+              .maybeSingle();
+          providerId = prov?['id'] as String?;
+        }
+        if (providerId == null) {
+          if (!mounted) return;
+          setState(() {
+            _orders = const [];
+            _loading = false;
+          });
+          return;
+        }
+      }
+
+      var query = client.from('orders').select(
             // `order_number` is NOT selected. Migration 0037 created that
             // column, but 0037 is below the deploy baseline, so it was
             // recorded as applied WITHOUT being executed and the column does
@@ -81,8 +114,11 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
             'user_id, provider_id, '
             'payment_proofs(id, storage_path, verification_status, created_at), '
             'provider_profiles!inner(business_name, profiles(full_name, phone))'
-          )
-          .eq('status', 'PAYMENT_VERIFICATION')
+          ).eq('status', 'PAYMENT_VERIFICATION');
+      if (providerId != null) {
+        query = query.eq('provider_id', providerId);
+      }
+      final data = await query
           .order('updated_at', ascending: true) // longest waiting first
           .limit(200);
 
@@ -298,7 +334,9 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Order Payments'),
+        title: Text(widget.providerMode
+            ? 'Verify Buyer Payments'
+            : 'Order Payments'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),

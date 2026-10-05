@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import '../models/product.dart';
 import 'rank_badge.dart';
 import 'product_engagement.dart';
+import 'product_buy_button.dart';
 
 class ProductCard extends StatelessWidget {
   final Product product;
@@ -111,11 +112,29 @@ class ProductCard extends StatelessWidget {
                   // screen; it adds no new surface of its own.
                   ProviderNameTag(providerId: product.providerId),
                   const SizedBox(height: 2),
-                  Text(product.formattedDisplayPrice,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.primaryGreen)),
+                  // Price and the BUY action share one row: the number the
+                  // buyer is deciding on and the button that acts on it read
+                  // together, and it costs no extra height on a grid tile.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(product.formattedDisplayPrice,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.primaryGreen)),
+                      ),
+                      const SizedBox(width: 6),
+                      ProductBuyButton(
+                        productId: product.id,
+                        providerId: product.providerId,
+                        compact: true,
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 4),
                   Row(
                     children: [

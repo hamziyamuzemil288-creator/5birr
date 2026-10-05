@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import 'widgets/public_image_gallery.dart';
+import 'widgets/image_delete_sheet.dart';
 
 /// Content control: the queue of reports, the record of what has been taken
 /// down, and the two actions this screen exists for.
@@ -43,6 +44,7 @@ class AdminContentControlScreen extends StatefulWidget {
 class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
   List<Map<String, dynamic>> _reports = const [];
   List<Map<String, dynamic>> _actions = const [];
+  List<Map<String, dynamic>> _imagesForDelete = const [];
   bool _loading = true;
   bool _working = false;
   String? _error;
@@ -77,12 +79,18 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
           'p_limit': 100,
         }),
         client.rpc('admin_moderation_actions', params: {'p_limit': 60}),
+        client.rpc('admin_public_image_gallery', params: {
+          'p_city': '',
+          'p_limit': 200,
+          'p_offset': 0,
+        }),
       ]);
 
       if (!mounted) return;
       setState(() {
         _reports = List<Map<String, dynamic>>.from(results[0] as List);
         _actions = List<Map<String, dynamic>>.from(results[1] as List);
+        _imagesForDelete = List<Map<String, dynamic>>.from(results[2] as List);
         _loading = false;
       });
     } catch (e) {
@@ -175,6 +183,59 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     await _run('Image removal', () {
       return Supabase.instance.client.rpc('admin_moderate_image', params: {
         'p_bucket': _bucketFor(path),
+        'p_path': path,
+        'p_reason': reason,
+        'p_severity': 'SERIOUS',
+      });
+    });
+  }
+
+  /// Remove an image chosen from the delete-only gallery strip.
+  ///
+  /// The same server call as `_removeImage(String)`, but driven from the
+  /// `admin_public_image_gallery` rows that the delete section lists. The RPC
+  /// takes the whole path, so this only snapshots the values the server needs.
+  Future<void> _removeImageFromRow(Map<String, dynamic> image) async {
+    final bucket = image['bucket'] as String?;
+    final path = image['storage_path'] as String?;
+    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
+      _snack('That image has no usable path, so it cannot be deleted.',
+          bad: true);
+      return;
+    }
+    final reason = await _askReason(
+      'Remove this image?',
+      confirm: 'Remove image',
+    );
+    if (reason == null || !mounted) return;
+
+    await _run('Image removal', () {
+      return Supabase.instance.client.rpc('admin_moderate_image_with_reason', params: {
+        'p_bucket': bucket,
+        'p_path': path,
+        'p_reason': reason,
+        'p_severity': 'SERIOUS',
+      });
+    });
+  }
+
+  Future<void> _removeImage(String path) async {
+    final bucket = image['bucket'] as String?;
+    final path = image['storage_path'] as String?;
+    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
+      _snack('That image has no usable path, so it cannot be deleted.',
+          bad: true);
+      return;
+    }
+    final reason = await _askReason(
+      'Remove this image?',
+      confirm: 'Remove image',
+    );
+    if (reason == null || !mounted) return;
+
+    await _run('Image removal', () {
+      return Supabase.instance.client.rpc('admin_moderate_image', params: {
+        'p_bucket': bucket,
         'p_path': path,
         'p_reason': reason,
         'p_severity': 'SERIOUS',
@@ -292,6 +353,28 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                       // is "what is published right now", and that is the
                       // gallery, not the queue.
                       const PublicImageGallery(),
+                      const SizedBox(height: 20),
+                      const Text('Delete image',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.primaryGreenDark,
+                          )),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Pick any published image and delete it permanently. '
+                        'This removes the file and unlinks the row in one call.',
+                        style:
+                            TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      ),
+                      const SizedBox(height: 14),
+                      if (_imagesForDelete.isEmpty)
+                        const _Empty(
+                          icon: Icons.photo_library_outlined,
+                          text: 'No published images to delete.',
+                        )
+                      else
+                        for (final img in _imagesForDelete) _deleteRow(img),
                       const SizedBox(height: 24),
                       Text('Reported content',
                           style: TextStyle(
@@ -462,9 +545,9 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
               children: [
                 if (path != null)
                   OutlinedButton.icon(
-                    onPressed: _working ? null : () => _removeImage(path),
-                    icon: const Icon(Icons.delete_outline, size: 16),
-                    label: const Text('Remove image'),
+                    onPressed: _working ? null : () => _removeImageFromRow(r),
+                    icon: const Icon(Icons.delete_forever, size: 16),
+                    label: const Text('Delete image'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppTheme.error,
                       side: const BorderSide(color: AppTheme.error),
@@ -493,6 +576,13 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
               ],
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _reportCard(Map<String, dynamic> r) {
+          ],
           if (!isOpen && r['resolution_note'] != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -505,6 +595,41 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
       ),
     );
   }
+
+  Widget _deleteRow(Map<String, dynamic> image) {
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.delete_outline,
+          size: 18, color: AppTheme.error),
+      title: Text(
+        image['storage_path'] as String? ?? 'unknown image',
+        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+      ),
+      subtitle: Text(
+        [
+          if ((image['bucket'] as String? ?? '').isNotEmpty) image['bucket'],
+          if ((image['uploader_name'] as String? ?? '').isNotEmpty)
+            'by ${image['uploader_name']}',
+          (image['uploaded_at'] as String? ?? '').substring(0, 10),
+        ]
+            .where((part) => part.isNotEmpty)
+            .join(' · '),
+        style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+      ),
+      trailing: OutlinedButton.icon(
+        onPressed: _working ? null : () => _removeImageFromRow(image),
+        icon: const Icon(Icons.delete_forever, size: 16),
+        label: const Text('Delete'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppTheme.error,
+          side: const BorderSide(color: AppTheme.error),
+        ),
+      ),
+    );
+  }
+
+  Widget _reportCard(Map<String, dynamic> r) {
 
   Widget _actionRow(Map<String, dynamic> a) {
     final type = a['action_type'] as String? ?? '';
