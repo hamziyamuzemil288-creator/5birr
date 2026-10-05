@@ -1,1 +1,212 @@
-import 'package:flutter/material.dart';\nimport 'package:supabase_flutter/supabase_flutter.dart';\n\nimport '../../../core/theme/app_theme.dart';\nimport '../../../core/utils/friendly_error.dart';\n\n/// A delete-only sheet for admins that lists every published image and lets an\n/// administrator remove one permanently.\n///\n/// This is the missing \"delete image from the admin sidebar\" path the report\n/// described: the admin side of the image-delete flow is reachable from the\n/// Content Control screen's own delete strip, and the same\n/// `admin_moderate_image` RPC does the actual removal.\nclass ImageDeleteSheet extends StatefulWidget {\n  const ImageDeleteSheet({super.key});\n\n  @override\n  State<ImageDeleteSheet> createState() => _ImageDeleteSheetState();\n}\n\nclass _ImageDeleteSheetState extends State<ImageDeleteSheet> {\n  List<Map<String, dynamic>> _images = const [];\n  bool _loading = true;\n  bool _working = false;\n  String? _error;\n\n  @override\n  void initState() {\n    super.initState();\n    _load();\n  }\n\n  SupabaseClient get _client => Supabase.instance.client;\n\n  Future<void> _load() async {\n    setState(() {\n      _loading = true;\n      _error = null;\n    });\n    try {\n      final rows = await _client.rpc('admin_public_image_gallery', params: {\n        'p_city': '',\n        'p_limit': 200,\n        'p_offset': 0,\n      });\n      if (!mounted) return;\n      setState(() {\n        _images = List<Map<String, dynamic>>.from(rows as List);\n        _loading = false;\n      });\n    } catch (e) {\n      if (!mounted) return;\n      setState(() {\n        _loading = false;\n        _error = friendlyError(e, context: 'Could not load the image list');\n      });\n    }\n  }\n\n  void _snack(String message, {bool bad = false}) {\n    ScaffoldMessenger.of(context)\n      ..clearSnackBars()\n      ..showSnackBar(SnackBar(\n        content: Text(message),\n        behavior: SnackBarBehavior.floating,\n        backgroundColor: bad ? AppTheme.error : null,\n      ));\n  }\n\n  Future<void> _run(String label, Future<dynamic> Function() action) async {\n    if (_working) return;\n    setState(() => _working = true);\n    try {\n      final result = await action();\n      final text = result is String ? result : '$label done';\n      if (!mounted) return;\n      _snack(text);\n      await _load();\n    } catch (e) {\n      if (mounted) {\n        _snack(friendlyError(e, context: label), bad: true);\n      }\n    } finally {\n      if (mounted) setState(() => _working = false);\n    }\n  }\n\n  Future<String?> _askReason({required String title, required String confirm}) async {\n    final controller = TextEditingController();\n    final reason = await showDialog<String>(\n      context: context,\n      builder: (ctx) => AlertDialog(\n        title: Text(title),\n        content: TextField(\n          controller: controller,\n          autofocus: true,\n          maxLines: 3,\n          maxLength: 500,\n          decoration: const InputDecoration(\n            labelText: 'Reason',\n            helperText: 'Recorded permanently against this account.',\n          ),\n        ),\n        actions: [\n          TextButton(\n            onPressed: () => Navigator.pop(ctx),\n            child: const Text('Cancel'),\n          ),\n          FilledButton(\n            onPressed: () {\n              final text = controller.text.trim();\n              if (text.length >= 3) Navigator.pop(ctx, text);\n            },\n            child: Text(confirm),\n          ),\n        ],\n      ),\n    );\n    controller.dispose();\n    return reason;\n  }\n\n  Future<void> _remove(Map<String, dynamic> image) async {\n    final bucket = image['bucket'] as String?;\n    final path = image['storage_path'] as String?;\n    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {\n      _snack('That image has no usable path, so it cannot be deleted.',\n          bad: true);\n      return;\n    }\n    final reason = await _askReason(\n      'Delete this image permanently?',\n      confirm: 'Delete image',\n    );\n    if (reason == null || !mounted) return;\n\n    await _run('Image removal', () {\n      return _client.rpc('admin_moderate_image', params: {\n        'p_bucket': bucket,\n        'p_path': path,\n        'p_reason': reason,\n        'p_severity': 'SERIOUS',\n      });\n    });\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(\n        title: const Text('Delete image'),\n        leading: IconButton(\n          icon: const Icon(Icons.close),\n          onPressed: () => Navigator.of(context).pop(),\n        ),\n      ),\n      body: _loading\n          ? const Center(\n              child: CircularProgressIndicator(color: AppTheme.primaryGreen))\n          : _error != null\n              ? Center(\n                  child: Padding(\n                    padding: const EdgeInsets.all(24),\n                    child: Text(_error!,\n                        textAlign: TextAlign.center,\n                        style: const TextStyle(color: AppTheme.error)),\n                  ),\n                )\n              : _images.isEmpty\n                  ? const Center(\n                      child: Text(\n                        'No published images were found.',\n                        style: TextStyle(color: AppTheme.textMuted),\n                      ),\n                    )\n                  : ListView.builder(\n                      padding: const EdgeInsets.all(16),\n                      itemCount: _images.length,\n                      itemBuilder: (_, i) {\n                        final image = _images[i];\n                        final name = image['provider_name'] as String? ?? 'Unknown';\n                        final path = image['storage_path'] as String?;\n                        return Card(\n                          margin: const EdgeInsets.only(bottom: 12),\n                          child: ListTile(\n                            leading: CircleAvatar(\n                              backgroundColor: AppTheme.primaryGreen,\n                              child: const Text('#$i',\n                                  style: TextStyle(color: Colors.white)),\n                            ),\n                            title: Text(name,\n                                style: const TextStyle(fontWeight: FontWeight.w600)),\n                            subtitle: Text(\n                              path ?? 'unknown path',\n                              style: const TextStyle(fontSize: 11),\n                            ),\n                            trailing: OutlinedButton.icon(\n                              onPressed: _working ? null : () => _remove(image),\n                              icon: const Icon(Icons.delete_forever, size: 16),\n                              label: const Text('Delete'),\n                              style: OutlinedButton.styleFrom(\n                                foregroundColor: AppTheme.error,\n                                side: const BorderSide(color: AppTheme.error),\n                              ),\n                            ),\n                          ),\n                        );\n                      },\n                    ),\n    );\n  }\n}\n
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../core/theme/app_theme.dart';
+import '../../../core/utils/friendly_error.dart';
+
+/// A delete-only sheet for admins that lists every published image and lets an
+/// administrator remove one permanently.
+///
+/// This is the missing "delete image from the admin sidebar" path the report
+/// described: the admin side of the image-delete flow is reachable from the
+/// Content Control screen's own delete strip, and the same
+/// `admin_moderate_image` RPC does the actual removal.
+class ImageDeleteSheet extends StatefulWidget {
+  const ImageDeleteSheet({super.key});
+
+  @override
+  State<ImageDeleteSheet> createState() => _ImageDeleteSheetState();
+}
+
+class _ImageDeleteSheetState extends State<ImageDeleteSheet> {
+  List<Map<String, dynamic>> _images = const [];
+  bool _loading = true;
+  bool _working = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  SupabaseClient get _client => Supabase.instance.client;
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final rows = await _client.rpc('admin_public_image_gallery', params: {
+        'p_city': '',
+        'p_limit': 200,
+        'p_offset': 0,
+      });
+      if (!mounted) return;
+      setState(() {
+        _images = List<Map<String, dynamic>>.from(rows as List);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = friendlyError(e, context: 'Could not load the image list');
+      });
+    }
+  }
+
+  void _snack(String message, {bool bad = false}) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: bad ? AppTheme.error : null,
+      ));
+  }
+
+  Future<void> _run(String label, Future<dynamic> Function() action) async {
+    if (_working) return;
+    setState(() => _working = true);
+    try {
+      final result = await action();
+      final text = result is String ? result : '$label done';
+      if (!mounted) return;
+      _snack(text);
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        _snack(friendlyError(e, context: label), bad: true);
+      }
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<String?> _askReason({required String title, required String confirm}) async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 3,
+          maxLength: 500,
+          decoration: const InputDecoration(
+            labelText: 'Reason',
+            helperText: 'Recorded permanently against this account.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final text = controller.text.trim();
+              if (text.length >= 3) Navigator.pop(ctx, text);
+            },
+            child: Text(confirm),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return reason;
+  }
+
+  Future<void> _remove(Map<String, dynamic> image) async {
+    final bucket = image['bucket'] as String?;
+    final path = image['storage_path'] as String?;
+    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
+      _snack('That image has no usable path, so it cannot be deleted.',
+          bad: true);
+      return;
+    }
+    final reason = await _askReason(
+      title: 'Delete this image permanently?',
+      confirm: 'Delete image',
+    );
+    if (reason == null || !mounted) return;
+
+    await _run('Image removal', () {
+      return _client.rpc('admin_moderate_image', params: {
+        'p_bucket': bucket,
+        'p_path': path,
+        'p_reason': reason,
+        'p_severity': 'SERIOUS',
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Delete image'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
+      body: _loading
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(_error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: AppTheme.error)),
+                  ),
+                )
+              : _images.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No published images were found.',
+                        style: TextStyle(color: AppTheme.textMuted),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _images.length,
+                      itemBuilder: (_, i) {
+                        final image = _images[i];
+                        final name = image['provider_name'] as String? ?? 'Unknown';
+                        final path = image['storage_path'] as String?;
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: AppTheme.primaryGreen,
+                              child: Text('#$i',
+                                  style: const TextStyle(color: Colors.white)),
+                            ),
+                            title: Text(name,
+                                style: const TextStyle(fontWeight: FontWeight.w600)),
+                            subtitle: Text(
+                              path ?? 'unknown path',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            trailing: OutlinedButton.icon(
+                              onPressed: _working ? null : () => _remove(image),
+                              icon: const Icon(Icons.delete_forever, size: 16),
+                              label: const Text('Delete'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppTheme.error,
+                                side: const BorderSide(color: AppTheme.error),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+    );
+  }
+}

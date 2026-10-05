@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
@@ -66,7 +67,7 @@ class _VehicleProviderDashboardState
           .from('vehicles')
           .select('id')
           .eq('provider_id', prov['id'])
-          .count('*');
+          .count(CountOption.exact);
       final status = await client
           .from('driver_status')
           .select()
@@ -90,7 +91,7 @@ class _VehicleProviderDashboardState
       if (mounted) {
         setState(() {
           _providerProfile = prov;
-          _vehicleCount = vehicles.count ?? 0;
+          _vehicleCount = vehicles.count;
           _driverStatus = status;
           _points = points;
           _rankProgress = progress;

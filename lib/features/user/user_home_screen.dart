@@ -1281,7 +1281,8 @@ class _HeaderIcon extends StatelessWidget {
 }
 
 /// Pinned tab row. Kept as a [SliverPersistentHeader] so it stays reachable
-/// while scrolling a long category list.  class _TabBarHeader extends SliverPersistentHeaderDelegate {
+/// while scrolling a long category list.
+class _TabBarHeader extends SliverPersistentHeaderDelegate {
     const _TabBarHeader({
     required this.tabs,
     required this.selected,
@@ -1355,7 +1356,9 @@ class _HeaderIcon extends StatelessWidget {
   @override
   bool shouldRebuild(covariant _TabBarHeader oldDelegate) =>
       oldDelegate.selected != selected || oldDelegate.tabs != tabs;
-}  class _SubTabChip extends StatelessWidget {
+}
+
+class _SubTabChip extends StatelessWidget {
     const _SubTabChip({
     required this.label,
     required this.selected,
@@ -1397,7 +1400,8 @@ class _HeaderIcon extends StatelessWidget {
 /// Equal-width, equal-height quick action card for the home row.
 ///
 /// Used for "Book a ride" and "All providers": two cards side by side that
-/// look like one unified row.class _QuickActionCard extends StatelessWidget {
+/// look like one unified row.
+class _QuickActionCard extends StatelessWidget {
     const _QuickActionCard({
     required this.icon,
     required this.title,
@@ -1470,7 +1474,8 @@ class _HeaderIcon extends StatelessWidget {
 }
 
 /// A big main category card: large, clean, with icon, title, count, and a
-/// subtle background tint. Tapping opens the group's sub-categories.class _MainCategoryCard extends StatelessWidget {
+/// subtle background tint. Tapping opens the group's sub-categories.
+class _MainCategoryCard extends StatelessWidget {
     const _MainCategoryCard({
     required this.title,
     required this.subtitle,
@@ -1596,7 +1601,8 @@ class _HeaderIcon extends StatelessWidget {
 /// chosen, and the rest are stacked compactly beside it.
 ///
 /// The row is: photo (with caption), name, and price tag, so the customer
-/// sees the image, the name, and the money in one row.  class _CategoryTile extends StatelessWidget {
+/// sees the image, the name, and the money in one row.
+class _CategoryTile extends StatelessWidget {
     const _CategoryTile({
     required this.category,
     required this.onTap,
@@ -1800,7 +1806,8 @@ class _HeaderIcon extends StatelessWidget {
 // ============================================================== small views
 
 /// City chip, top-left of the header.
-class _CityChip extends ConsumerWidget {    const _CityChip({required this.onOpen});
+class _CityChip extends ConsumerWidget {
+  const _CityChip({required this.onOpen});
 
   final VoidCallback onOpen;
 
@@ -1843,7 +1850,8 @@ class _CityChip extends ConsumerWidget {    const _CityChip({required this.onOpe
 }
 
 /// "Couldn't refresh" strip. Same rule as AsyncView: content stays, the
-/// failure is stated quietly and the whole strip is a retry target.  class _StaleBanner extends StatelessWidget {
+/// failure is stated quietly and the whole strip is a retry target.
+class _StaleBanner extends StatelessWidget {
     const _StaleBanner({required this.message, required this.onRetry});
 
   final String message;
@@ -1889,7 +1897,9 @@ class _CityChip extends ConsumerWidget {    const _CityChip({required this.onOpe
       ),
     );
   }
-}  class _ErrorBlock extends StatelessWidget {
+}
+
+class _ErrorBlock extends StatelessWidget {
     const _ErrorBlock({required this.message, required this.onRetry});
 
   final String message;

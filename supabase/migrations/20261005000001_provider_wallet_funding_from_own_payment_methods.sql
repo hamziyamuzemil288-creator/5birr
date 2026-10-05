@@ -134,8 +134,8 @@ alter table public.wallet_recharge_requests
 
 comment on column public.wallet_recharge_requests.source is
   'How this request was created. NULL = legacy row with no recorded source; '
-  "'ADMIN_CASH' = submitted through the admin cash recharge path; "
-  "'PROVIDER_PAYMENT_METHOD' = the provider funded their own wallet from one "
+  '''ADMIN_CASH'' = submitted through the admin cash recharge path; '
+  '''PROVIDER_PAYMENT_METHOD'' = the provider funded their own wallet from one '
   'of their own provider_payment_methods rows.';
 
 -- -----------------------------------------------------------------------------
