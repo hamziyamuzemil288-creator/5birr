@@ -167,34 +167,10 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     return reason;
   }
 
-  Future<void> _removeImage(String path) async {
-    final parts = path.split('/');
-    if (parts.length < 2) {
-      _snack('That path has no owner folder, so it cannot be removed.',
-          bad: true);
-      return;
-    }
-    final reason = await _askReason(
-      'Remove this image?',
-      confirm: 'Remove image',
-    );
-    if (reason == null || !mounted) return;
-
-    await _run('Image removal', () {
-      return Supabase.instance.client.rpc('admin_moderate_image', params: {
-        'p_bucket': _bucketFor(path),
-        'p_path': path,
-        'p_reason': reason,
-        'p_severity': 'SERIOUS',
-      });
-    });
-  }
-
   /// Remove an image chosen from the delete-only gallery strip.
   ///
-  /// The same server call as `_removeImage(String)`, but driven from the
-  /// `admin_public_image_gallery` rows that the delete section lists. The RPC
-  /// takes the whole path, so this only snapshots the values the server needs.
+  /// The server call needs the bucket and path, so this only snapshots the
+  /// values the server needs from the `admin_public_image_gallery` row.
   Future<void> _removeImageFromRow(Map<String, dynamic> image) async {
     final bucket = image['bucket'] as String?;
     final path = image['storage_path'] as String?;
@@ -219,11 +195,14 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     });
   }
 
+  /// Remove an image by its storage path.
+  ///
+  /// The bucket is recovered from the path shape -- every upload in this
+  /// project is `<uid>/...`. An unknown shape is refused by the server rather
+  /// than guessed at here.
   Future<void> _removeImage(String path) async {
-    final bucket = image['bucket'] as String?;
-    final path = image['storage_path'] as String?;
-    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
-      _snack('That image has no usable path, so it cannot be deleted.',
+    if (path.isEmpty || !path.contains('/')) {
+      _snack('That path has no owner folder, so it cannot be removed.',
           bad: true);
       return;
     }
@@ -235,7 +214,7 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
 
     await _run('Image removal', () {
       return Supabase.instance.client.rpc('admin_moderate_image', params: {
-        'p_bucket': bucket,
+        'p_bucket': _bucketFor(path),
         'p_path': path,
         'p_reason': reason,
         'p_severity': 'SERIOUS',
@@ -576,13 +555,6 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
               ],
             ),
           ],
-        ],
-      ),
-    );
-  }
-
-  Widget _reportCard(Map<String, dynamic> r) {
-          ],
           if (!isOpen && r['resolution_note'] != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -628,8 +600,6 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
       ),
     );
   }
-
-  Widget _reportCard(Map<String, dynamic> r) {
 
   Widget _actionRow(Map<String, dynamic> a) {
     final type = a['action_type'] as String? ?? '';
