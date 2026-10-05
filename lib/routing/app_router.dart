@@ -29,7 +29,6 @@ import '../features/user/live_map_screen.dart';
 import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
 import '../features/provider/provider_orders_screen.dart';
-import '../features/provider/provider_business_profile_screen.dart';
 import '../features/provider/provider_category_settings_screen.dart';
 import '../features/admin/admin_category_fields_screen.dart';
 import '../features/provider/provider_subscription_screen.dart';

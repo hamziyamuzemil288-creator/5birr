@@ -282,9 +282,9 @@ class _PointsScreenState extends State<PointsScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppTheme.warning.withOpacity(0.08),
+        color: AppTheme.warning.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.warning.withOpacity(0.3)),
+        border: Border.all(color: AppTheme.warning.withValues(alpha: 0.3)),
       ),
       child: const Text(
         'Points convert into wallet credit, and a wallet belongs to a '

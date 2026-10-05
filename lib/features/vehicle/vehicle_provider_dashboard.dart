@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/location_service.dart';
@@ -34,7 +33,7 @@ class _VehicleProviderDashboardState
   double? _walletBalance;
   bool _loading = true;
   String? _error;
-  bool _togglingOnline = false;
+  final bool _togglingOnline = false;
   StreamSubscription? _posSub;
 
   @override
@@ -67,7 +66,7 @@ class _VehicleProviderDashboardState
           .from('vehicles')
           .select('id')
           .eq('provider_id', prov['id'])
-          .count(CountOption.exact);
+          .count('*');
       final status = await client
           .from('driver_status')
           .select()

@@ -293,9 +293,9 @@ class _RechargeScreenState extends State<RechargeScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: AppTheme.success.withOpacity(0.1),
+                        color: AppTheme.success.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.success.withOpacity(0.3)),
+                        border: Border.all(color: AppTheme.success.withValues(alpha: 0.3)),
                       ),
                       child: Text(_success!,
                           style: const TextStyle(
@@ -308,7 +308,7 @@ class _RechargeScreenState extends State<RechargeScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: AppTheme.error.withOpacity(0.08),
+                        color: AppTheme.error.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(_error!,
@@ -322,7 +322,7 @@ class _RechargeScreenState extends State<RechargeScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: AppTheme.gold.withOpacity(0.10),
+                        color: AppTheme.gold.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
                             color: AppTheme.gold.withOpacity(0.45)),
