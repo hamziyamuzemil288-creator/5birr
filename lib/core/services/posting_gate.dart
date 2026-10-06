@@ -8,8 +8,9 @@ import '../theme/app_theme.dart';
 import 'provider_doc_gate.dart';
 import 'provider_readiness.dart';
 
-/// The state of one of the two things a provider must finish before they may
-/// post a listing: document verification and the wallet minimum.
+/// The state of one of the three things a provider must finish before they
+/// may post a listing: document verification, the wallet minimum, and an
+/// active payment account (item 6).
 enum PostingStepState {
   /// This step is satisfied — by the server's own answer, never by a guess.
   done,
@@ -74,6 +75,7 @@ class PostingGateState {
     required this.blockers,
     required this.documents,
     required this.wallet,
+    required this.paymentAccount,
     required this.balance,
     required this.requiredAmount,
     required this.verificationRequired,
@@ -87,6 +89,13 @@ class PostingGateState {
 
   final PostingStep documents;
   final PostingStep wallet;
+
+  /// Item 6: the third step — an active bank account on file, read from
+  /// provider_payment_methods (the same table create_provider_product and
+  /// the products policy check). It is NOT in `blockers`, because that
+  /// server function is shared with ride claiming; this step is how the
+  /// checklist explains the rule the listing path enforces.
+  final PostingStep paymentAccount;
 
   /// The provider's wallet balance as read just now (0 when unreadable).
   final double balance;
@@ -112,23 +121,37 @@ class PostingGateState {
       detail: 'We could not check your wallet balance.',
       state: PostingStepState.unknown,
     ),
+    paymentAccount: PostingStep(
+      code: 'NO_PAYMENT_ACCOUNT',
+      title: 'Payment account',
+      detail: 'We could not check your payment accounts.',
+      state: PostingStepState.unknown,
+    ),
     balance: 0,
     requiredAmount: 0,
     verificationRequired: true,
   );
 
-  static const int totalSteps = 2;
+  static const int totalSteps = 3;
 
-  int get doneCount => (documents.isDone ? 1 : 0) + (wallet.isDone ? 1 : 0);
+  int get doneCount => (documents.isDone ? 1 : 0) +
+      (wallet.isDone ? 1 : 0) +
+      (paymentAccount.isDone ? 1 : 0);
 
-  /// "1 of 2 done" — the progress line above the checklist.
+  /// "1 of 3 done" — the progress line above the checklist.
   String get progressLabel => '$doneCount of $totalSteps done';
 
   double get progress => doneCount / totalSteps;
 
   /// The server's answer, and the only one that decides whether the button
-  /// proceeds to the form.
-  bool get ready => checked && blockers.isEmpty;
+  /// proceeds to the form — plus the payment-account step, which is a direct
+  /// read of the table the server refuses without. Only a definite "no"
+  /// blocks: an unreadable account step is shown as unknown, never as done,
+  /// and the create path still enforces the rule.
+  bool get ready =>
+      checked &&
+      blockers.isEmpty &&
+      paymentAccount.state != PostingStepState.todo;
 
   /// Blockers the two named steps do not already cover (account not
   /// approved, unpaid activation fee, suspended subscription). They are
@@ -138,7 +161,8 @@ class PostingGateState {
       .toList();
 
   /// True when the wallet is the only thing outstanding.
-  bool get onlyWalletLeft => !wallet.isDone && documents.isDone;
+  bool get onlyWalletLeft =>
+      !wallet.isDone && documents.isDone && paymentAccount.isDone;
 
   /// Build the display state from the raw inputs. Pure, so a test can drive
   /// every branch without a database.
@@ -150,6 +174,7 @@ class PostingGateState {
     required double requiredAmount,
     required bool verificationRequired,
     String? rejectionReason,
+    bool? hasPaymentAccount,
   }) {
     final docsBlocked = blockers.contains('DOCUMENTS_UNVERIFIED');
     final walletBlockers =
@@ -170,9 +195,43 @@ class PostingGateState {
         requiredAmount: requiredAmount,
         unreadable: balance < 0,
       ),
+      paymentAccount: _paymentAccountStep(hasPaymentAccount),
       balance: balance,
       requiredAmount: requiredAmount,
       verificationRequired: verificationRequired,
+    );
+  }
+
+  /// Item 6's step: null = could not read (unknown, never blocking),
+  /// false = no active account (todo, blocking), true = done.
+  static PostingStep _paymentAccountStep(bool? hasAccount) {
+    if (hasAccount == null) {
+      return const PostingStep(
+        code: 'NO_PAYMENT_ACCOUNT',
+        title: 'Payment account',
+        detail: 'We could not check your payment accounts — pull to refresh '
+            'and try again.',
+        state: PostingStepState.unknown,
+        actionLabel: 'Payment accounts',
+        route: '/provider/payment-methods',
+      );
+    }
+    if (hasAccount) {
+      return const PostingStep(
+        code: 'NO_PAYMENT_ACCOUNT',
+        title: 'Payment account',
+        detail: 'Buyers have a bank account to pay.',
+        state: PostingStepState.done,
+      );
+    }
+    return const PostingStep(
+      code: 'NO_PAYMENT_ACCOUNT',
+      title: 'Payment account',
+      detail: 'Add a bank account so buyers know where to send money. '
+          'Until then your listings stay hidden from buyers.',
+      state: PostingStepState.todo,
+      actionLabel: 'Add payment account',
+      route: '/provider/payment-methods',
     );
   }
 
@@ -395,6 +454,22 @@ class PostingGate {
       balance = (row?['balance'] as num?)?.toDouble() ?? 0;
     } catch (_) {}
 
+    // 5. Item 6: the payment account. create_provider_product refuses
+    //    without one and the products policy hides the listings, so the
+    //    checklist reads the SAME table to explain it. Owner-scoped read;
+    //    null (unreadable) stays unknown and never blocks.
+    bool? hasPaymentAccount;
+    try {
+      final rows = await _client
+          .from('provider_payment_methods')
+          .select('id')
+          .eq('provider_id', providerId)
+          .eq('is_active', true)
+          .limit(1)
+          .timeout(const Duration(seconds: 12));
+      hasPaymentAccount = (rows as List).isNotEmpty;
+    } catch (_) {}
+
     return PostingGateState.from(
       checked: checked,
       blockers: blockers,
@@ -403,6 +478,7 @@ class PostingGate {
       requiredAmount: requiredAmount,
       verificationRequired: verificationRequired,
       rejectionReason: rejectionReason,
+      hasPaymentAccount: hasPaymentAccount,
     );
   }
 
@@ -478,8 +554,8 @@ class PostingGate {
   }
 }
 
-/// The prompt itself: two checklist steps, a progress line, and a button per
-/// missing step that goes to the screen (or sheet) that fixes it.
+/// The prompt itself: three checklist steps, a progress line, and a button
+/// per missing step that goes to the screen (or sheet) that fixes it.
 ///
 /// Public so a widget test can drive the real dialog rather than a copy of
 /// its layout — the overflow regressions in this repo were all found by
@@ -552,6 +628,14 @@ class _PostingChecklistDialogState extends State<PostingChecklistDialog>
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'provider_profiles',
+        callback: (_) => _recheck(),
+      );
+      // Item 6: adding a bank account in the other screen must turn the
+      // third step green without the provider closing this prompt.
+      channel = channel.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'provider_payment_methods',
         callback: (_) => _recheck(),
       );
       _channel = channel;
@@ -656,6 +740,9 @@ class _PostingChecklistDialogState extends State<PostingChecklistDialog>
           _StepRow(step: s.documents, onTap: () => _runAction(s.documents)),
           const SizedBox(height: 10),
           _StepRow(step: s.wallet, onTap: () => _runAction(s.wallet)),
+          const SizedBox(height: 10),
+          _StepRow(
+              step: s.paymentAccount, onTap: () => _runAction(s.paymentAccount)),
           if (s.extraBlockers.isNotEmpty) ...[
             const SizedBox(height: 14),
             for (final code in s.extraBlockers) ...[

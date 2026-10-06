@@ -111,6 +111,16 @@ class ProviderReadiness {
       route: '/provider/business',
       action: 'Open your business profile',
     ),
+    // Item 6: enforced by create_provider_product and the products policy
+    // (NOT by provider_fulfilment_blockers — that function is shared with
+    // ride claiming), so load() reads the table and this entry gives the
+    // banner its sentence and its destination.
+    'NO_PAYMENT_ACCOUNT': (
+      phrase: 'you have no payment account, so buyers have nowhere to send '
+          'money — your listings are hidden until you add one',
+      route: '/provider/payment-methods',
+      action: 'Add a payment account',
+    ),
   };
 
   /// An unrecognised code still gets a sentence.
@@ -141,8 +151,27 @@ class ProviderReadiness {
         params: {'p_provider_id': providerId},
       );
       if (res is! List) return unknown;
+      final reasons = res
+          .map((e) => e.toString())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      // Item 6: the account rule lives in create_provider_product and the
+      // products policy — NOT in provider_fulfilment_blockers (that fn is
+      // shared with ride claiming) — so the banner reads the table itself
+      // to explain why listings are hidden. A failed read adds nothing:
+      // unknown must never invent a blocker.
+      try {
+        final rows = await Supabase.instance.client
+            .from('provider_payment_methods')
+            .select('id')
+            .eq('provider_id', providerId)
+            .eq('is_active', true)
+            .limit(1)
+            .timeout(const Duration(seconds: 12));
+        if ((rows as List).isEmpty) reasons.add('NO_PAYMENT_ACCOUNT');
+      } catch (_) {}
       return ProviderReadiness(
-        reasons: res.map((e) => e.toString()).where((e) => e.isNotEmpty).toList(),
+        reasons: reasons,
         checked: true,
       );
     } catch (_) {

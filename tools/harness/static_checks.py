@@ -8155,6 +8155,105 @@ def check_bank_accounts_are_enforced() -> list[str]:
     return problems
 
 
+def check_posting_requires_a_payment_account() -> list[str]:
+    """No account, no listing — and the existing ones vanish from buyers.
+
+    Item 6's three halves (each one missing reopens the hole):
+      * server: create_provider_product raises NO_PAYMENT_ACCOUNT,
+        products_public_read hides account-less providers' listings, and
+        search_products (SECURITY DEFINER, unreachable by policy) carries
+        the same predicate;
+      * client: the posting checklist has a THIRD step with a route, the
+        banner has a sentence and a destination for the code, and
+        friendly_error translates it;
+      * proof: the live assertion is registered in connectivity CI.
+
+    provider_fulfilment_blockers() must NOT contain the code: it is shared
+    with claim_ride (20261006000005 calls it), so folding it in would refuse
+    ride claims from drivers who never needed a payout account and break
+    assert_ride_claim_race_has_one_winner.
+    """
+    problems: list[str] = []
+    mig = ROOT / "supabase" / "migrations" / \
+        "20261006000008_posting_requires_payment_account.sql"
+    if not mig.is_file():
+        return ["20261006000008_posting_requires_payment_account.sql is "
+                "missing — nothing enforces the account rule on publish"]
+    sql = _read(mig)
+
+    for needle, why in (
+        ("NO_PAYMENT_ACCOUNT",
+         "create_provider_product does not refuse without an account"),
+        ("DROP POLICY IF EXISTS products_public_read",
+         "the buyer-facing products policy is not amended — direct reads "
+         "still see listings that cannot be paid for"),
+        ("idx_provider_payment_methods_active",
+         "the policy comment lost the index note — check the EXISTS still "
+         "uses provider_payment_methods"),
+        ("CREATE OR REPLACE FUNCTION public.search_products",
+         "search_products is not restated, so the search screen shows "
+         "account-less providers (SECURITY DEFINER, policy-blind)"),
+        ("assert_posting_requires_payment_account",
+         "no live assertion proves the gate survived a later deploy"),
+    ):
+        if needle not in sql:
+            problems.append("20261006000008: %s" % why)
+
+    # The shared blockers fn must stay out of it (ride claims).
+    b_target, b_src = last_migration_defining("provider_fulfilment_blockers")
+    if b_target is not None:
+        body = function_body(b_src, "provider_fulfilment_blockers")
+        if "NO_PAYMENT_ACCOUNT" in body:
+            problems.append(
+                "%s: provider_fulfilment_blockers now carries "
+                "NO_PAYMENT_ACCOUNT — claim_ride calls this function, so "
+                "drivers without a payout account could no longer claim "
+                "rides and assert_ride_claim_race_has_one_winner would fail"
+                % b_target.name)
+
+    gate = _dart_without_comments(
+        _read(LIB / "core" / "services" / "posting_gate.dart"))
+    for needle, why in (
+        ("paymentAccount", "the checklist has no third step"),
+        ("static const int totalSteps = 3",
+         "the progress line does not count three steps"),
+        ("'/provider/payment-methods'",
+         "the third step has no destination — a button that goes nowhere"),
+        ("table: 'provider_payment_methods'",
+         "the prompt does not watch the table, so adding an account leaves "
+         "the step red"),
+    ):
+        if needle not in gate:
+            problems.append("posting_gate.dart: %s" % why)
+
+    ready = _dart_without_comments(
+        _read(LIB / "core" / "services" / "provider_readiness.dart"))
+    if "'NO_PAYMENT_ACCOUNT'" not in ready:
+        problems.append(
+            "provider_readiness.dart: no remedy for NO_PAYMENT_ACCOUNT — "
+            "the banner would print the raw code or stay silent while "
+            "listings are hidden")
+    if "provider_payment_methods" not in ready:
+        problems.append(
+            "provider_readiness.dart never reads the accounts table, so the "
+            "banner cannot explain hidden listings")
+
+    err = _dart_without_comments(_read(LIB / "core" / "utils" /
+                                       "friendly_error.dart"))
+    if "no_payment_account" not in err:
+        problems.append("friendly_error.dart has no matcher for "
+                        "no_payment_account")
+
+    conn = _read(ROOT / "tools" / "integration_test" /
+                 "connectivity_test.dart")
+    if "assert_posting_requires_payment_account" not in conn:
+        problems.append(
+            "connectivity_test.dart does not run "
+            "assert_posting_requires_payment_account()")
+
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -8176,6 +8275,8 @@ CHECKS = [
      check_availability_gate_covers_every_checkout),
     ("payment accounts are bank-only, phone-free, capped at 3 and audited",
      check_bank_accounts_are_enforced),
+    ("no listing publishes, and no listing shows, without a payment account",
+     check_posting_requires_a_payment_account),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

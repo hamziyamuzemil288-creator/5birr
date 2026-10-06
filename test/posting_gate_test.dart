@@ -1,7 +1,9 @@
 // The posting gate, tested where it decides.
 //
-// The gate is the two-step checklist a provider meets before posting:
-// document verification and the admin-configured wallet minimum. What breaks
+// The gate is the three-step checklist a provider meets before posting:
+// document verification, the admin-configured wallet minimum, and — since
+// item 6 — an active payment account (no account, no listing, and the
+// existing ones are hidden from buyers). What breaks
 // silently in a gate like this is the DISPLAY logic — a step that reads
 // "Done" when the server did not say so, an "under review" state that
 // swallows the other step, a progress line that counts the wrong things, or
@@ -24,6 +26,7 @@ PostingGateState _state({
   double requiredAmount = 0,
   bool verificationRequired = true,
   String? rejectionReason,
+  bool? hasPaymentAccount,
 }) =>
     PostingGateState.from(
       checked: checked,
@@ -33,12 +36,37 @@ PostingGateState _state({
       requiredAmount: requiredAmount,
       verificationRequired: verificationRequired,
       rejectionReason: rejectionReason,
+      hasPaymentAccount: hasPaymentAccount,
     );
 
 void main() {
   group('readiness is the server answer, and only the server answer', () {
     test('checked with no blockers is ready', () {
       expect(_state().ready, isTrue);
+    });
+
+    // Item 6: the account step is a direct read of the table the server
+    // refuses without. A definite "no" blocks; an unreadable step never
+    // pretends to be done but does not block either (the create path still
+    // enforces the rule).
+    test('no payment account is a blocking todo step', () {
+      final s = _state(hasPaymentAccount: false);
+      expect(s.paymentAccount.state, PostingStepState.todo);
+      expect(s.paymentAccount.route, '/provider/payment-methods');
+      expect(s.ready, isFalse);
+    });
+
+    test('an active payment account reads as done', () {
+      final s = _state(hasPaymentAccount: true);
+      expect(s.paymentAccount.state, PostingStepState.done);
+      expect(s.ready, isTrue);
+      expect(s.progressLabel, '3 of 3 done');
+    });
+
+    test('an unreadable account step is unknown and never blocks', () {
+      final s = _state(); // hasPaymentAccount not passed => null
+      expect(s.paymentAccount.state, PostingStepState.unknown);
+      expect(s.ready, isTrue);
     });
 
     // A provider whose blockers could not be read must never see a green
@@ -55,7 +83,7 @@ void main() {
       expect(s.ready, isFalse);
       expect(s.documents.state, PostingStepState.unknown);
       expect(s.wallet.state, PostingStepState.unknown);
-      expect(s.progressLabel, '0 of 2 done');
+      expect(s.progressLabel, '0 of 3 done');
     });
 
     test('any blocker means not ready', () {
@@ -64,20 +92,26 @@ void main() {
   });
 
   group('progress counts what the server counts', () {
-    test('one step done reads "1 of 2 done"', () {
+    test('one step done reads "1 of 3 done"', () {
+      // Documents under review (not done), wallet short (not done), the
+      // payment account present (done): exactly one counted step.
       final s = _state(
-        blockers: const ['WALLET_BELOW_MINIMUM'],
+        blockers: const ['DOCUMENTS_UNVERIFIED', 'WALLET_BELOW_MINIMUM'],
+        docState: DocReviewState.pending,
         balance: 40,
         requiredAmount: 100,
+        hasPaymentAccount: true,
       );
       expect(s.doneCount, 1);
-      expect(s.progressLabel, '1 of 2 done');
+      expect(s.progressLabel, '1 of 3 done');
       expect(s.ready, isFalse);
     });
 
-    test('both steps done reads "2 of 2 done" and is ready', () {
+    test('two steps done read "2 of 3 done" and are ready', () {
+      // The account step was not read (null): unknown, not counted, not
+      // blocking — the third row shows "We could not check", never "Done".
       final s = _state(balance: 500, requiredAmount: 100);
-      expect(s.progressLabel, '2 of 2 done');
+      expect(s.progressLabel, '2 of 3 done');
       expect(s.ready, isTrue);
     });
 
@@ -95,7 +129,7 @@ void main() {
       expect(s.documents.actionLabel, isNull);
       expect(s.wallet.state, PostingStepState.todo);
       expect(s.wallet.route, '/wallet/recharge');
-      expect(s.progressLabel, '0 of 2 done');
+      expect(s.progressLabel, '0 of 3 done');
     });
   });
 

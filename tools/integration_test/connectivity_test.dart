@@ -289,6 +289,19 @@ void main() {
               'longer charges/logs the optional posting_fee with its '
               'idempotency key — the posting gate is half-wired.');
     });
+    test('no listing publishes or shows without a payment account', () async {
+      // Item 6: create_provider_product must refuse with
+      // NO_PAYMENT_ACCOUNT, and search_products (SECURITY DEFINER) plus the
+      // products_public_read policy must hide an account-less provider's
+      // listings from buyers. The blockers function must NOT carry the code
+      // — claim_ride shares it — so the assertion checks the three places
+      // the rule actually lives.
+      expect(await ok('assert_posting_requires_payment_account'), isTrue,
+          reason: 'The account gate lost a piece: an account-less provider '
+              'can publish, or their listings still show to buyers in '
+              'search or direct reads. If this fails right after a deploy, '
+              'migration 20261006000008 did not run.');
+    });
   });
 
   group('PostgREST embeds are backed by real foreign keys', () {
