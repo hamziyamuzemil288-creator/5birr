@@ -203,6 +203,23 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
     return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
   }
 
+  /// Which queue is actually holding work, checked in the order a case
+  /// arrives: an account or provider awaiting a decision, then a document,
+  /// then a filed appeal, then a disputed order, then money to verify.
+  ///
+  /// ONE definition, used by the header bell AND the Pending tile: two
+  /// copies of this ladder is how the badge and the tile ended up pointing
+  /// at different queues while showing the same number.
+  String _firstPendingRoute() {
+    if (_pendingProviders + _pendingUsers > 0) return '/admin/approvals';
+    if (_pendingDocuments > 0) return '/admin/document-verification';
+    if (_openAppeals > 0) return '/admin/appeals';
+    if (_openDisputes > 0) return '/admin/disputes';
+    if (_pendingOrderPayments > 0) return '/admin/payments';
+    if (_pendingRecharges > 0) return '/admin/payments';
+    return '/admin/approvals';
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
@@ -219,7 +236,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
         _pendingRecharges +
         _pendingDocuments +
         _openAppeals +
-        _openDisputes;
+        _openDisputes +
+        // Order payments sat OUTSIDE this sum while the bell routed to them:
+        // the badge could read 0 with five payments waiting to be verified.
+        _pendingOrderPayments;
     final hasPending = pendingTotal > 0;
 
     return Scaffold(
@@ -247,11 +267,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
           // administrator had no way to read one. The screen and the
           // /admin-notifications route already existed and are owner-scoped,
           // so this adds a door rather than a feature.
-          IconButton(
-            tooltip: 'Notifications',
-            icon: const Icon(Icons.notifications_none_rounded),
-            onPressed: () => context.push('/admin-notifications'),
-          ),
+          // ONE bell, not two. The header used to carry an inbox bell and a
+          // pending-work bell side by side — two identical icons doing
+          // different jobs, which reads as a duplicate either way. The count
+          // that changes an administrator's day is the work waiting, so the
+          // surviving bell keeps the badge and opens whichever queue holds
+          // it; the inbox moved into the account menu below ("Notifications").
           if (hasPending)
             Badge(
               label: Text('$pendingTotal',
@@ -262,22 +283,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                 icon: const Icon(Icons.notifications_outlined),
                 // Was `() {}` — a bell carrying a count of pending work that
                 // did nothing when tapped. It goes to whichever queue is
-                // actually holding the work, checked in the order a case
-                // arrives: an account or provider awaiting a decision, then a
-                // document, then a filed appeal, then a disputed order, then
-                // money. The per-queue cards further down the same screen
-                // remain the precise way in.
-                onPressed: () => context.push(
-                  _pendingProviders + _pendingUsers > 0
-                      ? '/admin/approvals'
-                      : _pendingDocuments > 0
-                          ? '/admin/document-verification'
-                          : _openAppeals > 0
-                              ? '/admin/appeals'
-                              : _openDisputes > 0
-                                  ? '/admin/disputes'
-                                  : '/admin/payments',
-                ),
+                // actually holding the work — the SAME route the Pending
+                // tile below opens, so the badge and the tile can never
+                // disagree about where the work is.
+                onPressed: () => context.push(_firstPendingRoute()),
               ),
             ),
           // The account menu. The admin app bar previously offered exactly two
@@ -289,7 +298,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
             tooltip: 'Account',
             icon: CircleAvatar(
               radius: 15,
-              backgroundColor: AppTheme.primaryGreen.withOpacity(0.15),
+              // Was primaryGreen@15% with primaryGreenDark initials — on the
+              // dark-green app bar that is dark-on-dark, which is why the
+              // "NU" avatar read as an invisible smudge. A light disc with
+              // dark-green initials is legible on both bar backgrounds.
+              backgroundColor: Colors.white,
               child: Text(
                 _initials(auth),
                 style: const TextStyle(
@@ -300,13 +313,39 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
               ),
             ),
             onSelected: (value) {
-              if (value == 'password') {
+              if (value == 'profile') {
+                context.push('/profile');
+              } else if (value == 'notifications') {
+                context.push('/admin-notifications');
+              } else if (value == 'password') {
                 context.push('/account/password');
               } else if (value == 'logout') {
                 ref.read(authProvider.notifier).signOut();
               }
             },
             itemBuilder: (_) => const [
+              PopupMenuItem<String>(
+                value: 'profile',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.person_outline, size: 20,
+                      color: AppTheme.primaryGreenDark),
+                  title: Text('My profile',
+                      style: TextStyle(fontSize: 14)),
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'notifications',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.notifications_none_rounded, size: 20,
+                      color: AppTheme.primaryGreenDark),
+                  title: Text('Notifications',
+                      style: TextStyle(fontSize: 14)),
+                ),
+              ),
               PopupMenuItem<String>(
                 value: 'password',
                 child: ListTile(
@@ -355,7 +394,17 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                         children: [
                           Row(
                             children: [
-                              Container(
+                          // The header rosette. It was decoration: a badge
+                          // icon sitting in a box nobody could tap. It now
+                          // opens the admin's own profile — the same door the
+                          // avatar menu offers — so every tappable-looking
+                          // thing in this header does something.
+                          Tooltip(
+                            message: 'Your profile',
+                            child: InkWell(
+                              onTap: () => context.push('/profile'),
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
                                 width: 44,
                                 height: 44,
                                 decoration: BoxDecoration(
@@ -364,6 +413,8 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                 ),
                                 child: const Icon(Icons.admin_panel_settings, color: Colors.white, size: 24),
                               ),
+                            ),
+                          ),
                               const SizedBox(width: 12),
                               const Expanded(
                                 child: Column(
@@ -426,8 +477,13 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                       child: Row(
                         children: [
-                          _quickStat(Icons.pending_actions, 'Pending', '$_pendingProviders', AppTheme.warning,
-                              () => context.push('/admin/approvals')),
+                          // ONE source of truth for "Pending": the same
+                          // pendingTotal the bell badge and the Requires
+                          // Attention section are built from. It used to show
+                          // _pendingProviders alone, so the tile read 0 while
+                          // 21 identity documents waited one screen away.
+                          _quickStat(Icons.pending_actions, 'Pending', '$pendingTotal', AppTheme.warning,
+                              () => context.push(_firstPendingRoute())),
                           const SizedBox(width: 8),
                           _quickStat(Icons.people, 'Users', '$_totalUsers', AppTheme.info,
                               () => context.push('/admin/users')),
@@ -472,6 +528,33 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                             if (_pendingRecharges > 0)
                               _pendingCard(Icons.payment, 'Recharge Requests',
                                   '$_pendingRecharges pending', AppTheme.info, () => context.push('/admin/payments')),
+                            // Everything the bell counts, in the same order
+                            // it routes — the first three kinds were all this
+                            // section could show, so a queue with real work in
+                            // it (documents, appeals, disputes, payments)
+                            // vanished from the one section that exists to
+                            // point at work.
+                            if (_pendingDocuments > 0)
+                              _pendingCard(Icons.assignment_outlined,
+                                  'Identity Documents',
+                                  '$_pendingDocuments waiting to review',
+                                  AppTheme.warning,
+                                  () => context.push('/admin/document-verification')),
+                            if (_openAppeals > 0)
+                              _pendingCard(Icons.gavel_outlined, 'Appeals',
+                                  '$_openAppeals open cases', AppTheme.error,
+                                  () => context.push('/admin/appeals')),
+                            if (_openDisputes > 0)
+                              _pendingCard(Icons.report_gmailerrorred_outlined,
+                                  'Order Disputes',
+                                  '$_openDisputes open cases', AppTheme.error,
+                                  () => context.push('/admin/disputes')),
+                            if (_pendingOrderPayments > 0)
+                              _pendingCard(Icons.receipt_long_outlined,
+                                  'Order Payments',
+                                  '$_pendingOrderPayments waiting to verify',
+                                  AppTheme.info,
+                                  () => context.push('/admin/payments')),
                           ],
                         ),
                       ),

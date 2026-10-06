@@ -8327,6 +8327,107 @@ def check_posting_requires_a_payment_account() -> list[str]:
     return problems
 
 
+def check_admin_dashboard_counts_and_bells() -> list[str]:
+    """One number for "Pending", one bell, and a card for every queue.
+
+    Item 3's reported defect: the Pending tile read `_pendingProviders`
+    alone, so it said 0 while 21 identity documents waited one screen away —
+    two "truths" on one dashboard. The header also carried two identical
+    bells (inbox + pending work), the Requires Attention section only knew
+    three of the six queues the badge counts, order payments were missing
+    from the sum entirely, the header rosette was untappable decoration, and
+    the initials avatar was dark-on-dark on the dark app bar.
+
+    What must hold:
+      * the Pending tile, the bell badge and Requires Attention are all
+        built from the SAME pendingTotal, and pendingTotal includes every
+        queue (documents, appeals, disputes, order payments);
+      * one route ladder (`_firstPendingRoute`) drives both the bell and
+        the tile, so badge and tile can never disagree about where work is;
+      * exactly one bell — the inbox door lives in the account menu;
+      * every counted queue has a Requires Attention card with its route;
+      * the rosette opens the profile and the avatar menu offers profile,
+        notifications, password and sign-out.
+    """
+    problems: list[str] = []
+    path = LIB / "features" / "admin" / "admin_dashboard.dart"
+    src = _dart_without_comments(_read(path))
+    if not src:
+        return ["lib/features/admin/admin_dashboard.dart is missing"]
+
+    if not re.search(
+            r"_quickStat\(Icons\.pending_actions, 'Pending', '\$pendingTotal'",
+            src):
+        problems.append(
+            "the Pending tile no longer shows pendingTotal — it can read 0 "
+            "while documents wait (the two-truths bug)")
+
+    ladder = re.search(r"String _firstPendingRoute\(\) \{(.*?)\n  \}", src,
+                       re.DOTALL)
+    if ladder is None:
+        problems.append(
+            "_firstPendingRoute() is gone — the bell and the tile each "
+            "decide where work lives, and they will drift apart")
+    else:
+        for queue, why in (
+            ("'/admin/approvals'", "accounts awaiting a decision"),
+            ("'/admin/document-verification'", "identity documents"),
+            ("'/admin/appeals'", "filed appeals"),
+            ("'/admin/disputes'", "order disputes"),
+            ("'/admin/payments'", "money to verify"),
+        ):
+            if queue not in ladder.group(1):
+                problems.append("_firstPendingRoute skips %s" % why)
+    if src.count("_firstPendingRoute()") < 2:
+        problems.append(
+            "fewer than two callers of _firstPendingRoute — one of the "
+            "bell or the tile has its own private copy of the ladder")
+
+    total = re.search(r"final pendingTotal = (.*?);\s*final hasPending", src,
+                      re.DOTALL)
+    if total is None:
+        problems.append("pendingTotal assignment not found")
+    else:
+        for field, why in (
+            ("_pendingDocuments", "identity documents"),
+            ("_openAppeals", "appeals"),
+            ("_openDisputes", "disputes"),
+            ("_pendingOrderPayments", "order payments"),
+            ("_pendingRecharges", "recharges"),
+        ):
+            if field not in total.group(1):
+                problems.append("pendingTotal does not count %s — the badge "
+                                "can read 0 with work waiting" % why)
+
+    # One bell: the second plain inbox bell in the app bar is the duplicate.
+    if "tooltip: 'Notifications'" in src:
+        problems.append(
+            "the header carries both an inbox bell and a pending-work bell "
+            "again — two identical icons doing different jobs")
+
+    for needle, why in (
+        ("'Identity Documents'", "documents have no Requires Attention card"),
+        ("'/admin/document-verification'",
+         "no route to document verification from Requires Attention"),
+        ("'Appeals'", "appeals have no Requires Attention card"),
+        ("'Order Disputes'", "disputes have no Requires Attention card"),
+        ("'Order Payments'", "order payments have no Requires Attention card"),
+        ("'Your profile'",
+         "the header rosette is decoration again — it opens nothing"),
+        ("value: 'profile'", "the avatar menu has no profile door"),
+        ("value: 'notifications'",
+         "the inbox is unreachable — its bell was removed without a "
+         "replacement"),
+        ("value: 'logout'", "the avatar menu cannot sign out"),
+        ("backgroundColor: Colors.white,",
+         "the initials avatar is dark-on-dark on the app bar again"),
+    ):
+        if needle not in src:
+            problems.append("admin_dashboard.dart: %s" % why)
+
+    return problems
+
+
 def check_no_contact_before_payment() -> list[str]:
     """No talking to a seller — or reading their numbers — before the money.
 
@@ -8483,6 +8584,8 @@ CHECKS = [
      check_posting_requires_a_payment_account),
     ("no contact, and no account number, before the payment exists",
      check_no_contact_before_payment),
+    ("one Pending number, one bell, and a card for every waiting queue",
+     check_admin_dashboard_counts_and_bells),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",
