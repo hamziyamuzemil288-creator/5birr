@@ -417,19 +417,26 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                     ),
                   ),
 
-                  // Quick stats
+                  // Quick stats. Each tile opens the screen that holds the
+                  // number it shows — a card that looks tappable and is not
+                  // is a decoy, and all four of these were exactly that
+                  // (no InkWell, no handler, four dead buttons in a row).
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                       child: Row(
                         children: [
-                          _quickStat(Icons.pending_actions, 'Pending', '$_pendingProviders', AppTheme.warning),
+                          _quickStat(Icons.pending_actions, 'Pending', '$_pendingProviders', AppTheme.warning,
+                              () => context.push('/admin/approvals')),
                           const SizedBox(width: 8),
-                          _quickStat(Icons.people, 'Users', '$_totalUsers', AppTheme.info),
+                          _quickStat(Icons.people, 'Users', '$_totalUsers', AppTheme.info,
+                              () => context.push('/admin/users')),
                           const SizedBox(width: 8),
-                          _quickStat(Icons.storefront, 'Providers', '$_totalProviders', AppTheme.primaryGreen),
+                          _quickStat(Icons.storefront, 'Providers', '$_totalProviders', AppTheme.primaryGreen,
+                              () => context.push('/admin/providers')),
                           const SizedBox(width: 8),
-                          _quickStat(Icons.receipt, 'Orders', '$_totalOrders', AppTheme.teal),
+                          _quickStat(Icons.receipt, 'Orders', '$_totalOrders', AppTheme.teal,
+                              () => context.push('/admin/orders')),
                         ],
                       ),
                     ),
@@ -706,22 +713,31 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
     );
   }
 
-  Widget _quickStat(IconData icon, String label, String value, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.surface,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppTheme.cardBorder),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 4),
+  Widget _quickStat(IconData icon, String label, String value, Color color,
+      VoidCallback? onTap) {
+    final tile = Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(height: 4),
             Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: color)),
             Text(label, style: const TextStyle(fontSize: 9, color: AppTheme.textMuted)),
           ],
+        ),
+      );
+    return Expanded(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: tile,
         ),
       ),
     );

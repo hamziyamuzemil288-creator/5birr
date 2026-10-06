@@ -48,6 +48,7 @@ import '../features/admin/admin_dashboard.dart';
 import '../features/ceo/ceo_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
+import '../features/admin/admin_orders_screen.dart';
 import '../features/admin/admin_staff_screen.dart';
 import '../features/admin/admin_account_directory_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
@@ -527,6 +528,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           path: '/admin/document-verification',
           builder: (_, __) => const AdminDocumentVerificationScreen()),
       GoRoute(path: '/admin/order-payments', builder: (_, __) => const AdminOrderPaymentsScreen()),
+      // Every order on the platform — the screen the dashboard's "Orders"
+      // quick-stat tile opens. There was no admin order list at all before
+      // this: the tile counted orders and went nowhere.
+      GoRoute(path: '/admin/orders', builder: (_, __) => const AdminOrdersScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/admin/providers/:id/wallet/recharge', builder: (_, s) => AdminCashRechargeScreen(providerId: s.pathParameters['id']!)),
       // ── Admin — New sections ──

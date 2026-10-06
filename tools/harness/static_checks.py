@@ -7424,6 +7424,75 @@ def check_account_deletion_removes_the_files() -> list[str]:
     return problems
 
 
+def check_admin_taps_have_handlers() -> list[str]:
+    """Every tappable surface in the admin area must have a real handler.
+
+    The four horizontal quick-stat tiles at the top of the admin dashboard
+    LOOKED like buttons — cards with icons, in a Row, at the very top — and
+    had no InkWell, no onTap and no route: four dead buttons, reported twice.
+    Two shapes are caught here:
+
+      * the exact defect, pinned: the dashboard's quick-stat helper must
+        wrap its tile in an InkWell driven by an onTap parameter, and each
+        of the four tiles must push a registered route (including the new
+        /admin/orders screen that gave the Orders tile somewhere to go);
+      * the same defect in miniature, mechanically, across every admin
+        feature: a literal `onTap: null` / `onPressed: null` (outside a
+        ternary disabled state, which is legitimate) or an empty closure
+        `() {}` / `() => {}`.
+    """
+    problems: list[str] = []
+
+    dash = LIB / "features" / "admin" / "admin_dashboard.dart"
+    dcode = _dart_without_comments(_read(dash)) if dash.is_file() else ""
+    if not dcode:
+        problems.append("admin_dashboard.dart is missing")
+    else:
+        stat = re.search(r"Widget _quickStat\(.*?\n  \}", dcode, re.DOTALL)
+        if stat is None:
+            problems.append(
+                "_quickStat is missing from admin_dashboard.dart, so the "
+                "quick-stat tiles have no definition to check")
+        else:
+            body = stat.group(0)
+            if "InkWell" not in body or "onTap" not in body:
+                problems.append(
+                    "admin_dashboard.dart: _quickStat no longer wraps its "
+                    "tile in an InkWell driven by onTap, so the four "
+                    "quick-stat tiles are dead buttons again — a card that "
+                    "looks tappable and is not is the exact defect this "
+                    "check exists to prevent")
+        for route in ("/admin/approvals", "/admin/users",
+                      "/admin/providers", "/admin/orders"):
+            if "'%s'" % route not in dcode:
+                problems.append(
+                    "admin_dashboard.dart no longer pushes %s from a "
+                    "quick-stat tile, so one of the four tiles has nowhere "
+                    "to go" % route)
+
+    admin_dir = LIB / "features" / "admin"
+    for path in sorted(admin_dir.rglob("*.dart")):
+        code = _dart_without_comments(_read(path))
+        rel = str(path.relative_to(ROOT))
+        for line in code.splitlines():
+            stripped = line.strip()
+            for prop in ("onTap", "onPressed"):
+                m = re.search(
+                    r"%s:\s*(null|\(\)\s*\{\s*\}|\(\)\s*=>\s*\{\s*\})"
+                    % prop, stripped)
+                if not m:
+                    continue
+                if m.group(1) == "null" and "?" in stripped[: m.start(1)]:
+                    # A conditional disable (`busy ? null : handler`) is a
+                    # real disabled state, not a dead tap.
+                    continue
+                problems.append(
+                    "%s: %s has no handler (%s) — a tappable-looking "
+                    "surface that does nothing is the dead-admin-tile "
+                    "defect" % (rel, prop, stripped[:90]))
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -7433,6 +7502,8 @@ CHECKS = [
      check_account_deletion_is_unblocked),
     ("a provider who cannot publish is told why, and where to fix it",
      check_publish_refusal_is_actionable),
+    ("every tappable surface in the admin area has a real handler",
+     check_admin_taps_have_handlers),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",
