@@ -527,6 +527,12 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                             _menuCard(Icons.payment, 'Payment Verification', null, () => context.push('/admin/payments')),
                           if (_can('payment_verification'))
                             _menuCard(Icons.account_balance_wallet_outlined, 'Payment Methods', null, () => context.push('/admin/payment-methods')),
+                          // Item 5: the banks rules table and every
+                          // provider's accounts (disable one, edit a bank).
+                          if (_can('payment_verification'))
+                            _menuCard(Icons.account_balance, 'Payment Accounts & Banks',
+                                'Banks, limits, disable an account',
+                                () => context.push('/admin/payment-accounts')),
                         ],
                       ),
                     ),

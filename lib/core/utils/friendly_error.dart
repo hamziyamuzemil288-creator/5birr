@@ -407,6 +407,37 @@ String friendlyError(Object error, {String? context}) {
     message = 'The provider has not confirmed this item is available yet. '
         'Ask "Is this product available?" first — once they say yes, '
         'you can pay.';
+  }
+  // ── Bank accounts only (migration 20261006000007) ──
+  //
+  // Each code is raised by enforce_payment_account_rules or the phone-scan
+  // triggers; the sentence tells the provider the one thing they can do.
+  else if (_any(lower, ['mobile_money_not_allowed'])) {
+    message = 'Telebirr, CBE Birr and other mobile money cannot be used '
+        'here. Add a bank account instead.';
+  } else if (_any(lower, [
+    'phone_like_number_not_allowed',
+    'phone_like_text_not_allowed',
+  ])) {
+    message = 'Phone numbers are not allowed in payment details or product '
+        'text — buyers and sellers talk inside the app once an order is '
+        'placed. Use a bank account number instead.';
+  } else if (_any(lower, ['account_limit_reached'])) {
+    message = 'You can have up to 3 payment accounts. Remove or deactivate '
+        'one first.';
+  } else if (_any(lower, ['account_number_required', 'bank_required'])) {
+    message = 'Choose a bank and enter its account number to continue.';
+  } else if (_any(lower, ['bank_not_found'])) {
+    message = 'That bank is no longer available. Pick another one.';
+  } else if (_any(lower, [
+    'bank_account_length_invalid',
+    'bank_account_prefix_invalid',
+  ])) {
+    message = 'That account number does not match the selected bank\'s '
+        'rules — check the digits and try again.';
+  } else if (_any(lower, ['no_payment_account'])) {
+    message = 'This seller can\'t accept orders yet — they have no payment '
+        'account on file. Find another provider.';
   } else if (_any(lower, [
     'ride_request_expired',
   ])) {

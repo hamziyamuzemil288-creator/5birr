@@ -65,6 +65,11 @@ const Set<String> expectedClientWrites = {
   // reads as a new writable hole rather than a missing entry, which is
   // exactly how Connectivity CI caught it.
   'provider_payment_methods',
+
+  // 20261006000007 (item 5): the admin Banks screen edits the banks table
+  // (account-number length/prefix rules) directly under its is_admin()
+  // policy — the same owner/admin shape as provider_payment_methods above.
+  'banks',
   'product_images',
   // A like is written directly under RLS, with no SECURITY DEFINER wrapper:
   // the ownership policy IS the check. Migration 68 added the table, 70 added
@@ -166,7 +171,7 @@ void main() {
     // — the drift this test exists to catch, sitting inside the test itself.
     expect(
       expectedClientWrites.length,
-      23,
+      24,
       reason: 'expectedClientWrites changed size. If a table was added or '
           'removed, the expected list inside client_write_surface_report() in '
           'supabase/migrations/20260927000042_... must change to match, or the '

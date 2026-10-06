@@ -8024,6 +8024,137 @@ def check_availability_gate_covers_every_checkout() -> list[str]:
     return problems
 
 
+def check_bank_accounts_are_enforced() -> list[str]:
+    """Bank accounts only, phone numbers nowhere — enforced by the server.
+
+    The report (item 5): providers could store Telebirr/CBE-Birr "accounts",
+    any-length numbers, and phone numbers in every field a buyer reads.
+    Each finding below is a piece that was missing before and that, if it
+    ever goes missing again, silently reopens the hole:
+
+      * normalize_digits + text_looks_like_phone must exist, with the exact
+        09/07 and 2519/2517 shapes;
+      * the banks table with the CBE 13-digit/1000 seed (the admin-editable
+        source of the length/prefix rules);
+      * validation on provider_payment_methods (bank required, length,
+        prefix, phone rejection, mobile-money names, the 3-active cap, one
+        default) and the scan triggers on the four buyer-readable text
+        surfaces;
+      * the cleanup UPDATE that makes the existing bad rows inactive;
+      * the client: bank picker instead of a free-text name, the bounded
+        reads that end the endless spinner, the friendly codes.
+    """
+    problems: list[str] = []
+    mig = ROOT / "supabase" / "migrations" / "20261006000007_bank_accounts_only.sql"
+    if not mig.is_file():
+        return ["20261006000007_bank_accounts_only.sql is missing — none of "
+                "the item 5 rules exist in the pipeline"]
+    sql = _read(mig)
+
+    for needle, why in (
+        ("text_looks_like_phone",
+         "the phone detector does not exist, so phone-like numbers are "
+         "accepted everywhere"),
+        ("^0(9|7)[0-9]{8}$",
+         "the 09/07 + 8-digit shape is not matched"),
+        ("^251(9|7)[0-9]{8}$",
+         "the 2519/2517 + 8-digit shape is not matched"),
+        ("normalize_digits",
+         "the shared normaliser is missing, so Ethiopic/Arabic-Indic "
+         "digits bypass the scan"),
+        ("CREATE TABLE IF NOT EXISTS public.banks",
+         "the admin-editable banks table does not exist"),
+        ("('Commercial Bank of Ethiopia', 13, 13, '1000')",
+         "the CBE seed is not 13 digits starting 1000"),
+        ("enforce_payment_account_rules",
+         "the payment-account validation trigger is missing"),
+        ("ACCOUNT_LIMIT_REACHED",
+         "the 3-active-accounts cap is not enforced"),
+        ("uq_payment_account_one_default",
+         "one-default is not structural"),
+        ("MOBILE_MONEY_NOT_ALLOWED",
+         "mobile-money names are not refused"),
+        ("reject_phone_like_text",
+         "the buyer-readable text scan is missing"),
+        ("trg_products_no_phone",
+         "product titles/descriptions are not scanned"),
+        ("trg_provider_profiles_no_phone",
+         "business names are not scanned"),
+        ("trg_provider_gallery_no_phone",
+         "gallery captions are not scanned"),
+        ("payment_account_",
+         "payment-account changes are not written to audit_logs"),
+        ("SET is_active = false",
+         "existing phone-like/mobile-money rows are never deactivated"),
+    ):
+        if needle not in sql:
+            problems.append("20261006000007: %s" % why)
+
+    # -- client --
+    screen = _dart_without_comments(
+        _read(LIB / "features" / "provider" /
+              "provider_payment_methods_screen.dart"))
+    # Forbidden: the free-text name field is how Telebirr / CBE-Birr rows
+    # got in — a bank PICKER is the only name source allowed.
+    if "Name (shown to buyers)" in screen:
+        problems.append(
+            "payment_methods screen: the free-text name field is back — "
+            "that is how Telebirr/CBE-Birr rows got in")
+    for needle, why in (
+        ("_bankField", "the form no longer picks a bank from the banks table"),
+        ("PaymentMethodsService.kTimeout",
+         "the reads are unbounded again — the endless spinner"),
+        ("Maximum of 3 accounts reached",
+         "the 3-account cap has no client-side explanation"),
+        ("Make default", "providers cannot choose their default account"),
+    ):
+        if needle not in screen:
+            problems.append("payment_methods screen: %s" % why)
+
+    service = _dart_without_comments(
+        _read(LIB / "core" / "services" / "payment_methods_service.dart"))
+    if "kTimeout" not in service:
+        problems.append(
+            "payment_methods_service.dart has no timeout — a hung read "
+            "becomes an endless spinner again")
+    if "getBanks" not in service:
+        problems.append("payment_methods_service.dart never reads the banks table")
+
+    rules = LIB / "core" / "utils" / "bank_account_rules.dart"
+    if not rules.is_file():
+        problems.append("bank_account_rules.dart missing — the form has no "
+                        "client mirror of the server rules")
+    else:
+        rc = _dart_without_comments(_read(rules))
+        if "looksLikePhone" not in rc or "bankAccountError" not in rc:
+            problems.append("bank_account_rules.dart lost looksLikePhone / "
+                            "bankAccountError")
+
+    err = _dart_without_comments(_read(LIB / "core" / "utils" /
+                                       "friendly_error.dart"))
+    for code in ("mobile_money_not_allowed",
+                 "phone_like_number_not_allowed",
+                 "account_limit_reached",
+                 "bank_account_prefix_invalid"):
+        if code not in err:
+            problems.append("friendly_error.dart has no matcher for %s" % code)
+
+    # -- admin surface --
+    if not (LIB / "features" / "admin" /
+            "admin_payment_accounts_screen.dart").is_file():
+        problems.append("admin_payment_accounts_screen.dart is missing — "
+                        "no admin can manage banks or disable an account")
+    router = _read(LIB / "routing" / "app_router.dart")
+    if "'/admin/payment-accounts'" not in router:
+        problems.append("no /admin/payment-accounts route")
+    dash = _dart_without_comments(_read(LIB / "features" / "admin" /
+                                        "admin_dashboard.dart"))
+    if "'/admin/payment-accounts'" not in dash:
+        problems.append("admin_dashboard.dart never links /admin/payment-accounts")
+
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -8043,6 +8174,8 @@ CHECKS = [
      check_unclaimed_rides_expire_and_one_driver_wins),
     ("no order can be created without an ACCEPTED availability request, on any path",
      check_availability_gate_covers_every_checkout),
+    ("payment accounts are bank-only, phone-free, capped at 3 and audited",
+     check_bank_accounts_are_enforced),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

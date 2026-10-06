@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/services/payment_methods_service.dart';
 import '../../core/services/wallet_service.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/bank_account_rules.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/primary_button.dart';
 
@@ -22,13 +23,17 @@ class ProviderPaymentMethodsScreen extends ConsumerStatefulWidget {
 class _ProviderPaymentMethodsScreenState
     extends ConsumerState<ProviderPaymentMethodsScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
   final _accountNameController = TextEditingController();
   final _accountNumberController = TextEditingController();
   final _instructionsController = TextEditingController();
 
   List<Map<String, dynamic>> _methods = [];
   List<Map<String, dynamic>> _walletFundingRequests = [];
+  /// The admin-editable banks — the only source of the length/prefix rules
+  /// this form validates against, so the client and the trigger can never
+  /// disagree about what a valid account is.
+  List<Map<String, dynamic>> _banks = [];
+  String? _selectedBankId;
   Map<String, dynamic>? _wallet;
   String? _businessName;
   bool _loading = true;
@@ -38,7 +43,6 @@ class _ProviderPaymentMethodsScreenState
 
   @override
   void dispose() {
-    _nameController.dispose();
     _accountNameController.dispose();
     _accountNumberController.dispose();
     _instructionsController.dispose();
@@ -52,11 +56,18 @@ class _ProviderPaymentMethodsScreenState
       _loadError = null;
     });
     try {
+      // Every read is bounded (PaymentMethodsService.kTimeout, and the
+      // .timeout below for the wallet reads): the endless spinner this
+      // screen used to show was an un-awaited read that never returned —
+      // no deadline meant no error state, no code and no retry.
       final methods =
           await PaymentMethodsService.instance.getProviderMethods(_providerId);
-      final wallet = await WalletService.instance.getWallet(_providerId);
+      final banks = await PaymentMethodsService.instance.getBanks();
+      final wallet = await WalletService.instance.getWallet(_providerId)
+          .timeout(PaymentMethodsService.kTimeout);
       final requests =
-          await WalletService.instance.getMyWalletFundingSummary();
+          await WalletService.instance.getMyWalletFundingSummary()
+              .timeout(PaymentMethodsService.kTimeout);
       final requestsWithUrls = <Map<String, dynamic>>[];
       for (final r in requests) {
         final path = r['screenshot_storage_path'] as String?;
@@ -65,7 +76,8 @@ class _ProviderPaymentMethodsScreenState
           continue;
         }
         try {
-          final url = await WalletService.instance.getScreenshotUrl(path);
+          final url = await WalletService.instance.getScreenshotUrl(path)
+              .timeout(PaymentMethodsService.kTimeout);
           requestsWithUrls.add(Map<String, dynamic>.from(r)
             ..['_screenshotUrl'] = url);
         } catch (_) {
@@ -81,13 +93,15 @@ class _ProviderPaymentMethodsScreenState
               .from('provider_profiles')
               .select('business_name')
               .eq('id', _providerId)
-              .maybeSingle();
+              .maybeSingle()
+              .timeout(PaymentMethodsService.kTimeout);
           name = prov?['business_name'] as String?;
         } catch (_) {}
       }
       if (mounted) {
         setState(() {
           _methods = methods;
+          _banks = banks;
           _wallet = wallet;
           _walletFundingRequests = requestsWithUrls;
           _businessName = name;
@@ -136,9 +150,58 @@ class _ProviderPaymentMethodsScreenState
     }
   }
 
+  Map<String, dynamic>? _selectedBank() {
+    final id = _selectedBankId;
+    if (id == null) return null;
+    for (final b in _banks) {
+      if (b['id'] == id) return b;
+    }
+    return null;
+  }
+
+  int get _activeCount =>
+      _methods.where((m) => (m['is_active'] as bool?) == true).length;
+
+  /// The bank picker: the ONLY source of a name now — a free-text name is
+  /// how Telebirr / CBE Birr rows used to get in.
+  Widget _bankField() => DropdownButtonFormField<String>(
+        initialValue: _selectedBankId,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'Bank'),
+        items: [
+          for (final b in _banks)
+            if ((b['is_active'] as bool?) != false)
+              DropdownMenuItem<String>(
+                value: b['id'] as String,
+                child: Text(b['name'] as String? ?? ''),
+              ),
+        ],
+        onChanged: (v) => setState(() => _selectedBankId = v),
+        validator: (v) => v == null ? 'Choose your bank' : null,
+      );
+
+  /// Mirrors text_looks_like_phone for the fields buyers can read.
+  String? _phoneTextValidator(String? v) =>
+      looksLikePhone(v) ? 'Phone numbers are not allowed here' : null;
+
+  /// Mirrors the trigger's bank length/prefix check against the very rows
+  /// the trigger will check it against (the banks table).
+  String? _numberValidator(String? v) {
+    final bank = _selectedBank();
+    if (bank == null) return 'Choose your bank first';
+    return bankAccountError(
+      v ?? '',
+      digitMin: (bank['digit_min'] as num?)?.toInt() ?? 8,
+      digitMax: (bank['digit_max'] as num?)?.toInt() ?? 16,
+      prefix: bank['prefix'] as String?,
+    );
+  }
+
   Future<void> _createMethod() async {
+    final bank = _selectedBank();
     final data = await PaymentMethodsService.instance.createProviderMethod(
-      name: _nameController.text.trim(),
+      name: bank?['name'] as String? ?? 'Bank account',
+      bankId: _selectedBankId,
       accountName: _accountNameController.text.trim().isEmpty
           ? null
           : _accountNameController.text.trim(),
@@ -154,7 +217,7 @@ class _ProviderPaymentMethodsScreenState
     if (context.mounted) {
       setState(() {
         _methods = [..._methods, data];
-        _nameController.clear();
+        _selectedBankId = null;
         _accountNameController.clear();
         _accountNumberController.clear();
         _instructionsController.clear();
@@ -169,9 +232,11 @@ class _ProviderPaymentMethodsScreenState
     final method = _methods[index];
 
     try {
+      final bank = _selectedBank();
       final updated = await PaymentMethodsService.instance.updateProviderMethod(
         id: id,
-        name: _nameController.text.trim(),
+        name: bank?['name'] as String?,
+        bankId: _selectedBankId,
         accountName:
             _accountNameController.text.trim().isEmpty
                 ? null
@@ -187,7 +252,7 @@ class _ProviderPaymentMethodsScreenState
 
       if (context.mounted) {
         _methods[index] = updated;
-        _nameController.clear();
+        _selectedBankId = null;
         _accountNameController.clear();
         _accountNumberController.clear();
         _instructionsController.clear();
@@ -833,7 +898,7 @@ class _ProviderPaymentMethodsScreenState
               color: AppTheme.textMuted),
           const SizedBox(height: 16),
           Text(
-            'No payment methods yet',
+            'No payment accounts yet',
             style: TextStyle(
               color: AppTheme.textMuted,
               fontSize: 16,
@@ -842,8 +907,9 @@ class _ProviderPaymentMethodsScreenState
           ),
           const SizedBox(height: 8),
           Text(
-            'Add the methods your buyers can pay with so they can confirm '
-            'payment and send proof on the order.',
+            'Add up to 3 bank accounts so buyers know where to send money '
+            'and can upload proof on the order. Telebirr, CBE Birr and '
+            'other mobile money are not accepted.',
             textAlign: TextAlign.center,
             style: const TextStyle(
                 color: AppTheme.textMuted, fontSize: 13),
@@ -852,7 +918,7 @@ class _ProviderPaymentMethodsScreenState
           FilledButton.icon(
             onPressed: _startAdding,
             icon: const Icon(Icons.add_circle_outline),
-            label: const Text('Add payment method'),
+            label: const Text('Add bank account'),
           ),
         ],
       ),
@@ -862,8 +928,34 @@ class _ProviderPaymentMethodsScreenState
   Widget _listBody(BuildContext context) {
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: _methods.length,
+      // One extra row: the "add account" action, always reachable and
+      // always honest about the 3-account cap.
+      itemCount: _methods.length + 1,
       itemBuilder: (_, i) {
+        if (i == _methods.length) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                FilledButton.icon(
+                  onPressed: _activeCount >= 3 ? null : _startAdding,
+                  icon: const Icon(Icons.add_circle_outline),
+                  label: Text(_activeCount >= 3
+                      ? 'Maximum of 3 accounts reached'
+                      : 'Add bank account'),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$_activeCount of 3 accounts in use',
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                ),
+              ],
+            ),
+          );
+        }
         final method = _methods[i];
         return Card(
           margin: const EdgeInsets.only(bottom: 12),
@@ -905,9 +997,35 @@ class _ProviderPaymentMethodsScreenState
                   const SizedBox(height: 4),
                 if ((method['is_active'] as bool?) == false)
                   Text(
-                    'This method will not be shown to buyers until it is turned on.',
+                    'This account will not be shown to buyers until it is turned on.',
                     style: const TextStyle(
                         fontSize: 12, color: AppTheme.textMuted),
+                  ),
+                const SizedBox(height: 8),
+                if (method['is_default'] == true)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryGreen.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Text(
+                      'Default',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.primaryGreen,
+                          fontWeight: FontWeight.w700),
+                    ),
+                  )
+                else if ((method['is_active'] as bool?) == true)
+                  TextButton(
+                    onPressed: () => _makeDefault(method['id'] as String),
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: const Size(0, 32)),
+                    child: const Text('Make default',
+                        style: TextStyle(fontSize: 12)),
                   ),
                 const SizedBox(height: 12),
                 ListTile(
@@ -977,17 +1095,26 @@ class _ProviderPaymentMethodsScreenState
         );
       },
     );
-  }
-
-  void _startAdding() {
-    _nameController.clear();
+  }  void _startAdding() {
+    // Up to 3 ACTIVE accounts, enforced here for a fast "why" and by the
+    // trigger for everyone else (ACCOUNT_LIMIT_REACHED).
+    if (_activeCount >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You can have up to 3 payment accounts. Remove or '
+              'deactivate one first.'),
+        ),
+      );
+      return;
+    }
+    _selectedBankId = null;
     _accountNameController.clear();
     _accountNumberController.clear();
     _instructionsController.clear();
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Add payment method'),
+        title: const Text('Add bank account'),
         content: SingleChildScrollView(
           child: Form(
             key: _formKey,
@@ -995,25 +1122,18 @@ class _ProviderPaymentMethodsScreenState
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextFormField(
-                  controller: _nameController,
-                  decoration:
-                      const InputDecoration(labelText: 'Name (shown to buyers)'),
-                  textCapitalization: TextCapitalization.words,
-                  validator: (v) =>
-                      v == null || v.trim().isEmpty ? 'Required' : null,
-                ),
+                _bankField(),
                 TextFormField(
                   controller: _accountNameController,
-                  decoration:
-                      const InputDecoration(labelText: 'Account / payee name'),
+                  decoration: const InputDecoration(labelText: 'Account / payee name'),
                   textCapitalization: TextCapitalization.words,
+                  validator: _phoneTextValidator,
                 ),
                 TextFormField(
                   controller: _accountNumberController,
-                  decoration:
-                      const InputDecoration(labelText: 'Account / card number'),
+                  decoration: const InputDecoration(labelText: 'Account number'),
                   keyboardType: TextInputType.number,
+                  validator: _numberValidator,
                 ),
                 TextFormField(
                   controller: _instructionsController,
@@ -1021,6 +1141,7 @@ class _ProviderPaymentMethodsScreenState
                       labelText: 'Buyer note (optional)'),
                   maxLines: 3,
                   keyboardType: TextInputType.multiline,
+                  validator: _phoneTextValidator,
                 ),
               ],
             ),
@@ -1038,11 +1159,9 @@ class _ProviderPaymentMethodsScreenState
         ],
       ),
     );
-  }
-
-  VoidCallback _startEditing(String id) => () {
+  }  VoidCallback _startEditing(String id) => () {
         final method = _methods.firstWhere((m) => m['id'] == id);
-        _nameController.text = method['name'] ?? '';
+        _selectedBankId = method['bank_id'] as String?;
         _accountNameController.text =
             method['account_name'] as String? ?? '';
         _accountNumberController.text =
@@ -1052,7 +1171,7 @@ class _ProviderPaymentMethodsScreenState
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
-            title: const Text('Edit payment method'),
+            title: const Text('Edit bank account'),
             content: SingleChildScrollView(
               child: Form(
                 key: _formKey,
@@ -1060,25 +1179,18 @@ class _ProviderPaymentMethodsScreenState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    TextFormField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                          labelText: 'Name (shown to buyers)'),
-                      textCapitalization: TextCapitalization.words,
-                      validator: (v) =>
-                          v == null || v.trim().isEmpty ? 'Required' : null,
-                    ),
+                    _bankField(),
                     TextFormField(
                       controller: _accountNameController,
-                      decoration: const InputDecoration(
-                          labelText: 'Account / payee name'),
+                      decoration: const InputDecoration(labelText: 'Account / payee name'),
                       textCapitalization: TextCapitalization.words,
+                      validator: _phoneTextValidator,
                     ),
                     TextFormField(
                       controller: _accountNumberController,
-                      decoration: const InputDecoration(
-                          labelText: 'Account / card number'),
+                      decoration: const InputDecoration(labelText: 'Account number'),
                       keyboardType: TextInputType.number,
+                      validator: _numberValidator,
                     ),
                     TextFormField(
                       controller: _instructionsController,
@@ -1086,6 +1198,7 @@ class _ProviderPaymentMethodsScreenState
                           labelText: 'Buyer note (optional)'),
                       maxLines: 3,
                       keyboardType: TextInputType.multiline,
+                      validator: _phoneTextValidator,
                     ),
                   ],
                 ),
@@ -1108,12 +1221,36 @@ class _ProviderPaymentMethodsScreenState
         );
       };
 
+  Future<void> _makeDefault(String id) async {
+    try {
+      await PaymentMethodsService.instance
+          .updateProviderMethod(id: id, isDefault: true);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Default account updated')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text(friendlyError(e, context: 'Could not set default')),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (context.mounted) _load();
+    }
+  }
+
   VoidCallback _startDeleting(String id) => () {
         showDialog(
           context: context,
           barrierDismissible: false,
           builder: (dialogCtx) => AlertDialog(
-            title: const Text('Remove payment method'),
+            title: const Text('Remove payment account'),
             content: const Text(
                 'This will remove the method for this account. Buyers will '
                 'no longer see it.'),

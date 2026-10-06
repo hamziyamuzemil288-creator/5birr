@@ -51,6 +51,7 @@ import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
 import '../features/admin/admin_orders_screen.dart';
 import '../features/admin/admin_availability_screen.dart';
+import '../features/admin/admin_payment_accounts_screen.dart';
 import '../features/admin/admin_staff_screen.dart';
 import '../features/admin/admin_account_directory_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
@@ -531,6 +532,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/providers', builder: (_, __) => const AdminProviderManagementScreen()),
       GoRoute(path: '/admin/users', builder: (_, __) => const AdminUserManagementScreen()),
       GoRoute(path: '/admin/payment-methods', builder: (_, __) => const AdminPaymentMethodsScreen()),
+      // Item 5: the banks table (what a valid account number IS) and every
+      // provider's accounts, disableable from here.
+      GoRoute(path: '/admin/payment-accounts', builder: (_, __) => const AdminPaymentAccountsScreen()),
       GoRoute(path: '/admin/payments', builder: (_, __) => const AdminPaymentVerificationScreen()),
       // The queue of identity documents waiting for a decision.
       // review_user_document() existed since 20260927000030 but was only
