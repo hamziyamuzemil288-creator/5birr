@@ -98,6 +98,26 @@ jobs:
             git push
           fi
 
+      # Stamp the app version into the artifact names below.
+      #
+      # Every build used to upload as plain `release-aab`, so 1.4.0+89,
+      # 1.4.0+90, 1.5.1+101, 1.6.1+103 and 1.6.2+104 all sat in the Actions
+      # list under one identical name. Picking the wrong one is easy and
+      # silent, and it produced a real report — "I got the aab but my updates
+      # are not there" — for a fix that was in the newest bundle all along.
+      # The version is the only thing that tells the bundles apart, so it
+      # belongs in the filename.
+      - name: Stamp app version
+        id: app_version
+        run: |
+          version=$(awk '/^version:/ {print $2; exit}' pubspec.yaml)
+          if [ -z "$version" ]; then
+            echo "::error::No version found in pubspec.yaml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "This build is $version"
+
       - name: Build debug APK
         run: |
           flutter build apk --debug \
@@ -113,7 +133,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: debug-apk
+          name: debug-apk-${{ steps.app_version.outputs.version }}
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           # 14-day retention: full builds here duplicate the dedicated
@@ -154,7 +174,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: release-aab
+          name: release-aab-${{ steps.app_version.outputs.version }}
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
