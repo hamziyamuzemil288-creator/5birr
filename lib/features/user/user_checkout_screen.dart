@@ -245,12 +245,12 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
 
   double get _total => _items.fold(0.0, (sum, i) => sum + i.lineTotal);
 
-  /// A seller with no saved account: same destination as the product page's
-  /// CONTACT SELLER — their public profile, where contact details and the
-  /// gallery live.
-  Future<void> _contactSeller() async {
+  /// A seller with no saved account: the card's own action sends the buyer
+  /// back to the marketplace to pick someone else (item 7 — no pre-payment
+  /// contact channel, so there is no "contact seller" to fall back to).
+  void _findAnotherProvider() {
     if (!mounted) return;
-    await context.push('/user/provider/${widget.providerId}');
+    context.go('/user');
   }
 
   Future<void> _pickScreenshot() async {
@@ -329,14 +329,15 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     // one on another device); only a KNOWN-empty list blocks — an unreadable
     // read never does, because taking away the buyer's only way to pay on
     // the strength of an error is the worse mistake. The card above already
-    // offers "Contact seller", and the guard repeats the sentence here for
-    // the buyer who scrolled past it.
+    // says it and offers "Find another provider"; the guard repeats the
+    // sentence for the buyer who scrolled past it (item 7: no pre-payment
+    // contact advice anywhere).
     final accounts = await PaymentAccounts.load(widget.providerId);
     if (mounted) setState(() => _accounts = accounts);
     if (accounts.readable && accounts.isEmpty) {
       setState(() => _error =
-          'This seller has not saved a payment account yet. Contact the '
-          'seller to arrange payment before placing an order.');
+          'This seller can\'t accept orders yet — no payment account on '
+          'file. Find another provider.');
       return;
     }
 
@@ -700,16 +701,20 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                         _AvailabilityNotice(),
                         const SizedBox(height: 20),
                       ]                      else ...[
-                        // The provider's saved accounts — bank, Telebirr or
-                        // CBE Birr — with a copy button per value and the
-                        // instruction that matters: pay the provider, then
-                        // upload proof. When the provider has saved none the
-                        // same card says so and offers "Contact seller".
+                        // The provider's saved bank accounts, with a copy
+                        // button per value and the instruction that matters:
+                        // pay the seller, then upload proof. Directly below
+                        // them sit the reference field and the screenshot
+                        // upload — the three belong together. The card is
+                        // reachable only through the availability gate (the
+                        // server RPC refuses without an ACCEPTED request);
+                        // with no account it says so and offers "Find
+                        // another provider" — never a way to talk to the
+                        // seller first.
                         PaymentAccountsCard(
                           accounts: _accounts ?? PaymentAccounts.unreadable,
-                          providerName: _providerName,
                           loading: _accountsLoading,
-                          onContactSeller: _contactSeller,
+                          onFindAnother: _findAnotherProvider,
                         ),
                         const SizedBox(height: 16),
                         BirrTextField(

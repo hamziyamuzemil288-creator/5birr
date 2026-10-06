@@ -8254,6 +8254,137 @@ def check_posting_requires_a_payment_account() -> list[str]:
     return problems
 
 
+def check_no_contact_before_payment() -> list[str]:
+    """No talking to a seller — or reading their numbers — before the money.
+
+    Item 7's halves (each missing reopens the channel the report describes):
+
+      * server: provider_payment_accounts (and the LAST migration that
+        defines it) demands a buyer's ACCEPTED, unexpired, UNUSED
+        availability request and is revoked from `anon`, so the public
+        product page cannot read bank details unauthenticated;
+      * server: order_messages masks phone-shaped tokens, and the pattern
+        lives in order_chat_phone_mask_pattern() so the assertion can RUN
+        it — against the local 09/07 formats the first draft missed and
+        against 13-digit bank accounts it must not touch;
+      * client: no "Contact seller"/call/SMS/WhatsApp button on a buyer
+        screen, checkout says "Pay the seller directly", and the product
+        page does NOT read the reveal RPC to decide buyability — once that
+        RPC started gating, such a read hid BUY NOW for every buyer;
+      * proof: assert_no_contact_before_payment is registered in CI.
+    """
+    problems: list[str] = []
+    mig = ROOT / "supabase" / "migrations" / \
+        "20261006000009_no_contact_before_payment.sql"
+    if not mig.is_file():
+        return ["20261006000009_no_contact_before_payment.sql is missing — "
+                "nothing gates the account-number reveal"]
+    sql = _read(mig)
+
+    for needle, why in (
+        ("REVOKE ALL ON FUNCTION public.provider_payment_accounts",
+         "anon is not locked out — bank details stay readable "
+         "unauthenticated"),
+        ("availability_requests",
+         "the reveal no longer demands the gate's YES"),
+        ("used_at",
+         "a consumed request still reveals the numbers"),
+        ("order_chat_phone_mask_pattern",
+         "the mask pattern is not a testable value"),
+        ("trg_order_messages_mask_phone",
+         "the order thread has no mask trigger"),
+        ("assert_no_contact_before_payment",
+         "no live assertion for Connectivity CI"),
+        ("(?:(?:251|0)",
+         "the pattern lost the local trunk prefix — 0911234567 passes "
+         "through the filter"),
+        ("regexp_replace('0911234567'",
+         "the assertion no longer proves 09/07 numbers get masked"),
+        ("regexp_replace('1000123456789'",
+         "the assertion no longer proves bank accounts are left alone"),
+    ):
+        if needle not in sql:
+            problems.append("20261006000009: %s" % why)
+
+    target, _ = last_migration_defining("provider_payment_accounts")
+    if target is None or target.name != mig.name:
+        problems.append(
+            "%s is now the last definition of provider_payment_accounts — "
+            "the availability YES requirement is no longer the last word"
+            % (target.name if target else "no migration defines it"))
+
+    # ── the client half ──
+    lib_text = "\n".join(
+        _dart_without_comments(_read(p)) for p in dart_sources())
+    for needle, why in (
+        ("Contact seller",
+         "a Contact seller button is back on a buyer screen"),
+        ("onContactSeller",
+         "the contact-seller callback is back in the card API"),
+    ):
+        if needle in lib_text:
+            problems.append("lib/: %s (item 7 removed every pre-payment "
+                            "contact channel)" % why)
+
+    card = _dart_without_comments(
+        _read(LIB / "core" / "widgets" / "payment_accounts_card.dart"))
+    if "'Pay the seller directly'" not in card:
+        problems.append(
+            "payment_accounts_card.dart: checkout copy no longer says "
+            "\"Pay the seller directly\" (it must stay anonymous until an "
+            "order exists)")
+    if "onFindAnother" not in card:
+        problems.append(
+            "payment_accounts_card.dart: the no-account card lost its "
+            "\"Find another provider\" escape")
+    if "providerName" in card:
+        problems.append(
+            "payment_accounts_card.dart: a provider name is back on the "
+            "payment copy")
+
+    checkout = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_checkout_screen.dart"))
+    if "PaymentAccountsCard(" not in checkout or \
+            "onFindAnother:" not in checkout:
+        problems.append(
+            "user_checkout_screen.dart: the account card is not rendered "
+            "with a Find-another-provider route")
+
+    detail = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_product_detail_screen.dart"))
+    if "PaymentAccounts" in detail or "provider_payment_accounts" in detail:
+        problems.append(
+            "user_product_detail_screen.dart: the product page reads the "
+            "reveal RPC again — since 20261006000009 it returns NOTHING "
+            "until the availability gate says YES, so BUY NOW would "
+            "disappear for every buyer")
+    if "'BUY NOW'" not in detail:
+        problems.append(
+            "user_product_detail_screen.dart: the product page has no "
+            "BUY NOW button, so no buyer can reach the availability gate")
+
+    # The tap-to-call provider screen must stay off the buyer path: nothing
+    # under lib/features/user or lib/core may push its route.
+    for p in dart_sources():
+        rel = str(p.relative_to(LIB))
+        if not (rel.startswith("features/user") or rel.startswith("core/")):
+            continue
+        if "'/provider/location" in _read(p):
+            problems.append(
+                "%s pushes /provider/location — a tap-to-call screen with "
+                "the provider's phone number, reachable before payment"
+                % rel)
+
+    conn = _read(ROOT / "tools" / "integration_test" /
+                 "connectivity_test.dart")
+    if "assert_no_contact_before_payment" not in conn:
+        problems.append(
+            "connectivity_test.dart does not run "
+            "assert_no_contact_before_payment()")
+
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -8277,6 +8408,8 @@ CHECKS = [
      check_bank_accounts_are_enforced),
     ("no listing publishes, and no listing shows, without a payment account",
      check_posting_requires_a_payment_account),
+    ("no contact, and no account number, before the payment exists",
+     check_no_contact_before_payment),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

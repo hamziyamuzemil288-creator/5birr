@@ -189,6 +189,26 @@ void main() {
     });
   });
 
+  group('no contact before payment: numbers only after the YES (item 7)', () {
+    test('the reveal needs an availability YES, anon is locked out, the '
+        'thread masks numbers', () async {
+      // The reported defect: a "Contact seller" button on the product page
+      // and account numbers readable by ANYONE (the reveal RPC was granted
+      // to anon so the public product page could call it). Migration
+      // 20261006000009 revokes anon, requires a buyer to hold an ACCEPTED,
+      // unexpired, UNUSED availability request before any number is
+      // returned, and masks phone-shaped tokens in order_messages — with
+      // the mask pattern exercised live inside the assertion against
+      // 09…/07…/2519… numbers (must mask) and 13-digit bank accounts
+      // (must not). If this fails right after a deploy, migration
+      // 20261006000009 did not run.
+      expect(await ok('assert_no_contact_before_payment'), isTrue,
+          reason: 'Account numbers are readable without the provider\'s '
+              'YES (or by anon), or the order thread no longer masks '
+              'phone numbers — the pre-payment contact channel is back.');
+    });
+  });
+
   group('staff attribution: actions -> performance view (Phase 2 #6)', () {
     test('staff_performance uses the real ride ownership column', () async {
       expect(await ok('assert_staff_performance_uses_claimed_by'), isTrue,

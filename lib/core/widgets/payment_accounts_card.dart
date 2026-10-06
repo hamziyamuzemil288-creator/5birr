@@ -9,7 +9,8 @@ import '../theme/app_theme.dart';
 /// [readable] is deliberately separate from "the list is empty": the read is
 /// server-scoped, so a failure (no network, a deployment that has not run
 /// the grant yet) is NOT evidence that the seller has no account. An empty
-/// list we KNOW about blocks direct purchase and offers "Contact seller"; a
+/// list we KNOW about blocks direct purchase and offers "Find another "
+/// provider"; a
 /// failed read never does, because taking away the buyer's only way to pay
 /// on the strength of an error is the worse mistake.
 class PaymentAccounts {
@@ -46,29 +47,35 @@ class PaymentAccounts {
   }
 }
 
-/// Where a buyer sees the provider's account details: on the product page
-/// and again on Checkout, above the payment reference field, with a copy
-/// button per value and the one instruction that matters — pay the
-/// provider, then upload proof.
+/// Where a buyer sees the provider's account details: on CHECKOUT ONLY,
+/// directly above the payment reference field and the screenshot upload,
+/// with a copy button per value and the one instruction that matters — pay
+/// the seller, then upload proof. Item 7: the numbers appear only after
+/// the availability gate said YES — the server RPC
+/// (`provider_payment_accounts`) refuses without an ACCEPTED, unexpired,
+/// unused request, so the card cannot be used as a pre-payment contact
+/// channel.
 ///
-/// When the provider has saved no account, the same card says so and offers
-/// "Contact seller" instead of a pay-to step the buyer could not complete.
+/// When the provider has saved no account, the same card says "This seller
+/// can't accept orders yet" and offers "Find another provider" — never a
+/// way to talk to the seller before payment.
 class PaymentAccountsCard extends StatelessWidget {
   const PaymentAccountsCard({
     super.key,
     required this.accounts,
-    this.providerName,
-    this.onContactSeller,
+    this.onFindAnother,
     this.loading = false,
   });
 
   final PaymentAccounts accounts;
-  final String? providerName;
-  final VoidCallback? onContactSeller;
+
+  /// Leave a pre-payment contact route: takes the buyer back to the
+  /// marketplace to pick someone else.
+  final VoidCallback? onFindAnother;
   final bool loading;
 
   static const String payNote =
-      'Pay the provider, then upload proof of payment.';
+      'Pay the seller, then upload proof of payment.';
 
   @override
   Widget build(BuildContext context) {
@@ -104,12 +111,12 @@ class PaymentAccountsCard extends StatelessWidget {
         const Icon(Icons.account_balance_wallet_outlined,
             size: 18, color: AppTheme.primaryGreen),
         const SizedBox(width: 8),
-        Expanded(
+        const Expanded(
+          // Item 7: no provider name — checkout copy is "Pay the seller
+          // directly", deliberately anonymous until an order exists.
           child: Text(
-            providerName == null || providerName!.trim().isEmpty
-                ? 'Pay the provider directly'
-                : 'Pay ${providerName!.trim()} directly',
-            style: const TextStyle(
+            'Pay the seller directly',
+            style: TextStyle(
               fontSize: 14.5,
               fontWeight: FontWeight.w700,
               color: AppTheme.textPrimary,
@@ -127,8 +134,8 @@ class PaymentAccountsCard extends StatelessWidget {
         _header(context),
         const SizedBox(height: 8),
         const Text(
-          'This seller has not saved a payment account yet, so there is '
-          'nowhere to send money and nothing to buy here right now.',
+          'This seller can\'t accept orders yet — they have no payment '
+          'account on file, so there is nowhere to send money.',
           style: TextStyle(
             fontSize: 12.5,
             height: 1.4,
@@ -136,17 +143,17 @@ class PaymentAccountsCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        if (onContactSeller != null)
+        if (onFindAnother != null)
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: onContactSeller,
+              onPressed: onFindAnother,
               style: FilledButton.styleFrom(
                 backgroundColor: AppTheme.primaryGreen,
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              icon: const Icon(Icons.forum_outlined, size: 18),
-              label: const Text('Contact seller'),
+              icon: const Icon(Icons.storefront_outlined, size: 18),
+              label: const Text('Find another provider'),
             ),
           ),
       ],
