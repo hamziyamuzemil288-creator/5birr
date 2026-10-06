@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
@@ -441,6 +442,60 @@ class _State extends State<ProviderBusinessProfileScreen> {
                       label: 'Description',
                       controller: _descCtrl,
                       maxLines: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    // Payment accounts belong in business settings because
+                    // they are part of who this provider is to a buyer: the
+                    // bank / Telebirr / CBE Birr details shown on the product
+                    // page and on Checkout, with copy buttons. One tap to the
+                    // screen that manages them — the same one the dashboard's
+                    // "Payment Methods" action opens.
+                    InkWell(
+                      onTap: () => context.push('/provider/payment-methods'),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.creamDark,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.cardBorder),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.account_balance_wallet_outlined,
+                                size: 22, color: AppTheme.primaryGreen),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Payment accounts',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.textPrimary,
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'Bank, Telebirr or CBE Birr — what buyers '
+                                    'see to pay you directly',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      height: 1.3,
+                                      color: AppTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right,
+                                size: 20, color: AppTheme.textMuted),
+                          ],
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 24),
                     SizedBox(

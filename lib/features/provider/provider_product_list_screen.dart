@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/services/posting_gate.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -92,6 +93,19 @@ class _State extends State<ProviderProductListScreen> {
     }
   }
 
+  /// Add Product, gated exactly like the header's "Post product" button and
+  /// the dashboard's Add Product action: the server's fulfilment blockers
+  /// decide, and anyone short of the document/wallet minimum gets the
+  /// two-step checklist that re-checks itself as they finish each step.
+  Future<void> _startAddProduct() async {
+    final providerId = _providerId;
+    if (providerId == null || !mounted) return;
+    final allowed =
+        await PostingGate.instance.ensure(context, providerId: providerId);
+    if (!allowed || !mounted) return;
+    await context.push('/provider/products/new');
+  }
+
   Future<void> _toggleAvailability(String id, bool current) async {
     try {
       await Supabase.instance.client
@@ -112,7 +126,7 @@ class _State extends State<ProviderProductListScreen> {
       appBar: AppBar(title: const Text('My Products')),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppTheme.primaryGreen,
-        onPressed: () => context.push('/provider/products/new'),
+        onPressed: _startAddProduct,
         child: const Icon(Icons.add, color: Colors.white),
       ),
       body: _loading
@@ -132,7 +146,7 @@ class _State extends State<ProviderProductListScreen> {
                         style: TextStyle(color: AppTheme.textMuted)),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
-                      onPressed: () => context.push('/provider/products/new'),
+                      onPressed: _startAddProduct,
                       icon: const Icon(Icons.add),
                       label: const Text('Add Product'),
                     ),

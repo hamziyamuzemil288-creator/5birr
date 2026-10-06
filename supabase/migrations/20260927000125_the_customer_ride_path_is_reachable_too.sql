@@ -86,17 +86,15 @@ BEGIN
        '{p_user_id,p_provider_id,p_items,p_total_amount,p_currency,p_note,p_fulfillment_mode,p_delivery_address,p_city}'),
       ('search_products', 'public.search_products(text,uuid,text,double precision,double precision,numeric,numeric,numeric,numeric,text,int,int,text,boolean)',
        '{p_query,p_category_id,p_sector,p_lat,p_lng,p_radius_km,p_min_price,p_max_price,p_min_rating,p_sort_by,p_limit,p_offset,p_city,p_include_global}'),
-      -- platform_transaction_fee_for is FOUR arguments and platform_transaction_fee
-      -- is ONE. The first transcription of these two rows said three and two, and
-      -- the local proof caught it in the same way 0125 exists to catch anything
-      -- else: `to_regprocedure` returned NULL and the report said
-      -- "MISSING or wrong arity". A hand-written copy of a list the Dart already
-      -- states is the same rot 0124 was written about; the difference is that
-      -- here it was caught before it could reach a deployment.
-      ('platform_transaction_fee_for', 'public.platform_transaction_fee_for(numeric,uuid,text,boolean)',
-       '{p_amount,p_category_id,p_city,p_is_product}'),
-      ('platform_transaction_fee', 'public.platform_transaction_fee(numeric)',
-       '{p_amount}'),
+      -- The two commission-quote rows that used to sit here
+      -- (platform_transaction_fee_for, platform_transaction_fee) are gone,
+      -- because their only call site is gone: the buyer checkout used to
+      -- show a "Platform fee (charged to provider)" line, and the product
+      -- rule is now that the buyer is never quoted it — the commission is
+      -- charged to the provider server-side by deduct_transaction_fee() and
+      -- displayed from the ledger in the provider wallet screen and the
+      -- admin income views. A report row with no caller is exactly the drift
+      -- this file exists to prevent, so the rows left with the caller.
       -- ---- Contact handover. A rider who paid cannot see the driver's phone
       -- ---- number if these are unreachable, and the order stalls.
       --

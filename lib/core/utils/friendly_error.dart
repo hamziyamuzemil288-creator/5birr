@@ -33,6 +33,9 @@ List<String> _fulfilmentReasons(String raw) {
     'ACTIVATION_FEE_UNPAID': 'the one-time activation fee is unpaid',
     'WALLET_EMPTY':
         'your wallet is empty, so the platform fee cannot be covered',
+    'WALLET_BELOW_MINIMUM':
+        'your wallet is below the minimum balance the platform requires '
+        'before posting',
     'SUBSCRIPTION_UNPAID':
         'your subscription is unpaid, so your account is suspended',
     'ACCOUNT_NOT_APPROVED': 'your account has not been approved yet',
@@ -175,6 +178,29 @@ String friendlyError(Object error, {String? context}) {
             'business profile to see what is outstanding.'
         : 'Before you can publish: ${reasons.join('; ')}. Open your business '
             'profile to fix it.';
+  }
+
+  // The posting-fee backstop (migration 20261006000003): raised BEFORE the
+  // insert when the wallet cannot cover the optional posting fee — a balance
+  // that moved between the gate's read and the charge. Bare code, not a
+  // reason list, so it gets its own branch. The sentence says the two things
+  // a provider needs to know: nothing was taken, and the listing was not
+  // created (so retrying after a recharge is safe and cannot duplicate).
+  else if (_any(lower, ['posting_fee_insufficient'])) {
+    message = 'The listing fee could not be covered by your wallet. '
+        'Recharge and try again — nothing was charged and no listing was '
+        'created.';
+  }
+
+  // No wallet row for the provider. This is a provisioning problem, not a
+  // balance problem — recharging cannot help until the wallet exists — so
+  // the sentence points at support rather than at the recharge screen.
+  // Raised by create_provider_product's posting-fee path when an otherwise
+  // ready provider somehow has no wallets row (migration 20261006000003).
+  else if (_any(lower, ['wallet_not_found'])) {
+    message = 'This business has no wallet on file yet. Please contact '
+        'support so it can be created — recharging will not help until it '
+        'exists.';
   }
 
   // ── Authorisation (RLS denials arrive as plain 403s) ──

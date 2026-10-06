@@ -349,21 +349,31 @@ class PostingGate {
 
     // 3. The admin's knobs: is verification required, and how much wallet
     //    is enough. Both live in system_settings so the answer cannot
-    //    drift between the app and the server.
+    //    drift between the app and the server. "Enough" is
+    //    GREATEST(posting_min_wallet_balance, posting_fee) — the same
+    //    GREATEST provider_fulfilment_blockers() enforces (migration
+    //    20261006000003) — so the number on the checklist row is the number
+    //    the server will actually require.
     var verificationRequired = true;
-    var requiredAmount = 0.0;
+    var minWallet = 0.0;
+    var postingFee = 0.0;
     try {
       final rows = await _client
           .from('system_settings')
           .select('key, value')
-          .inFilter(
-              'key', ['enforce_verified_documents', 'posting_min_wallet_balance']);
+          .inFilter('key', [
+        'enforce_verified_documents',
+        'posting_min_wallet_balance',
+        'posting_fee',
+      ]);
       for (final raw in rows as List) {
         final row = Map<String, dynamic>.from(raw as Map);
         if (row['key'] == 'enforce_verified_documents') {
           verificationRequired = row['value'] == true || row['value'] == 'true';
         } else if (row['key'] == 'posting_min_wallet_balance') {
-          requiredAmount = (row['value'] as num?)?.toDouble() ?? 0;
+          minWallet = (row['value'] as num?)?.toDouble() ?? 0;
+        } else if (row['key'] == 'posting_fee') {
+          postingFee = (row['value'] as num?)?.toDouble() ?? 0;
         }
       }
     } catch (_) {
@@ -371,6 +381,7 @@ class PostingGate {
       // the source for "is verification required", inferred below.
       verificationRequired = blockers.contains('DOCUMENTS_UNVERIFIED');
     }
+    final requiredAmount = minWallet > postingFee ? minWallet : postingFee;
 
     // 4. The balance itself, for the numbers on the row. Negative marks
     //    "unreadable" so the row never prints a made-up 0.00 as fact.

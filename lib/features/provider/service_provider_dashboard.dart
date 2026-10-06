@@ -6,6 +6,7 @@ import 'package:postgrest/postgrest.dart' show CountOption;
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/points_service.dart';
+import '../../core/services/posting_gate.dart';
 import '../../core/services/provider_readiness.dart';
 import '../../core/services/rank_service.dart';
 import '../../core/utils/friendly_error.dart';
@@ -342,7 +343,7 @@ class _ServiceProviderDashboardState
                                 'My Products',
                                 () => context.push('/provider/products')),
                             _action(Icons.add_circle_outline, 'Add Product',
-                                () => context.push('/provider/products/new')),
+                                _startAddProduct),
                           ]),
                         ),
                         DashboardTab(
@@ -387,6 +388,20 @@ class _ServiceProviderDashboardState
   /// returning the raw list is what made this compile-fail.
   Widget _actionList(List<Widget> actions) =>
       Column(children: actions);
+
+  /// Add Product, gated like every other add-product entry (the header's
+  /// "Post product" button, the product list's FAB and empty state): the
+  /// server's fulfilment blockers decide, and the two-step checklist prompt
+  /// appears for anyone short of document verification or the wallet
+  /// minimum, re-checking itself as they finish each step.
+  Future<void> _startAddProduct() async {
+    final providerId = _providerProfile?['id'] as String?;
+    if (providerId == null || !mounted) return;
+    final allowed =
+        await PostingGate.instance.ensure(context, providerId: providerId);
+    if (!allowed || !mounted) return;
+    await context.push('/provider/products/new');
+  }
 
   /// Compact wallet balance strip: balance at a glance + one-tap recharge.
   Widget _walletCard() {

@@ -8,10 +8,8 @@ import '../../core/models/product.dart';
 import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
+import '../../core/services/posting_gate.dart';
 import '../../core/services/ride_service.dart';
-// PART 2: import '../../core/services/posting_gate.dart'; — the posting gate
-// (verification + wallet) attaches to the header's "Post product" button in
-// part 2 via `_postingGateHook`, and its import returns with it.
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/cart_icon_button.dart';
@@ -1485,26 +1483,27 @@ class _PostProductButton extends StatelessWidget {
     }
 
     final providerId = profile['id'] as String;
-    // PART 2 HOOK: the verification + wallet posting gate plugs in here.
-    // It lands in part 2 (checklist prompt, auto-recheck, backend rule), so
-    // for now this deliberately steps aside and the button opens the form.
-    // The server still has the final word: `create_provider_product` and
-    // the products trigger refuse a provider the fulfilment gate rejects,
-    // and the form turns that refusal into a sentence (see
-    // `showPublishBlockedDialog`).
+    // The verification + wallet posting gate. A verified, funded provider
+    // proceeds straight through; anyone else gets the two-step checklist
+    // (document verification, wallet minimum) which re-checks itself on
+    // app resume and via realtime, so finishing a step elsewhere lets them
+    // through with no manual action. The server has the final word either
+    // way: `create_provider_product` and the products trigger refuse a
+    // provider the fulfilment gate rejects, and the form turns that
+    // refusal into a sentence (see `showPublishBlockedDialog`).
     final allowed = await _postingGateHook(context, providerId);
     if (!allowed || !context.mounted) return;
     await context.push('/provider/products/new');
   }
 
-  /// The one place the part-2 posting gate attaches to this button.
+  /// The one place the posting gate attaches to this button.
   ///
-  /// Returns true when the provider may open the add-product form. The body
-  /// is empty on purpose: `PostingGate.instance.ensure(...)` (already in
-  /// `lib/core/services/posting_gate.dart`) replaces the `return true` when
-  /// part 2 wires the checklist, and nothing else in this button changes.
-  Future<bool> _postingGateHook(BuildContext context, String providerId) async {
-    return true;
+  /// Returns true when the provider may open the add-product form. The same
+  /// gate also wraps every other add-product entry (the product list's FAB
+  /// and empty-state button, the dashboard's Add Product action), so the
+  /// rule cannot be walked around by entering through a different door.
+  Future<bool> _postingGateHook(BuildContext context, String providerId) {
+    return PostingGate.instance.ensure(context, providerId: providerId);
   }
 
   /// A signed-in user who is not (yet) a provider is offered the choice

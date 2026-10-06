@@ -110,8 +110,11 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
             // recorded as applied WITHOUT being executed and the column does
             // not exist -- selecting it made this whole screen fail with
             // 42703. The label below already falls back to the short id.
+            // `note` carries the buyer's payment reference (composed at
+            // checkout as "Payment ref: ..."), which is half of what this
+            // screen exists to verify; the screenshot is the other half.
             'id, status, total_amount, currency, created_at, '
-            'user_id, provider_id, '
+            'user_id, provider_id, note, '
             'payment_proofs(id, storage_path, verification_status, created_at), '
             'provider_profiles!inner(business_name, profiles(full_name, phone))'
           ).eq('status', 'PAYMENT_VERIFICATION');
@@ -299,6 +302,26 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
     return '$amount $currency';
   }
 
+  /// The buyer's payment reference, as typed at checkout.
+  ///
+  /// Checkout composes `orders.note` from parts ("Fulfillment: ...",
+  /// "Delivery: ...", "Payment ref: TXN-123") joined by " | ", so the
+  /// reference is parsed out rather than shown raw — the note also carries
+  /// the delivery mode and address, and neither belongs on a
+  /// payment-verification card. Null when the buyer left it blank, which is
+  /// legitimate (the field is optional) and must not render an empty row.
+  String? _paymentRef(Map<String, dynamic> order) {
+    final note = order['note'] as String?;
+    if (note == null || note.trim().isEmpty) return null;
+    for (final part in note.split('|')) {
+      final match = RegExp(r'Payment ref:\s*(.+)', caseSensitive: false)
+          .firstMatch(part.trim());
+      final ref = match?.group(1)?.trim();
+      if (ref != null && ref.isNotEmpty) return ref;
+    }
+    return null;
+  }
+
   Future<void> _viewProof(Map<String, dynamic> proof) async {
     final path = proof['storage_path'] as String?;
     if (path == null || path.isEmpty) return;
@@ -374,6 +397,7 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
     final waiting = proofs
         .where((p) => p['verification_status'] != 'VERIFIED')
         .toList();
+    final paymentRef = _paymentRef(order);
     final f = DateFormat('d MMM, HH:mm');
 
     return Card(
@@ -417,6 +441,31 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
               ),
             ),
             const SizedBox(height: 10),
+            // The buyer's transfer reference, above the screenshot it
+            // belongs to: the two halves of the same proof, and this is the
+            // one the verifier reads out to the bank while the chip below
+            // opens the image.
+            if (paymentRef != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.tag,
+                        size: 15, color: AppTheme.textMuted),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Payment reference: $paymentRef',
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (proofs.isEmpty)
               const Text(
                 'No payment proof attached. Reject this order or ask the '

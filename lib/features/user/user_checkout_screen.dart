@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:storage_client/storage_client.dart' show FileOptions;
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/birr_text_field.dart';
+import '../../core/widgets/payment_accounts_card.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/cart_service.dart';
 import '../../core/services/document_upload_service.dart';
@@ -62,21 +63,20 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   bool _providerHasBalance = true;
   String _providerName = 'The provider';
 
-  /// The provider's category and city, which is what the commission is
-  /// resolved AGAINST.
-  ///
-  /// These exist because 0107 made the commission per-category and per-city.
-  /// The quote below used to call the one-argument
-  /// `platform_transaction_fee()`, which resolves the GLOBAL rate, while
-  /// `deduct_transaction_fee()` charges `platform_transaction_fee_for()` with
-  /// the provider's real category and city. The moment an admin set a
-  /// category or city override, the figure on this screen stopped being the
-  /// figure the provider is charged — and the old comment here claimed the
-  /// opposite, which is how it survived review. Null until loaded, and null
-  /// is a valid input that means "fall back to the global rate", so a failed
-  /// provider read degrades to exactly the old behaviour.
-  String? _feeCity;
-  String? _feeCategoryId;
+  /// The provider's saved payment accounts (bank / Telebirr / CBE Birr),
+  /// shown on the card above the payment reference. Null until the first
+  /// read finishes. An unreadable read is `PaymentAccounts.unreadable` —
+  /// the card shows its loading state and the order is NOT blocked, because
+  /// only a KNOWN-empty list means "nowhere to send money"; a failed query
+  /// is not evidence of that.
+  PaymentAccounts? _accounts;
+  bool _accountsLoading = true;
+
+  // The provider's category and city used to be read here as well, for a
+  // buyer-visible platform-fee quote. That row is gone (the fee is charged
+  // to the provider, never the buyer), and the commission is resolved
+  // per-category and per-city SERVER-side by deduct_transaction_fee — so the
+  // buyer's checkout needs none of it, only who they are paying.
 
   /// Re-fetches the provider's activation/wallet state. Called on load and
   /// again after returning from the waiting screen, so a provider who has just
@@ -85,23 +85,13 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
     try {
       final prov = await Supabase.instance.client
           .from('public_provider_profiles')
-          .select(
-              'business_name, registration_fee_paid, status, category_id, city')
+          .select('business_name, registration_fee_paid, status')
           .eq('id', widget.providerId)
           .maybeSingle();
       if (prov != null) {
         _providerName = (prov['business_name'] as String?)?.isNotEmpty == true
             ? prov['business_name'] as String
             : _providerName;
-        // Raw city, NOT pre-normalised: `category_fee()` does
-        // `lower(btrim(coalesce(p_city,'')))` itself, so normalising here
-        // would be a second place for the rule to live and a second place for
-        // it to be wrong.
-        final rawCity = (prov['city'] as String?)?.trim();
-        _feeCity = (rawCity == null || rawCity.isEmpty) ? null : rawCity;
-        final rawCat = prov['category_id']?.toString();
-        _feeCategoryId =
-            (rawCat == null || rawCat.isEmpty) ? null : rawCat;
         _providerActivated = (prov['registration_fee_paid'] as bool?) == true &&
             prov['status'] == 'APPROVED';
         final wallet = await Supabase.instance.client
@@ -117,17 +107,6 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       // still blocks and the error is surfaced after submission.
     }
   }
-
-  /// The platform commission for this order, quoted live by
-  /// platform_transaction_fee_for() using the SAME category, city and
-  /// is_product flag that deduct_transaction_fee() will use, so this figure
-  /// cannot drift from what the provider is actually charged.
-  ///
-  /// The last argument is `true` because the charge passes
-  /// `p_order_id IS NOT NULL` — this quote is for an order. Getting that
-  /// backwards would quote the product rate for an order, or the order rate
-  /// for a booking.
-  double? _platformFee;
 
   @override
   void initState() {
@@ -152,41 +131,19 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       // global rate, and silently reintroduce exactly the drift this quote
       // exists to remove. Ordering, not correctness, is the whole fix here.
       await _refreshProviderReadiness();
-      // The commission is resolved per category and per city, and it is the
-      // CEO's to change at any time, so it is quoted from the server rather
-      // than recomputed here. The category, city and is_product flag are the
-      // provider's own, so the quote and the charge resolve identically.
-      // Informational: hide the row entirely if it cannot be loaded.
-      double? platformFee;
+      // The provider's payment accounts, shown on the card above the payment
+      // reference. Best-effort like every read on this screen: a failure
+      // leaves the card in its loading state instead of inventing an answer.
+      //
+      // The platform commission is deliberately NOT quoted here any more.
+      // It is charged to the provider (deduct_transaction_fee, per category
+      // and city), never to the buyer, so showing it on the buyer's checkout
+      // was a number the buyer never pays — the fee still lives in the
+      // provider wallet screen and the admin income views, where it is real.
+      var accounts = PaymentAccounts.unreadable;
       try {
-        final subtotal = items.fold<double>(0.0, (sum, i) => sum + i.lineTotal);
-        final quoted = await Supabase.instance.client.rpc(
-          'platform_transaction_fee_for',
-          params: {
-            'p_amount': subtotal,
-            'p_category_id': _feeCategoryId,
-            'p_city': _feeCity,
-            // This quote is for an order, matching deduct_transaction_fee()'s
-            // `p_order_id IS NOT NULL`.
-            'p_is_product': true,
-          },
-        );
-        final v = (quoted as num?)?.toDouble();
-        if (v != null && v > 0) platformFee = v;
-      } catch (_) {
-        // Any argument the server does not recognise (an older deployment
-        // that has not run 0107 yet) raises rather than returning null, so
-        // fall back to the global rate. A hidden row is better than a wrong
-        // one, and the server still charges the truth either way.
-        try {
-          final subtotal =
-              items.fold<double>(0.0, (sum, i) => sum + i.lineTotal);
-          final quoted = await Supabase.instance.client
-              .rpc('platform_transaction_fee', params: {'p_amount': subtotal});
-          final v = (quoted as num?)?.toDouble();
-          if (v != null && v > 0) platformFee = v;
-        } catch (_) {}
-      }
+        accounts = await PaymentAccounts.load(widget.providerId);
+      } catch (_) {}
       // Skip the ID upload for buyers who already verified one at signup
       // (older accounts / re-installed app). Best-effort: on failure the
       // checkout keeps asking for the ID, which is always safe.
@@ -228,7 +185,8 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       if (mounted) {
         setState(() {
           _items = items;
-          _platformFee = platformFee;
+          _accounts = accounts;
+          _accountsLoading = false;
           _needsAvailabilityConfirmation = needsConfirmation;
           _loading = false;
         });
@@ -244,6 +202,14 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   }
 
   double get _total => _items.fold(0.0, (sum, i) => sum + i.lineTotal);
+
+  /// A seller with no saved account: same destination as the product page's
+  /// CONTACT SELLER — their public profile, where contact details and the
+  /// gallery live.
+  Future<void> _contactSeller() async {
+    if (!mounted) return;
+    await context.push('/user/provider/${widget.providerId}');
+  }
 
   Future<void> _pickScreenshot() async {
     // Downscaled like every other bucket upload in the app. payment-proofs
@@ -315,6 +281,23 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       if (!mounted) return;
       if (!_providerActivated || !_providerHasBalance) return;
     }
+
+    // No account saved → nowhere to send money, so the order would be paid
+    // into nothing. Re-read at submission (the provider may have just saved
+    // one on another device); only a KNOWN-empty list blocks — an unreadable
+    // read never does, because taking away the buyer's only way to pay on
+    // the strength of an error is the worse mistake. The card above already
+    // offers "Contact seller", and the guard repeats the sentence here for
+    // the buyer who scrolled past it.
+    final accounts = await PaymentAccounts.load(widget.providerId);
+    if (mounted) setState(() => _accounts = accounts);
+    if (accounts.readable && accounts.isEmpty) {
+      setState(() => _error =
+          'This seller has not saved a payment account yet. Contact the '
+          'seller to arrange payment before placing an order.');
+      return;
+    }
+
     setState(() {
       _submitting = true;
       _error = null;
@@ -550,29 +533,11 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                             fontWeight: FontWeight.w600)),
                                   ],
                                 ),
-                              ),
-                            const Divider(height: 20),
-                            if (_platformFee != null) ...[
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                      'Platform fee '
-                                      '(charged to provider)',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color: AppTheme.textMuted)),
-                                  Text(
-                                    '-${_platformFee!.toStringAsFixed(2)}',
-                                    style: const TextStyle(
-                                        fontSize: 12,
-                                        color: AppTheme.textMuted),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                            ],
+                              ),                            const Divider(height: 20),
+                            // No platform-fee row here on purpose: the fee is
+                            // charged to the provider, never the buyer, so
+                            // the buyer sees product price and (when there is
+                            // one) delivery — the total is what they pay.
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
@@ -692,7 +657,19 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                       if (_needsAvailabilityConfirmation) ...[
                         _AvailabilityNotice(),
                         const SizedBox(height: 20),
-                      ] else ...[
+                      ]                      else ...[
+                        // The provider's saved accounts — bank, Telebirr or
+                        // CBE Birr — with a copy button per value and the
+                        // instruction that matters: pay the provider, then
+                        // upload proof. When the provider has saved none the
+                        // same card says so and offers "Contact seller".
+                        PaymentAccountsCard(
+                          accounts: _accounts ?? PaymentAccounts.unreadable,
+                          providerName: _providerName,
+                          loading: _accountsLoading,
+                          onContactSeller: _contactSeller,
+                        ),
+                        const SizedBox(height: 16),
                         BirrTextField(
                           label: 'Payment Reference (optional)',
                           controller: _refCtrl,

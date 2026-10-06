@@ -4662,6 +4662,15 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
     their wallet the moment an admin set a category or city override.
 
     So this asserts the two agree, structurally.
+
+    UPDATE: the product rule is now that the BUYER is never quoted the
+    commission at all — it is charged to the provider, and the provider and
+    admin surfaces display it from the ledger, where there is nothing to
+    drift. "The checkout quotes no fee" is therefore a PASSING state, and
+    the checkout assertions below are gated on a quote existing at all. The
+    invariant is unchanged: a fee QUOTED to a human resolves exactly like
+    the charge. A reintroduced figure the buyer sees must satisfy every
+    assertion here or this check fires again.
     """
     problems: list[str] = []
 
@@ -4671,7 +4680,11 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
 
     code = _dart_without_comments(checkout)
 
-    if "platform_transaction_fee_for" not in code:
+    # A quote exists when the checkout names the RPC at all. No name → no
+    # figure the buyer can see → nothing here can drift.
+    quotes_commission = "platform_transaction_fee" in code
+
+    if quotes_commission and "platform_transaction_fee_for" not in code:
         problems.append(
             "the checkout quotes the commission through the one-argument "
             "platform_transaction_fee(), which resolves the GLOBAL rate, while "
@@ -4682,7 +4695,7 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
     # The flag matters as much as the arguments: the charge passes
     # `p_order_id IS NOT NULL`, so a quote that sends false quotes the wrong
     # rate class for an order.
-    if "p_is_product" not in code:
+    if quotes_commission and "p_is_product" not in code:
         problems.append(
             "the checkout's commission quote does not pass p_is_product, so it "
             "resolves the wrong rate class — deduct_transaction_fee() passes "

@@ -90,6 +90,12 @@ class ProviderReadiness {
       route: '/wallet/recharge',
       action: 'Top up your wallet',
     ),
+    'WALLET_BELOW_MINIMUM': (
+      phrase: 'your wallet is below the minimum balance the platform requires '
+          'before posting',
+      route: '/wallet/recharge',
+      action: 'Top up your wallet',
+    ),
     'SUBSCRIPTION_UNPAID': (
       phrase: 'your subscription is unpaid, so your account is suspended',
       route: '/provider/subscription',

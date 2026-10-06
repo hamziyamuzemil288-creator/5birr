@@ -219,6 +219,23 @@ void main() {
     });
   });
 
+  group('posting gate (document verification + wallet minimum)', () {
+    test('the gate enforces the admin minimum and the posting fee', () async {
+      // Migration 20261006000003 added WALLET_BELOW_MINIMUM to
+      // provider_fulfilment_blockers() and the optional posting-fee charge to
+      // create_provider_product(). The failure that matters is silent and
+      // total: if a later restatement drops either, providers can post with
+      // an unfunded wallet or the fee stops being charged and logged with
+      // nothing in the app noticing — the assertion reads the live function
+      // bodies, so it reports exactly which half came unstuck.
+      expect(await ok('assert_posting_gate_is_wired'), isTrue,
+          reason: 'provider_fulfilment_blockers() no longer enforces '
+              'posting_min_wallet_balance, or create_provider_product() no '
+              'longer charges/logs the optional posting_fee with its '
+              'idempotency key — the posting gate is half-wired.');
+    });
+  });
+
   group('PostgREST embeds are backed by real foreign keys', () {
     test('every relationship the app embeds resolves', () async {
       // supabase_flutter embeds with `select('a, child(b)')`, which PostgREST
