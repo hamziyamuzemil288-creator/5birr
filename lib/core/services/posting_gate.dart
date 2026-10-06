@@ -438,25 +438,43 @@ class PostingGate {
   /// [andContinue] runs after the prompt closes in the ready state; it is
   /// the navigation to the form, and passing it is what makes "auto-allowed"
   /// mean "already on the form" rather than "button turned green".
+  /// Re-entrancy guard for the singleton.
+  ///
+  /// [check] awaits several RPCs before the dialog is on screen, so a second
+  /// tap on the entry button during that gap starts a second [ensure] and
+  /// would stack a second checklist on the first — the double-tap edge case
+  /// the gate exists to absorb. One prompt at a time: while a gate is in
+  /// flight or its dialog is still open, further taps do nothing.
+  bool _ensuring = false;
+
   Future<bool> ensure(
     BuildContext context, {
     required String providerId,
     Future<void> Function()? andContinue,
   }) async {
-    final state = await check(providerId);
-    if (!context.mounted) return false;
-    if (state.ready) return true;
+    if (_ensuring) return false;
+    _ensuring = true;
+    try {
+      final state = await check(providerId);
+      if (!context.mounted) return false;
+      if (state.ready) return true;
 
-    final proceed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: true,
-      builder: (_) => PostingChecklistDialog(
-        providerId: providerId,
-        initial: state,
-        andContinue: andContinue,
-      ),
-    );
-    return proceed == true;
+      final proceed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: true,
+        builder: (_) => PostingChecklistDialog(
+          providerId: providerId,
+          initial: state,
+          andContinue: andContinue,
+        ),
+      );
+      return proceed == true;
+    } finally {
+      // Every exit path releases the guard — ready, blocked, dialog closed,
+      // or an unexpected throw — so one failed prompt can never wedge the
+      // button shut.
+      _ensuring = false;
+    }
   }
 }
 
