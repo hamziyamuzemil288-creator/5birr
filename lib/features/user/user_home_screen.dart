@@ -9,13 +9,16 @@ import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
 import '../../core/services/ride_service.dart';
-import '../../core/services/posting_gate.dart';
+// PART 2: import '../../core/services/posting_gate.dart'; — the posting gate
+// (verification + wallet) attaches to the header's "Post product" button in
+// part 2 via `_postingGateHook`, and its import returns with it.
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/product_card.dart';
 import '../../core/widgets/shimmer_effect.dart';
 import 'city_switcher_sheet.dart';
+import 'user_category_group_screen.dart';
 
 /// The user home:
 ///
@@ -349,6 +352,13 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// The verified badge beside a provider's name, read from the same view the
   /// provider profile's "Trust & Quality" pill reads, so the two screens can
   /// never disagree about who is verified.
+  ///
+  /// A failed read falls back to the whole rail, not to an empty set: every
+  /// row [ranked_providers] returns already carries
+  /// `provider_profiles.status = APPROVED`, and APPROVED is what "Verified"
+  /// means on the provider's own page. Hiding the badge because a secondary
+  /// view was unreadable would be the same class of lie as showing it for a
+  /// provider nobody approved — just in the other direction.
   Future<Set<String>> _resolveVerifiedProviders(
       List<Map<String, dynamic>> providers) async {
     final ids = providers
@@ -367,7 +377,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             (raw['provider_id'] as String),
       };
     } catch (_) {
-      return <String>{};
+      return ids.toSet();
     }
   }
 
@@ -940,8 +950,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _transportCategories.length,
                   childCategories: _transportCategories,
                   onTap: _transportCategories.isNotEmpty
-                      ? () => _openCategoryGroup(
-                          'transport', _transportCategories)
+                      ? () => _openCategoryGroup('transport')
                       : null,
                 ),
               ),
@@ -962,7 +971,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _shopCategories.length,
                   childCategories: _shopCategories,
                   onTap: _shopCategories.isNotEmpty
-                      ? () => _openCategoryGroup('shops', _shopCategories)
+                      ? () => _openCategoryGroup('shops')
                       : null,
                 ),
               ),
@@ -983,7 +992,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _serviceCategories.length,
                   childCategories: _serviceCategories,
                   onTap: _serviceCategories.isNotEmpty
-                      ? () => _openCategoryGroup('services', _serviceCategories)
+                      ? () => _openCategoryGroup('services')
                       : null,
                 ),
               ),
@@ -996,39 +1005,29 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   }
 
   /// Groups of categories mapped into the 3 big sections.
-  List<AppCategory> get _transportCategories {
-    return _categories.where((c) => c.sector == 'VEHICLE').toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-  }
+  ///
+  /// Delegated to [CategoryGroup] rather than re-filtered here: the card's
+  /// count and the screen it opens MUST be the same list, and the grouping
+  /// rule being written twice is exactly how they drift — the old copy of
+  /// this rule filed every vehicle in two groups at once.
+  List<AppCategory> get _transportCategories =>
+      CategoryGroup.transport.membersOf(_categories);
 
-  List<AppCategory> get _shopCategories {
-    return _categories
-        .where((c) =>
-            c.marketplaceSector == 'FOOD' ||
-            c.marketplaceSector == 'RETAIL' ||
-            c.marketplaceSector == 'OTHER')
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-  }
+  List<AppCategory> get _shopCategories =>
+      CategoryGroup.shops.membersOf(_categories);
 
-  List<AppCategory> get _serviceCategories {
-    return _categories
-        .where((c) =>
-            c.marketplaceSector == 'ACCOMMODATION' ||
-            c.marketplaceSector == 'SERVICES' ||
-            c.serviceGroup == 'BOOKING_BASED')
-        .toList()
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-  }
+  List<AppCategory> get _serviceCategories =>
+      CategoryGroup.services.membersOf(_categories);
 
   int _groupedCount(List<AppCategory> list) => list.length;
 
   /// A big category card opens its own screen: every sub-category of that
-  /// group, searchable, and nothing from any other group. The list is passed
-  /// along rather than re-queried so the screen is instant; the screen can
-  /// reload the same grouping itself when it is opened without one.
-  void _openCategoryGroup(String group, List<AppCategory> categories) {
-    context.push('/user/category-group/$group', extra: categories);
+  /// group, searchable, and nothing from any other group. The screen loads
+  /// the same grouping itself (one query) rather than being handed a list,
+  /// so a card can never push a stale copy of a list the admin has since
+  /// edited.
+  void _openCategoryGroup(String group) {
+    context.push('/user/category-group/$group');
   }
 
   // ------------------------------------------------------------- products
@@ -1079,7 +1078,13 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             crossAxisCount: 2,
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
-            childAspectRatio: 0.72,
+            // 0.66, not 0.72: the slot is tall enough that the image area
+            // comes out close to square, so a portrait product photo is
+            // cropped to a readable frame instead of a thin horizontal
+            // band — which is exactly what a "tiny cropped screenshot"
+            // looked like. Taller slot, same text block, so the card still
+            // cannot overflow.
+            childAspectRatio: 0.66,
           ),
           delegate: SliverChildBuilderDelegate(
             (_, i) => ProductCard(
@@ -1480,15 +1485,26 @@ class _PostProductButton extends StatelessWidget {
     }
 
     final providerId = profile['id'] as String;
-    // The gate itself: a verified + funded provider walks straight through
-    // to the form; anyone else gets the checklist with somewhere to go.
-    await PostingGate.instance.ensure(
-      context,
-      providerId: providerId,
-      andContinue: () async {
-        if (context.mounted) await context.push('/provider/products/new');
-      },
-    );
+    // PART 2 HOOK: the verification + wallet posting gate plugs in here.
+    // It lands in part 2 (checklist prompt, auto-recheck, backend rule), so
+    // for now this deliberately steps aside and the button opens the form.
+    // The server still has the final word: `create_provider_product` and
+    // the products trigger refuse a provider the fulfilment gate rejects,
+    // and the form turns that refusal into a sentence (see
+    // `showPublishBlockedDialog`).
+    final allowed = await _postingGateHook(context, providerId);
+    if (!allowed || !context.mounted) return;
+    await context.push('/provider/products/new');
+  }
+
+  /// The one place the part-2 posting gate attaches to this button.
+  ///
+  /// Returns true when the provider may open the add-product form. The body
+  /// is empty on purpose: `PostingGate.instance.ensure(...)` (already in
+  /// `lib/core/services/posting_gate.dart`) replaces the `return true` when
+  /// part 2 wires the checklist, and nothing else in this button changes.
+  Future<bool> _postingGateHook(BuildContext context, String providerId) async {
+    return true;
   }
 
   /// A signed-in user who is not (yet) a provider is offered the choice

@@ -2772,40 +2772,61 @@ def check_quick_action_shortcuts_are_wired() -> list[str]:
             if path.name != filename:
                 continue
             src = _strip_comments(_read(path))
-            if "QuickActionPill" not in src:
+            # The user home's shortcuts are equal-height CARDS now, not
+            # pills: the founder's layout puts "Book a ride" and "All
+            # providers" side by side right under the header, and the pill
+            # row that used to sit above them was the duplicate the redesign
+            # removed (spec: remove the duplicate pill buttons at the top).
+            # Both widgets carry the same contract -- a label and an onTap --
+            # so the assertion is about the contract, not the widget. A role
+            # screen that offers NEITHER is the dead-shortcut case this
+            # check exists for.
+            starts = []
+            for name in ("QuickActionPill(", "_QuickActionCard("):
+                for m in re.finditer(re.escape(name), src):
+                    # `const QuickActionCard({ ... })` is the widget's own
+                    # constructor declaration -- named arguments never open
+                    # with `{`, so that is the one shape to skip. Counting it
+                    # would ask a constructor for the label only a call has.
+                    if src[m.end():m.end() + 40].lstrip().startswith("{"):
+                        continue
+                    starts.append(m.start())
+            starts.sort()
+            blocks = []
+            for i, pos in enumerate(starts):
+                # From this call to the next shortcut (or a generous cap).
+                nxt = starts[i + 1] if i + 1 < len(starts) else -1
+                blocks.append(src[pos:nxt if nxt != -1 else pos + 600])
+            if not blocks:
                 problems.append(
-                    "%s (%s) offers no QuickActionPill shortcut" % (filename, role))
+                    "%s (%s) offers no quick-action shortcut: neither a "
+                    "QuickActionPill nor a _QuickActionCard" % (filename, role))
                 continue
             found = True
-            # The label and the target must be inside the PILL'S OWN call, not
-            # merely somewhere in the file. A file-level search is satisfied
-            # by the tab entry that the pill duplicates -- so a pill pointed at
-            # the wrong route reads green. Falsification caught exactly that.
+            # The label and the target must be inside the SHORTCUT'S OWN call,
+            # not merely somewhere in the file. A file-level search is
+            # satisfied by the tab entry that the shortcut duplicates -- so a
+            # pill pointed at the wrong route reads green. Falsification
+            # caught exactly that.
             #
             # NOTE the model here is "the role's shortcut exists", NOT "every
-            # pill on the screen is that shortcut". The user home screen now
+            # shortcut on the screen is that one". The user home screen
             # carries two -- "Book a ride" and the provider-gallery entry --
-            # and the previous version demanded that EVERY pill be labelled
+            # and an earlier version demanded that EVERY pill be labelled
             # "Book a ride", which punishes a screen for having a second,
             # legitimate shortcut. A check that fails on good work gets
             # disabled, so the assertion is narrowed to what it was for:
-            # the role's own pill must exist and point where it should, and
-            # every other pill must still resolve to a declared route.
-            blocks = []
-            for m in re.finditer(r"QuickActionPill\(", src):
-                # From this call to the next one (or a generous cap).
-                nxt = src.find("QuickActionPill(", m.end())
-                blocks.append(src[m.start():nxt if nxt != -1
-                                       else m.start() + 600])
+            # the role's own shortcut must exist and point where it should,
+            # and every other shortcut must still be labelled and live.
 
             canonical = [b for b in blocks
                          if label in b and target in b]
             if not canonical:
                 problems.append(
-                    "%s (%s): no QuickActionPill is labelled %r AND pushes %s. "
-                    "Found pills labelled/pushing: %r"
+                    "%s (%s): no quick-action shortcut is labelled %r AND "
+                    "pushes %s. Found shortcuts labelled/pushing: %r"
                     % (filename, role, label, target,
-                       [(re.findall(r"label:\s*'([^']*)'", b),
+                       [(re.findall(r"(?:label|title):\s*'([^']*)'", b),
                          re.findall(r"context\.(?:push|go)\('([^']*)'\)", b))
                         for b in blocks]))
 
@@ -2834,15 +2855,18 @@ def check_quick_action_shortcuts_are_wired() -> list[str]:
             # is check_routes_resolve's job; asserting it here produced two
             # false positives on correct code.
             for b in blocks:
-                labels = re.findall(r"label:\s*'([^']*)'", b)
+                # `title:` is how _QuickActionCard names its label; every
+                # other shortcut in the app uses `label:`. Both must be
+                # non-empty or the tile is a blank green box.
+                labels = re.findall(r"(?:label|title):\s*'([^']*)'", b)
                 if not labels or not labels[0].strip():
                     problems.append(
-                        "%s: a QuickActionPill has no label, so it renders as "
-                        "an unlabelled green box" % filename)
+                        "%s: a quick-action shortcut has no label, so it "
+                        "renders as an unlabelled green box" % filename)
                 if "onTap" not in b:
                     problems.append(
-                        "%s: a QuickActionPill has no onTap, so it is a dead "
-                        "shortcut" % filename)
+                        "%s: a quick-action shortcut has no onTap, so it is "
+                        "a dead shortcut" % filename)
             if re.search(r"if\s*\(\s*(false|0|null)\s*\)", src, re.IGNORECASE):
                 problems.append(
                     "%s contains a constant-false guard, which disables a tile "

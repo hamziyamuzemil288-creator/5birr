@@ -7,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/provider_readiness.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
+import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
@@ -43,6 +44,15 @@ class _State extends State<ProviderProductFormScreen> {
   String _unit = 'KG'; // 'KG' | 'LTR'
   String? _categoryId;
   bool _isAvailable = true;
+
+  /// Where this listing is based. Null means "all cities", which is both
+  /// the default for a new listing and the honest answer for a provider who
+  /// does not care: `products.city` is nullable and the home feed's own
+  /// query treats null as "show it in every city", so an unset city can
+  /// never hide a listing from Fresh Finds. Chosen from the same list the
+  /// city picker uses, so the value written here and the value the feed
+  /// filters on cannot drift.
+  String? _city;
 
   /// Whether a buyer must wait for this provider to confirm availability
   /// before payment details are shown. Persisted on
@@ -146,6 +156,7 @@ class _State extends State<ProviderProductFormScreen> {
         _qtyCtrl.text = '${prod['quantity'] ?? ''}';
         _categoryId = prod['category_id'];
         _isAvailable = prod['is_available'] ?? true;
+        _city = prod['city'] as String?;
         _requiresAvailabilityConfirmation =
             prod['requires_availability_confirmation'] ?? false;
         final unit = prod['unit'] as String?;
@@ -359,6 +370,7 @@ class _State extends State<ProviderProductFormScreen> {
       try {
         await client.from('products').update({
           'requires_availability_confirmation': _requiresAvailabilityConfirmation,
+          'city': _city,
         }).eq('id', productId);
       } catch (_) {
         gateSaved = false;
@@ -398,11 +410,13 @@ class _State extends State<ProviderProductFormScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(
             !gateSaved
-                // The listing saved; only the new switch did not. Saying
-                // "Product updated" here would leave a provider believing
-                // buyers must confirm availability when they do not have to.
-                ? 'Listing saved, but the "Confirm before payment" switch could '
-                    'not be saved. Try again in a moment.'
+                // The listing saved; only the optional settings did not.
+                // Saying "Product updated" here would leave a provider
+                // believing buyers must confirm availability — or that the
+                // city they chose — was saved when it was not.
+                ? 'Listing saved, but the optional settings (city, "Confirm '
+                    'before payment") could not be saved. Try again in a '
+                    'moment.'
                 : (_isEdit ? 'Product updated' : 'Product created'),
           ),
           backgroundColor: gateSaved ? null : AppTheme.warning,
@@ -547,6 +561,27 @@ class _State extends State<ProviderProductFormScreen> {
                               child: Text(c['name'] ?? '')))
                           .toList(),
                       onChanged: (v) => setState(() => _categoryId = v),
+                    ),
+                    const SizedBox(height: 16),
+                    // City: which market this listing belongs to. "All
+                    // cities" (empty) is offered first and stays the default
+                    // for a new listing, because a null city is what the
+                    // feed already treats as "visible everywhere".
+                    DropdownButtonFormField<String>(
+                      initialValue: _city,
+                      decoration: const InputDecoration(
+                        labelText: 'City',
+                        helperText:
+                            'Where this listing is based — or all cities',
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                            value: null, child: Text('All cities')),
+                        ...CityService.knownCities.map((c) =>
+                            DropdownMenuItem<String>(
+                                value: c, child: Text(c))),
+                      ],
+                      onChanged: (v) => setState(() => _city = v),
                     ),
                     const SizedBox(height: 16),
                     // Listing GPS capture row

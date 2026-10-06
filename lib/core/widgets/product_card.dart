@@ -19,14 +19,33 @@ class ProductCard extends StatelessWidget {
     this.imageUrl,
   });
 
+  /// The photo a card leads with: the listing's primary image — the row
+  /// with the lowest `sort_order`, which is what the upload path writes
+  /// first — never whatever the storage layer happened to return first.
+  ///
+  /// This is what made Fresh Finds look broken: `images.first` was raw row
+  /// order, so a card could show a secondary screenshot, or a thin band of
+  /// one, instead of the photo the provider actually picked. `product_images`
+  /// has no `is_primary` column, so sort order is the only truth there is.
+  ListingImage? get _cover {
+    final images = product.images;
+    if (images.isEmpty) return null;
+    final sorted = [...images]
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    return sorted.first;
+  }
+
   @override
   Widget build(BuildContext context) {
     final img = imageUrl ??
-        (product.images.isNotEmpty
-            ? Supabase.instance.client.storage
-                .from('product-images')
-                .getPublicUrl(product.images.first.storagePath)
-            : null);
+        (() {
+          final cover = _cover;
+          return cover == null
+              ? null
+              : Supabase.instance.client.storage
+                  .from('product-images')
+                  .getPublicUrl(cover.storagePath);
+        })();
 
     return GestureDetector(
       onTap: onTap,
@@ -63,14 +82,25 @@ class ProductCard extends StatelessWidget {
                     ? ClipRRect(
                         borderRadius: const BorderRadius.vertical(
                             top: Radius.circular(12)),
-                        child: CachedNetworkImage(
-                          imageUrl: img,
-                          fit: BoxFit.cover,
-                          placeholder: (_, __) => const Center(
-                              child: CircularProgressIndicator(strokeWidth: 2)),
-                          errorWidget: (_, __, ___) => const Center(
-                            child: Icon(Icons.image_outlined,
-                                color: AppTheme.textMuted, size: 40),
+                        // Full-bleed cover: the frame is the whole image
+                        // area of the card, so a portrait photo is centred
+                        // and cropped by the frame rather than floating at
+                        // its intrinsic size inside it.
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: double.infinity,
+                          child: CachedNetworkImage(
+                            imageUrl: img,
+                            fit: BoxFit.cover,
+                            alignment: Alignment.center,
+                            filterQuality: FilterQuality.medium,
+                            placeholder: (_, __) => const Center(
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2)),
+                            errorWidget: (_, __, ___) => const Center(
+                              child: Icon(Icons.image_outlined,
+                                  color: AppTheme.textMuted, size: 40),
+                            ),
                           ),
                         ),
                       )

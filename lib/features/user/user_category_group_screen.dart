@@ -33,21 +33,40 @@ enum CategoryGroup {
   }
 
   /// Every top-level category in this group, in the order Home shows them.
+  ///
+  /// The three groups are EXCLUSIVE and ordered by specificity — transport,
+  /// then shops, then services takes what is left — because a big card is a
+  /// promise about what is behind it:
+  ///
+  /// * Every VEHICLE row (and any row tagged `TRANSPORT`) is a ride, even
+  ///   though migration 20260923000004 tagged every VEHICLE row
+  ///   `BOOKING_BASED`. Under a naive `service_group` check a taxi landed in
+  ///   BOTH Transport and Services, which double-counted the card and
+  ///   rendered the same category twice from two different screens.
+  /// * FOOD / RETAIL / OTHER is a shop, whatever its booking flag says.
+  /// * Everything else is Services & Booking — including a category an
+  ///   admin seeded with no marketplace sector at all. Dropping it would
+  ///   make it the one category in the app that exists nowhere, and
+  ///   invisible is worse than imperfectly filed.
   List<AppCategory> membersOf(List<AppCategory> all) {
-    final list = all.where((c) => switch (this) {
-          CategoryGroup.transport => c.sector == 'VEHICLE',
-          CategoryGroup.shops =>
-            c.marketplaceSector == 'FOOD' ||
-                c.marketplaceSector == 'RETAIL' ||
-                c.marketplaceSector == 'OTHER',
-          CategoryGroup.services =>
-            c.marketplaceSector == 'ACCOMMODATION' ||
-                c.marketplaceSector == 'SERVICES' ||
-                c.serviceGroup == 'BOOKING_BASED',
-        }).toList()
+    final list = all.where(_owns).toList()
       ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
     return list;
   }
+
+  bool _owns(AppCategory c) {
+    if (_isTransport(c)) return this == CategoryGroup.transport;
+    if (_isShop(c)) return this == CategoryGroup.shops;
+    return this == CategoryGroup.services;
+  }
+
+  static bool _isTransport(AppCategory c) =>
+      c.sector == 'VEHICLE' || c.marketplaceSector == 'TRANSPORT';
+
+  static bool _isShop(AppCategory c) =>
+      c.marketplaceSector == 'FOOD' ||
+      c.marketplaceSector == 'RETAIL' ||
+      c.marketplaceSector == 'OTHER';
 }
 
 /// One of the three big categories, opened from Home: its sub-categories
