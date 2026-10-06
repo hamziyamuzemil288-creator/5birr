@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/models/provider_gallery.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
 import '../../core/services/review_service.dart';
@@ -82,7 +83,13 @@ class _State extends State<UserProviderDetailScreen> {
       try {
         gallery = List<Map<String, dynamic>>.from(await client
                 .from('provider_gallery')
-                .select('id, storage_path, caption, display_order')
+                // `price` is listed explicitly because this query names its
+                // columns rather than selecting `*` -- which is exactly how
+                // migration 0137 caught a gallery query reading columns that
+                // do not exist. A per-photo price nobody selects is a price
+                // nobody can see, so it is added here in the same change that
+                // creates the column.
+                .select('id, storage_path, caption, display_order, price')
                 .eq('provider_id', widget.providerId)
                 .eq('is_active', true)
                 .order('display_order') as List);
@@ -411,7 +418,8 @@ class _State extends State<UserProviderDetailScreen> {
     // The provider's own gallery, first. `provider-gallery` is a public bucket,
     // so `getPublicUrl` is right and `PhotoGridItem.url` avoids the per-tile
     // createSignedUrl round trip that `stored` would otherwise cost.
-    final galleryPhotos = <({String? id, String url, String? caption})>[];
+    final galleryPhotos =
+        <({String? id, String url, String? caption, double? price})>[];
     for (final g in _gallery) {
       final path = g['storage_path'] as String?;
       if (path == null || path.isEmpty) continue;
@@ -421,6 +429,7 @@ class _State extends State<UserProviderDetailScreen> {
             .from('provider-gallery')
             .getPublicUrl(path),
         caption: g['caption'] as String?,
+        price: (g['price'] as num?)?.toDouble(),
       ));
     }
 
@@ -647,7 +656,38 @@ class _State extends State<UserProviderDetailScreen> {
                     for (final g in galleryPhotos)
                       PhotoGridItem.url(
                         g.url,
-                        onTap: () => _openPhoto(context, g.url, g.caption),
+                        onTap: () =>
+                            _openPhoto(context, g.url, g.caption, g.price),
+                        // What the photo costs, on the tile rather than only in
+                        // the viewer. The number is the reason a customer
+                        // picks this photo over the next one, and hiding it
+                        // behind a tap is the same as not having it.
+                        //
+                        // Nothing at all when the provider has not priced this
+                        // photo -- null means "no price", not "free", so a
+                        // chip reading "0 ETB" would be a claim they never
+                        // made. See ProviderGalleryImage.priceLabel.
+                        overlay: g.price == null
+                            ? null
+                            : Align(
+                                alignment: Alignment.bottomLeft,
+                                child: Container(
+                                  margin: const EdgeInsets.all(4),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.6),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    '${ProviderGalleryImage.formatPrice(g.price!)} ETB',
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                              ),
                       ),
                   ],
                 ),
@@ -799,7 +839,8 @@ class _State extends State<UserProviderDetailScreen> {
   /// A grid tile the size of a thumb is not enough to judge whether a photograph
   /// is of this provider's actual work, which is the entire reason the gallery
   /// exists.
-  void _openPhoto(BuildContext context, String url, String? caption) {
+  void _openPhoto(
+      BuildContext context, String url, String? caption, double? price) {
     showDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
@@ -823,6 +864,17 @@ class _State extends State<UserProviderDetailScreen> {
               Text((caption ?? '').trim(),
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ],
+            // The full-size view is where a customer is looking hardest, so
+            // the price is here as well as on the tile.
+            if (price != null) ...[
+              const SizedBox(height: 8),
+              Text('${ProviderGalleryImage.formatPrice(price)} ETB',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700)),
             ],
             const SizedBox(height: 6),
             IconButton(

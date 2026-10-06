@@ -191,6 +191,82 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
     }
   }
 
+  /// Set or clear the price on one photo.
+  ///
+  /// A price belongs to the PHOTO, not to the shop, because a provider's six
+  /// photos are six different services with six different prices -- and the
+  /// number is what a customer decides on before they call. Business Profile
+  /// still carries the shop-wide `price_range` headline; this is the specific
+  /// answer, and until this existed the gallery had no price at all.
+  ///
+  /// Empty is a real answer: it clears the price and the tile goes back to
+  /// showing no number. Cancel is the ABSENCE of an answer, which is why the
+  /// dialog returns null for one and '' for the other instead of collapsing
+  /// both into "nothing was typed".
+  Future<void> _setPrice(ProviderGalleryImage image) async {
+    final controller = TextEditingController(
+      text: image.price == null
+          ? ''
+          : ProviderGalleryImage.formatPrice(image.price!),
+    );
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Price for this photo'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            labelText: 'Price (ETB)',
+            helperText: 'Leave empty to show this photo without a price.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    // Disposed as soon as the dialog is gone, so the controller never outlives
+    // the field it was bound to -- the same shape
+    // AdminContentControlScreen._askReason uses.
+    controller.dispose();
+    if (raw == null || !mounted) return;
+
+    double? price;
+    if (raw.isNotEmpty) {
+      price = double.tryParse(raw);
+      if (price == null || price < 0) {
+        _toast('Enter a price as a number, for example 250.');
+        return;
+      }
+    }
+
+    try {
+      await _client.rpc('set_gallery_image_price', params: {
+        'p_image_id': image.id,
+        'p_price': price,
+      });
+      await _load();
+      if (mounted) {
+        _toast(price == null
+            ? 'Price removed from that photo.'
+            : 'Price set to ${ProviderGalleryImage.formatPrice(price)} ETB.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _toast(friendlyError(e, context: 'Could not save that price'));
+      }
+    }
+  }
+
   void _toast(String m) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
@@ -248,6 +324,7 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
                                   onDelete: () => _delete(img),
                                   onTogglePublic: () =>
                                       _setPublic(img, !img.isPublic),
+                                  onPrice: () => _setPrice(img),
                                 ),
                               ),
                           ],
@@ -258,44 +335,87 @@ class _ProviderGalleryScreenState extends State<ProviderGalleryScreen> {
   }
 }
 
-/// The two controls on each tile: publish state, and remove.
+/// The three controls on each tile: price, publish state, and remove.
 ///
 /// A single "X" scrim used to be the only affordance, so a provider had no way
 /// to express "this photo is not one I offer" without deleting it -- and
 /// deletion here is the row, which cannot be undone. Two distinct buttons, and
 /// the eye is on the left so it is the easier one to hit by accident of
 /// thumb rather than the destructive one.
+///
+/// The price button joins them for the same reason the eye is there: setting
+/// what a photo costs had no control anywhere in the app, so the only price a
+/// customer could ever read was the shop-wide range on Business Profile. It
+/// sits between the eye and the X -- it is neither a visibility change nor
+/// destructive, so it is not painted like either.
 class _TileOverlay extends StatelessWidget {
   const _TileOverlay({
     required this.img,
     required this.onDelete,
     required this.onTogglePublic,
+    required this.onPrice,
   });
 
   final ProviderGalleryImage img;
   final VoidCallback onDelete;
   final VoidCallback onTogglePublic;
+  final VoidCallback onPrice;
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.topLeft,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _scrim(
-            icon: img.isPublic ? Icons.visibility : Icons.visibility_off,
-            tooltip: img.isPublic ? 'Hide this photo' : 'Publish this photo',
-            onTap: onTogglePublic,
+    return Stack(
+      children: [
+        Align(
+          alignment: Alignment.topLeft,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _scrim(
+                icon: img.isPublic ? Icons.visibility : Icons.visibility_off,
+                tooltip: img.isPublic ? 'Hide this photo' : 'Publish this photo',
+                onTap: onTogglePublic,
+              ),
+              const SizedBox(width: 4),
+              _scrim(
+                icon: Icons.sell_outlined,
+                tooltip: img.priceLabel == null
+                    ? 'Add a price to this photo'
+                    : 'Change the price on this photo',
+                onTap: onPrice,
+              ),
+              const SizedBox(width: 4),
+              _scrim(
+                icon: Icons.close,
+                tooltip: 'Remove this photo',
+                onTap: onDelete,
+              ),
+            ],
           ),
-          const SizedBox(width: 4),
-          _scrim(
-            icon: Icons.close,
-            tooltip: 'Remove this photo',
-            onTap: onDelete,
+        ),
+        // The number itself, so a price is legible on the grid and not only
+        // inside the editor. Shown only when set: a chip reading "0 ETB" on a
+        // photo nobody priced would be a claim the provider never made.
+        if (img.priceLabel != null)
+          Align(
+            alignment: Alignment.bottomLeft,
+            child: Container(
+              margin: const EdgeInsets.all(4),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                img.priceLabel!,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700),
+              ),
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
