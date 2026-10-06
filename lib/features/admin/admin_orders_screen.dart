@@ -6,7 +6,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/utils/order_number_format.dart' as onf;
 import '../../core/widgets/load_error_view.dart';
-import '../user/user_order_detail_screen.dart show orderStatusColor;
+import '../user/user_order_detail_screen.dart' show orderStatusColor;
 
 /// Every order on the platform, newest first.
 ///
@@ -237,12 +237,13 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
 
   /// Short order label: the same first-eight-of-id reference everywhere.
   String onfRef(Map<String, dynamic> o) {
-    final raw = o['order_number'] as String?;
-    if (raw != null && raw.isNotEmpty) {
-      return onf.formatOrderNumber(raw);
-    }
     final id = o['id'] as String? ?? '';
-    return id.isEmpty ? 'Order' : '#${id.substring(0, 8).toUpperCase()}';
+    final short = id.length >= 8
+        ? '#${id.substring(0, 8).toUpperCase()}'
+        : 'Order';
+    final raw = o['order_number'] as String?;
+    if (raw == null || raw.isEmpty) return short;
+    return onf.formatOrderNumber(raw) ?? short;
   }
 
   /// The buyer's payment reference, parsed out of the creation note in

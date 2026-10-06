@@ -110,11 +110,13 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
             // recorded as applied WITHOUT being executed and the column does
             // not exist -- selecting it made this whole screen fail with
             // 42703. The label below already falls back to the short id.
-            // `note` carries the buyer's payment reference (composed at
-            // checkout as "Payment ref: ..."), which is half of what this
-            // screen exists to verify; the screenshot is the other half.
+            // The buyer's payment reference lives in order_status_history's
+            // creation note (orders has NO note column — p_note is written to
+            // the history row by create_order_secure), so the note travels
+            // as an embed and is parsed out in _paymentRef below.
             'id, status, total_amount, currency, created_at, '
-            'user_id, provider_id, note, '
+            'user_id, provider_id, '
+            'order_status_history(note, created_at), '
             'payment_proofs(id, storage_path, verification_status, created_at), '
             'provider_profiles!inner(business_name, profiles(full_name, phone))'
           ).eq('status', 'PAYMENT_VERIFICATION');
@@ -304,20 +306,35 @@ class _AdminOrderPaymentsScreenState extends State<AdminOrderPaymentsScreen> {
 
   /// The buyer's payment reference, as typed at checkout.
   ///
-  /// Checkout composes `orders.note` from parts ("Fulfillment: ...",
-  /// "Delivery: ...", "Payment ref: TXN-123") joined by " | ", so the
-  /// reference is parsed out rather than shown raw — the note also carries
-  /// the delivery mode and address, and neither belongs on a
+  /// Checkout composes the note from parts ("Fulfillment: ...", "Delivery:
+  /// ...", "Payment ref: TXN-123") joined by " | ", and create_order_secure
+  /// writes that note to the order's CREATION row in order_status_history —
+  /// orders itself has no note column. So the reference is parsed out of the
+  /// earliest history note rather than from the order row; the note also
+  /// carries the delivery mode and address, and neither belongs on a
   /// payment-verification card. Null when the buyer left it blank, which is
   /// legitimate (the field is optional) and must not render an empty row.
   String? _paymentRef(Map<String, dynamic> order) {
-    final note = order['note'] as String?;
-    if (note == null || note.trim().isEmpty) return null;
-    for (final part in note.split('|')) {
-      final match = RegExp(r'Payment ref:\s*(.+)', caseSensitive: false)
-          .firstMatch(part.trim());
-      final ref = match?.group(1)?.trim();
-      if (ref != null && ref.isNotEmpty) return ref;
+    final raw = order['order_status_history'];
+    final history = raw is List
+        ? raw.whereType<Map<String, dynamic>>().toList()
+        : raw is Map<String, dynamic>
+            ? [raw]
+            : const <Map<String, dynamic>>[];
+    history.sort((a, b) {
+      final ta = a['created_at'] as String? ?? '';
+      final tb = b['created_at'] as String? ?? '';
+      return ta.compareTo(tb);
+    });
+    for (final row in history) {
+      final note = row['note'] as String?;
+      if (note == null || note.trim().isEmpty) continue;
+      for (final part in note.split('|')) {
+        final match = RegExp(r'Payment ref:\s*(.+)', caseSensitive: false)
+            .firstMatch(part.trim());
+        final ref = match?.group(1)?.trim();
+        if (ref != null && ref.isNotEmpty) return ref;
+      }
     }
     return null;
   }
