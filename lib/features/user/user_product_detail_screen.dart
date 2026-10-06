@@ -9,6 +9,7 @@ import '../../core/services/cart_service.dart';
 import '../../core/services/product_like_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
+import '../../core/widgets/payment_accounts_card.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/product_engagement.dart';
@@ -33,6 +34,11 @@ class _State extends ConsumerState<UserProductDetailScreen> {
   // Unit-priced items (per kg / liter) are bought in decimal amounts.
   final _qtyCtrl = TextEditingController();
 
+  /// Where the buyer would pay, read once with the product. [null] while the
+  /// read is in flight; after that it is either a list (possibly empty — the
+  /// provider really has not saved an account) or unreadable.
+  PaymentAccounts? _accounts;
+
   @override
   void dispose() {
     _qtyCtrl.dispose();
@@ -54,6 +60,13 @@ class _State extends ConsumerState<UserProductDetailScreen> {
           .single();
       final fav = await FavoritesService.instance
           .isFavorited('PRODUCT', widget.productId);
+      // Where to pay. Best-effort on purpose: the card must never be the
+      // reason this screen fails to load.
+      final providerId = (data['provider_profiles'] as Map?)?['id'] as String?;
+      PaymentAccounts accounts = PaymentAccounts.unreadable;
+      if (providerId != null) {
+        accounts = await PaymentAccounts.load(providerId);
+      }
       List<Map<String, dynamic>> reviews = [];
       try {
         reviews =
@@ -63,6 +76,7 @@ class _State extends ConsumerState<UserProductDetailScreen> {
         setState(() {
           _product = data;
           _fav = fav;
+          _accounts = accounts;
           _reviews = reviews;
           _loading = false;
           _error = null;
@@ -276,6 +290,20 @@ class _State extends ConsumerState<UserProductDetailScreen> {
                         ],
                       ),
                     ),
+                  // Where the money goes, before anything asks for it.
+                  // Shown only when the read answered: an unreadable read
+                  // must never look like "this seller has no account".
+                  if (_accounts?.readable == true) ...[
+                    PaymentAccountsCard(
+                      accounts: _accounts!,
+                      providerName: provider?['business_name'] as String?,
+                      onContactSeller: _accounts!.isEmpty &&
+                              provider != null
+                          ? () => context.push('/user/provider/${provider!['id']}')
+                          : null,
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   const SizedBox(height: 16),
                   if (p['description'] != null) ...[
                     const Text('Description',
@@ -310,24 +338,58 @@ class _State extends ConsumerState<UserProductDetailScreen> {
         child: SafeArea(
           child: Row(
             children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _adding ? null : _addToCart,
-                  child: const Text('ADD TO CART'),
+              if (_canBuy) ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _adding ? null : _addToCart,
+                    child: const Text('ADD TO CART'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _adding ? null : _buyNow,
-                  child: Text(_adding ? 'PLEASE WAIT…' : 'BUY NOW'),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _adding ? null : _buyNow,
+                    child: Text(_adding ? 'PLEASE WAIT…' : 'BUY NOW'),
+                  ),
                 ),
-              ),
+              ] else
+                // The seller has no account to pay into. Direct purchase is
+                // blocked rather than allowed to fail at the payment step;
+                // the only honest action left is to talk to them first.
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _contactSeller,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppTheme.primaryGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    icon: const Icon(Icons.forum_outlined, size: 18),
+                    label: const Text('CONTACT SELLER'),
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// Direct purchase is only blocked when we KNOW the seller has nowhere
+  /// to be paid. An unreadable read leaves the buttons alone — taking away
+  /// the buyer's way to pay because a query failed is the worse mistake.
+  bool get _canBuy {
+    final accounts = _accounts;
+    if (accounts == null || !accounts.readable) return true;
+    return accounts.canPay;
+  }
+
+  /// A seller with no saved account: the product page routes to their
+  /// profile, which is where their contact details and gallery live.
+  Future<void> _contactSeller() async {
+    final providerId = ((_product?['provider_profiles']
+        as Map<String, dynamic>?)?['id']) as String?;
+    if (providerId == null || !mounted) return;
+    await context.push('/user/provider/$providerId');
   }
 
   Widget _reviewsSection() {

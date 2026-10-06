@@ -4,45 +4,53 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/models/category.dart';
-import '../../core/models/category_tabs.dart';
 import '../../core/models/product.dart';
 import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
 import '../../core/services/ride_service.dart';
+import '../../core/services/posting_gate.dart';
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
-import '../../core/widgets/async_view.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/product_card.dart';
-import '../../core/widgets/quick_action_pill.dart';
 import '../../core/widgets/shimmer_effect.dart';
 import 'city_switcher_sheet.dart';
 
-/// The user home, rebuilt to the founder's sketch:
+/// The user home:
 ///
 /// ```text
-///   [city]  All-in-One Business Center        [bell] [cart] [search]
-///   All | Booking | Vehicles | Shops
-///   <filtered content>
+///   [city] [+ Post product]           [bell] [search] [cart]
+///   All-in-One Business Center
+///   [ Book a ride ] [ All providers ]
+///   [ Transport & Rides ]
+///   [ Shops & Products  ]
+///   [ Services & Booking]
+///   Trending providers  (image, name + verified badge below the card)
+///   Fresh Finds         (product grid)
 /// ```
 ///
-/// ## Why the tabs are derived, not a Dart list
+/// ## Why there is no tab row and no category grid here any more
 ///
-/// The founder's sketch names the tabs; it does not say what fills them. If
-/// the mapping lives here as a hardcoded list it goes stale the first time
-/// someone seeds a category from the admin panel, and the new category is
-/// invisible. So the tab set, the contents of each tab, and the per-tab empty
-/// copy are all computed from the `categories` rows at load time — see
-/// `category_tabs.dart` for the column-level mapping and its test.
+/// The screen used to carry four tabs, a sub-tab rail and a 3-up grid of
+/// category cards, and every one of those was a second copy of navigation
+/// that already existed: the same categories, spread across a rail, a chip
+/// row and a grid, none of which agreed about which one was current. The
+/// cards also had two rendering bugs of their own — labels shrunk to nothing
+/// by a FittedBox, and empty-named tiles that rendered as a bare number.
+///
+/// Now the three big cards are the only category navigation on Home, and
+/// each opens its OWN screen (`/user/category-group/:group`) where that
+/// group's sub-categories are listed with a search bar. Nothing was
+/// deleted from the product: every category is still one tap away, and
+/// `/user/category/:id` still resolves a category and its listings.
 ///
 /// ## What did not change
 ///
-/// Queries, routes and the screens behind the tiles are all the existing ones.
-/// `/user/category/:id` still resolves a category and its listings, so the
-/// tiles here are pure navigation. The only behavioural change is the removal
-/// of the Shop/Ride two-segment toggle: the sketch's tab row replaces it, and
-/// keeping both would have been two controls for one decision.
+/// The feed queries, the routes and the screens behind the tiles are all the
+/// existing ones. Header actions (notifications, search, cart) keep their
+/// routes; the ride request screen is reached from the "Book a ride" card
+/// and from Profile.
 class UserHomeScreen extends ConsumerStatefulWidget {
   const UserHomeScreen({super.key});
 
@@ -51,17 +59,18 @@ class UserHomeScreen extends ConsumerStatefulWidget {
 }
 
 class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
-  HomeTab _tab = HomeTab.all;
-
-  // Sub-tab: which category within the active tab is selected, or null for
-  // "show them all". The sketch's sub-tab row ("Hotels, Beauty, Events") is
-  // exactly this, so it is a horizontal rail of the active tab's categories.
-  String? _subCategoryId;
-
   List<AppCategory> _categories = const [];
-  List<AppCategory> _children = const [];
   List<Product> _products = const [];
   Map<String, dynamic>? _activeRide;
+
+  /// One image per trending provider, resolved on the server round trip so a
+  /// tile never has to run its own query. Priority is the provider's trending
+  /// (best-selling) product photo, then their first gallery photo, then the
+  /// profile photo, then the placeholder — see [_resolveProviderImage].
+  Map<String, String> _providerImages = const {};
+
+  /// Who carries the verified badge beside their name on the rail.
+  Set<String> _verifiedProviders = const {};
 
   /// Approved providers, for the gallery section. Read from
   /// `public_provider_profiles`, which already filters to `APPROVED` and is
@@ -103,10 +112,13 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       if (!mounted) return;
       setState(() {
         _categories = data['categories'] as List<AppCategory>;
-        _children = data['children'] as List<AppCategory>;
         _products = data['products'] as List<Product>;
         _activeRide = data['activeRide'] as Map<String, dynamic>?;
         _galleryProviders = data['providers'] as List<Map<String, dynamic>>;
+        _providerImages =
+            Map<String, String>.from(data['providerImages'] as Map);
+        _verifiedProviders =
+            Set<String>.from(data['verified'] as Set);
         _loading = false;
         _error = null;
         // Who liked what. A grid of cards must cost one query, not one per
@@ -114,10 +126,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         // row -- reading it is what stops a tap on an already-liked product
         // from toggling the server's row off.
         _hydrateReactions(_products);
-        // If the selected tab or sub-tab vanished (category deactivated, or
-        // the deployment's data no longer fills it), fall back rather than
-        // showing a tab with nothing in it.
-        _reconcileSelection();
       });
     } on AppFailure catch (e) {
       if (!mounted) return;
@@ -179,22 +187,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       _categoriesFetchedAt = DateTime.now();
     }
 
-    // 2. Their children, in one query rather than N. The old screen never
-    //    needed these; the sub-tab rail does.
-    final children = <AppCategory>[];
-    if (categories.isNotEmpty) {
-      final childData = await client
-          .from('categories')
-          .select()
-          .inFilter('parent_id', categories.map((c) => c.id).toList())
-          .eq('is_active', true)
-          .order('sort_order')
-          .limit(200);
-      children.addAll(
-          (childData as List).map((j) => AppCategory.fromJson(j)));
-    }
-
-    // 3. The ranked city-scoped product rail.
+    // 2. The ranked city-scoped product rail.
     final prodData = await client
         .from('products')
         .select('*, product_images(*)')
@@ -204,7 +197,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         .order('created_at', ascending: false)
         .limit(20);
 
-    // 4. Active ride, best-effort. A failed lookup here must not take the
+    // 3. Active ride, best-effort. A failed lookup here must not take the
     //    whole feed down — the feed is still useful without the banner.
     Map<String, dynamic>? activeRide;
     try {
@@ -213,9 +206,9 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       activeRide = null;
     }
 
-    // 5. Approved providers for the gallery section, best-effort for the same
+    // 4. Approved providers for the trending rail, best-effort for the same
     //    reason as the ride banner. Bounded (12) because this is a rail, not
-    //    a directory — the full list is behind the "All providers" pill.
+    //    a directory — the full list is behind the "All providers" card.
     List<Map<String, dynamic>> providers = const [];
     try {
       // Ranked by completed transactions, not by who signed up last. Read
@@ -230,13 +223,152 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       // No gallery section. The feed below it is unaffected.
     }
 
+    // 5. What each trending provider looks like, and whether they carry the
+    //    verified badge. Three bounded reads, each best-effort: a rail with no
+    //    photos still beats a rail that fails to render.
+    final imageMaps = await _resolveProviderImages(providers);
+    final verified = await _resolveVerifiedProviders(providers);
+
     return {
       'categories': categories,
-      'children': children,
       'products': _toProducts(prodData as List),
       'activeRide': activeRide,
       'providers': providers,
+      'providerImages': imageMaps,
+      'verified': verified,
     };
+  }
+
+  /// One image per provider, in the priority the spec asks for:
+  ///
+  /// 1. the trending product's photo (the listing that made them trend),
+  /// 2. their first uploaded gallery photo,
+  /// 3. their profile photo,
+  /// 4. nothing, so the tile falls back to the placeholder.
+  ///
+  /// Three batched reads rather than one per tile: a rail of 12 providers
+  /// would otherwise be 24 round trips on the app's first screen. Every read
+  /// is best-effort and the empty map is a legal answer — the tile already
+  /// knows how to render a placeholder.
+  Future<Map<String, String>> _resolveProviderImages(
+      List<Map<String, dynamic>> providers) async {
+    final out = <String, String>{};
+    final ids = providers
+        .map((p) => (p['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return out;
+    final client = Supabase.instance.client;
+
+    // 1. The best-selling listing of each provider, with its photo.
+    try {
+      final rows = await client
+          .from('products')
+          .select('provider_id, sales_count, product_images(storage_path, sort_order)')
+          .inFilter('provider_id', ids)
+          .eq('is_active', true)
+          .order('sales_count', ascending: false, nullsFirst: false)
+          .order('created_at', ascending: false)
+          .limit(60);
+      for (final raw in rows as List) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final pid = row['provider_id']?.toString();
+        if (pid == null || out.containsKey(pid)) continue;
+        final path = _firstImagePath(row['product_images']);
+        if (path != null) {
+          out[pid] = client.storage.from('product-images').getPublicUrl(path);
+        }
+      }
+    } catch (_) {
+      // Fall through to the gallery.
+    }
+
+    // 2. The first gallery photo of whoever still has none above.
+    try {
+      final missing = ids.where((id) => !out.containsKey(id)).toList();
+      if (missing.isNotEmpty) {
+        final rows = await client
+            .from('provider_gallery')
+            .select('provider_id, storage_path, display_order')
+            .inFilter('provider_id', missing)
+            .eq('is_active', true)
+            .order('display_order');
+        for (final raw in rows as List) {
+          final row = Map<String, dynamic>.from(raw as Map);
+          final pid = row['provider_id']?.toString();
+          final path = (row['storage_path'] as String?)?.trim() ?? '';
+          if (pid == null || path.isEmpty || out.containsKey(pid)) continue;
+          out[pid] =
+              client.storage.from('provider-gallery').getPublicUrl(path);
+        }
+      }
+    } catch (_) {
+      // Fall through to the profile photo.
+    }
+
+    // 3. The profile photo everyone else is left with.
+    try {
+      final missing = ids.where((id) => !out.containsKey(id)).toList();
+      if (missing.isNotEmpty) {
+        final rows = await client
+            .from('provider_profiles')
+            .select('id, photo_storage_path')
+            .inFilter('id', missing);
+        for (final raw in rows as List) {
+          final row = Map<String, dynamic>.from(raw as Map);
+          final pid = row['id']?.toString();
+          final path = (row['photo_storage_path'] as String?)?.trim() ?? '';
+          if (pid == null || path.isEmpty || out.containsKey(pid)) continue;
+          out[pid] =
+              client.storage.from('provider-photos').getPublicUrl(path);
+        }
+      }
+    } catch (_) {
+      // No photos at all: every remaining tile renders the placeholder.
+    }
+
+    return out;
+  }
+
+  /// The primary photo of an embedded `product_images(*)` list: the lowest
+  /// sort order, which is what the upload path writes first.
+  static String? _firstImagePath(dynamic images) {
+    if (images is! List || images.isEmpty) return null;
+    final rows = images
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList()
+      ..sort((a, b) => ((a['sort_order'] as num?) ?? 0)
+          .compareTo((b['sort_order'] as num?) ?? 0));
+    for (final row in rows) {
+      final path = (row['storage_path'] as String?)?.trim() ?? '';
+      if (path.isNotEmpty) return path;
+    }
+    return null;
+  }
+
+  /// The verified badge beside a provider's name, read from the same view the
+  /// provider profile's "Trust & Quality" pill reads, so the two screens can
+  /// never disagree about who is verified.
+  Future<Set<String>> _resolveVerifiedProviders(
+      List<Map<String, dynamic>> providers) async {
+    final ids = providers
+        .map((p) => (p['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toList();
+    if (ids.isEmpty) return <String>{};
+    try {
+      final rows = await Supabase.instance.client
+          .from('provider_trust_stats')
+          .select('provider_id, is_verified')
+          .inFilter('provider_id', ids);
+      return {
+        for (final raw in rows as List)
+          if ((raw as Map)['is_verified'] == true)
+            (raw['provider_id'] as String),
+      };
+    } catch (_) {
+      return <String>{};
+    }
   }
 
   /// How many photos the feed already holds for each provider, counted from
@@ -301,36 +433,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     }).toList();
   }
 
-  /// Drop a selection that no longer resolves, so a tab can never be stuck on
-  /// content that is not there.
-  void _reconcileSelection() {
-    final tabs = availableTabs(_categories);
-    if (!tabs.contains(_tab)) _tab = HomeTab.all;
-    if (_subCategoryId != null) {
-      final stillThere =
-          _children.any((c) => c.id == _subCategoryId) ||
-              _categories.any((c) => c.id == _subCategoryId);
-      if (!stillThere) _subCategoryId = null;
-    }
-  }
-
-  List<AppCategory> get _tabCategories {
-    final grouped = groupByTab(_categories);
-    return grouped[_tab] ?? const [];
-  }
-
-  List<AppCategory> _childrenOf(String parentId) =>
-      _children.where((c) => c.parentId == parentId).toList();
-
-  void _selectTab(HomeTab tab) {
-    // A new tab invalidates the sub-tab: the id belonged to the old tab's
-    // rail and would show nothing here.
-    setState(() {
-      _tab = tab;
-      _subCategoryId = null;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_loading && _categories.isEmpty) return _buildSkeleton();
@@ -352,9 +454,18 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       );
     }
 
-    final tabs = availableTabs(_categories);
-    final tabCategories = _tabCategories;
-
+    // The whole home, in the order the founder sketched it:
+    //
+    //   header (city, + Post product, notifications, search, cart)
+    //   Book a ride | All providers  — side by side, one height
+    //   the 3 big categories
+    //   trending providers
+    //   Fresh Finds
+    //
+    // The tab row and the 3-up category grid that used to live between the
+    // quick actions and the feed are gone: every small category card now sits
+    // inside its own parent category screen, which is one tap away from the
+    // big card it belongs to.
     return RefreshIndicator(
       onRefresh: _load,
       color: AppTheme.primaryGreen,
@@ -367,39 +478,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
               child: _StaleBanner(
                   message: _error!, onRetry: _load),
             ),
-          // The tab row. Sticky so a user who has scrolled into a category
-          // list can switch without scrolling back up — that is the whole
-          // point of putting navigation at the top of a screen this long.
-          SliverPersistentHeader(
-            pinned: true,
-            delegate: _TabBarHeader(
-              tabs: tabs,
-              selected: _tab,
-              onSelect: _selectTab,
-            ),
-          ),
-          if (tabCategories.isEmpty)
-            SliverFillRemaining(
-              hasScrollBody: false,
-              child: _tabEmptyState(tabs),
-            )
-          else ...[
-            // The ride request screen lost its home entry point when this
-            // screen was rebuilt around tabs (the old header had a "Ride"
-            // quick-action button next to Search). It is back here, above the
-            // grid, so the GPS/map-picker flow is one tap from the top of the
-            // feed on every tab rather than only via Profile -> Live map.
-            SliverToBoxAdapter(child: _rideQuickAction()),
-            SliverToBoxAdapter(child: _gallerySection()),
-            SliverToBoxAdapter(child: _categorySection()),
-            if (_tab != HomeTab.all)
-              SliverToBoxAdapter(child: _subTabRail(tabCategories)),
-            SliverToBoxAdapter(child: _categoryGrid(tabCategories)),
-            if (_activeRide != null && _tab == HomeTab.vehicles)
-              SliverToBoxAdapter(child: _rideBanner(_activeRide!)),
-            ..._productRail(),
-            const SliverToBoxAdapter(child: SizedBox(height: 28)),
-          ],
+          SliverToBoxAdapter(child: _categorySection()),
+          SliverToBoxAdapter(child: _gallerySection()),
+          if (_activeRide != null)
+            SliverToBoxAdapter(child: _rideBanner(_activeRide!)),
+          ..._productRail(),
+          const SliverToBoxAdapter(child: SizedBox(height: 28)),
         ],
       ),
     );
@@ -425,6 +509,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             children: [
               // City selector, top-left, per the sketch.
               Flexible(child: _CityChip(onOpen: _openCitySwitcher)),
+              const SizedBox(width: 8),
+              // The post entry point, beside the city it will be listed in.
+              // One button for every role: it decides for itself whether the
+              // tapper is logged out, not-yet-a-provider, or a provider with
+              // something outstanding.
+              const Flexible(child: _PostProductButton()),
               const Spacer(),
               // Notifications move to a bell here (they were a bottom-nav
               // tab, and the nav is now Home|Order|Favourite|Account). The
@@ -478,33 +568,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     if (changed == true && mounted) _load();
   }
 
-  // ------------------------------------------------------------ ride action
-
-  /// The "Book a ride" quick action.
-  ///
-  /// Deliberately one pill and not a second row of buttons: the pre-redesign
-  /// screen had "Ride" beside "Search", and Search already survives as a
-  /// header icon, so what is missing is only the ride entry itself. It pushes
-  /// `/user/ride-request` — the same route the live map's "Request a ride"
-  /// drawer tile and the help chat deep link use, so the GPS fix and map
-  /// picker in `UserRideRequestScreen` are reached unchanged.
-  ///
-  /// It is rendered on every tab rather than only the Vehicles tab: the ride
-  /// request screen is a top-level action, and hiding it behind a tab means a
-  /// user who never thinks to switch tabs cannot start a ride.
-  ///
-  /// The markup now lives in [QuickActionPill], which the provider dashboards
-  /// use for their own shortcuts — one definition of this pattern rather than
-  /// one per role. The rendered pill is unchanged.
-  Widget _rideQuickAction() {
-    return QuickActionPill(
-      icon: Icons.local_taxi_rounded,
-      label: 'Book a ride',
-      onTap: () => context.push('/user/ride-request'),
-    );
-  }
-
-  // ------------------------------------------------------- provider gallery
+  // ------------------------------------------------------- trending rail
 
   /// Every approved provider's gallery, on the same screen a customer books
   /// a ride from.
@@ -531,16 +595,21 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 8),
-        QuickActionPill(
-          icon: Icons.photo_library_outlined,
-          label: 'All providers',
-          onTap: _openAllProviders,
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 0, 20, 10),
+          child: Text(
+            'Trending providers',
+            style: TextStyle(
+              fontSize: 16.5,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimary,
+            ),
+          ),
         ),
-        const SizedBox(height: 14),
         SizedBox(
-          // Taller than the old 168 so the BOOK action has room without
-          // squeezing the photo or the name line into a clipped label.
-          height: 196,
+          // Short again: the card is image-first, half the old height, with
+          // the name (and its verified badge) underneath rather than on it.
+          height: 170,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -552,6 +621,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                 id: (p['id'] ?? '') as String,
                 name: ((p['business_name'] as String?) ?? '').trim(),
                 city: ((p['city'] as String?) ?? '').trim(),
+                imageUrl: _providerImages[(p['id'] ?? '') as String],
+                verified: _verifiedProviders.contains((p['id'] ?? '') as String),
                 photoPath: p['photo_storage_path'] as String?,
                 photoCount: counts[(p['id'] ?? '') as String] ?? 0,
                 transactions:
@@ -569,6 +640,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     required String id,
     required String name,
     required String city,
+    required String? imageUrl,
+    required bool verified,
     required String? photoPath,
     required int photoCount,
     required int transactions,
@@ -578,11 +651,16 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     // path matching no route at all, so it is dropped rather than rendered
     // as a tile that does nothing when tapped.
     if (id.isEmpty) return const SizedBox.shrink();
-    final url = (photoPath == null || photoPath.isEmpty)
-        ? null
-        : Supabase.instance.client.storage
-            .from('provider-photos')
-            .getPublicUrl(photoPath);
+    // Trending photo → gallery photo → profile photo → placeholder. The
+    // first three are resolved in [_resolveProviderImages]; the raw profile
+    // path is kept here as a last resort for the case where that read failed
+    // but the RPC row still carried one.
+    final url = imageUrl ??
+        ((photoPath == null || photoPath.isEmpty)
+            ? null
+            : Supabase.instance.client.storage
+                .from('provider-photos')
+                .getPublicUrl(photoPath));
     // Completed work outranks a photo count as the thing a customer reads on
     // a card that is now ordered by that work -- leading with "3 photos" on
     // the busiest provider in the city says the wrong thing about why it is
@@ -606,47 +684,31 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Card: image cover background, rounded, with a subtle overlay so
-          // the white text below reads well.
+          // Card: image on top, cover fit, with the name under the card.
           InkWell(
             onTap: () => context.push('/user/provider/$id'),
             borderRadius: BorderRadius.circular(12),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: SizedBox(
+                width: 110,
                 height: 104,
                 child: url == null
                     ? _providerFallback(name)
-                    : Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.network(
-                            url,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                _providerFallback(name),
-                          ),
-                          // Subtle gradient at the bottom so the card feels
-                          // grounded; the name sits below the card, not on it.
-                          Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.bottomCenter,
-                                end: Alignment.topCenter,
-                                colors: [
-                                  Colors.transparent,
-                                  Colors.transparent,
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
+                    : Image.network(
+                        url,
+                        // Cover, not contain: a photo of a shop front fills
+                        // the card instead of floating in a letterbox.
+                        fit: BoxFit.cover,
+                        // Never stretch a cached frame while it re-decodes.
+                        gaplessPlayback: true,
+                        errorBuilder: (_, __, ___) => _providerFallback(name),
                       ),
-                    ),
+              ),
             ),
           ),
           const SizedBox(height: 6),
-          // Name UNDER the card with verified badge next to it.
+          // Name UNDER the card with the verified badge beside it.
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -662,7 +724,28 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   ),
                 ),
               ),
+              if (verified) ...[
+                const SizedBox(width: 3),
+                const Icon(
+                  Icons.verified_rounded,
+                  size: 13,
+                  color: AppTheme.primaryGreen,
+                  semanticLabel: 'Verified provider',
+                ),
+              ],
             ],
+          ),
+          // The trade facts under the name: price range first (the number a
+          // buyer weighs), then the completed work. One line, ellipsised —
+          // the card is deliberately small and the name must stay readable.
+          Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 10,
+              color: AppTheme.textMuted,
+            ),
           ),
         ],
       ),
@@ -797,43 +880,14 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     );
   }
 
-  // ------------------------------------------------------- category grid
-
-  Widget _subTabRail(List<AppCategory> tabCategories) {
-    // Under All there is no meaningful "All / Hotels / Beauty" split — that
-    // IS the whole list — so the rail is skipped rather than shown with a
-    // redundant "All" chip.
-    if (_tab == HomeTab.all) return const SizedBox(height: 4);
-    return Container(
-      height: 46,
-      alignment: Alignment.centerLeft,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        children: [
-          for (final c in tabCategories)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _SubTabChip(
-                label: c.name,
-                selected: _subCategoryId == c.id,
-                onTap: () => setState(() {
-                  _subCategoryId = _subCategoryId == c.id ? null : c.id;
-                }),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+  // ------------------------------------------------------- category section
 
   /// The 3 big main categories plus the quick-action row.
   ///
-  /// Replaces the old 3-up category grid. The three big cards are the
-  /// top-level navigation; tapping one shows that group's sub-categories in the
-  /// tabbed grid below. The quick-action row (Book a ride + All providers) sits
-  /// above the big cards, equal width, same height.
+  /// The two quick actions sit above the big cards, equal width, equal
+  /// height, right under the header. The three big cards are the only
+  /// category navigation left on Home: tapping one opens that group's own
+  /// screen, where every sub-category it owns is listed and searchable.
   Widget _categorySection() {
     // Quick actions: Book a ride + All providers, equal width, same height.
     final screenWidth = MediaQuery.sizeOf(context).width;
@@ -886,7 +940,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _transportCategories.length,
                   childCategories: _transportCategories,
                   onTap: _transportCategories.isNotEmpty
-                      ? () => _selectGroup('transport')
+                      ? () => _openCategoryGroup(
+                          'transport', _transportCategories)
                       : null,
                 ),
               ),
@@ -907,7 +962,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _shopCategories.length,
                   childCategories: _shopCategories,
                   onTap: _shopCategories.isNotEmpty
-                      ? () => _selectGroup('shops')
+                      ? () => _openCategoryGroup('shops', _shopCategories)
                       : null,
                 ),
               ),
@@ -928,7 +983,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
                   count: _serviceCategories.length,
                   childCategories: _serviceCategories,
                   onTap: _serviceCategories.isNotEmpty
-                      ? () => _selectGroup('services')
+                      ? () => _openCategoryGroup('services', _serviceCategories)
                       : null,
                 ),
               ),
@@ -968,87 +1023,23 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
 
   int _groupedCount(List<AppCategory> list) => list.length;
 
-  /// When a big category card is tapped, switch to the matching tab and pick
-  /// the first sub-category so the user lands inside the group.
-  void _selectGroup(String group) {
-    HomeTab target;
-    String? firstId;
-    if (group == 'transport') {
-      target = HomeTab.vehicles;
-      firstId = _transportCategories.isNotEmpty ? _transportCategories[0].id : null;
-    } else if (group == 'shops') {
-      target = HomeTab.shops;
-      firstId = _shopCategories.isNotEmpty ? _shopCategories[0].id : null;
-    } else {
-      target = HomeTab.booking;
-      firstId = _serviceCategories.isNotEmpty ? _serviceCategories[0].id : null;
-    }
-    setState(() {
-      _tab = target;
-      _subCategoryId = firstId;
-    });
-  }
-
-  Widget _categoryGrid(List<AppCategory> tabCategories) {
-    // When a sub-tab is picked, show that category's children; otherwise show
-    // the tab's categories. Both are the shared 3-up tile grid.
-    final subId = _subCategoryId;
-    if (subId != null) {
-      final parent =
-          tabCategories.where((c) => c.id == subId).firstOrNull ??
-              _categories.where((c) => c.id == subId).firstOrNull;
-      final kids = _childrenOf(subId);
-      if (kids.isEmpty) {
-        return _inlineEmpty(
-          parent?.name ?? 'This category',
-          'No sub-categories yet',
-          Icons.category_outlined,
-        );
-      }
-      return _grid(kids, emptyLabel: parent?.name ?? 'this category');
-    }
-    return _grid(tabCategories, emptyLabel: _tab.label);
-  }
-
-  Widget _grid(List<AppCategory> items, {required String emptyLabel}) {
-    if (items.isEmpty) {
-      return _inlineEmpty(emptyLabel, 'Nothing here yet',
-          _tab == HomeTab.vehicles
-              ? Icons.directions_car_outlined
-              : Icons.storefront_outlined);
-    }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: items.length,
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: 0.80,
-        ),
-        itemBuilder: (context, i) => _CategoryTile(
-          category: items[i],
-          childCount: _childrenOf(items[i].id).length,
-          onTap: () => context.push('/user/category/${items[i].id}'),
-        ),
-      ),
-    );
+  /// A big category card opens its own screen: every sub-category of that
+  /// group, searchable, and nothing from any other group. The list is passed
+  /// along rather than re-queried so the screen is instant; the screen can
+  /// reload the same grouping itself when it is opened without one.
+  void _openCategoryGroup(String group, List<AppCategory> categories) {
+    context.push('/user/category-group/$group', extra: categories);
   }
 
   // ------------------------------------------------------------- products
 
+  /// Fresh Finds: every active listing the feed already holds, with no tab
+  /// scoping. The tabs are gone, and with them the rule that used to hide
+  /// half the feed behind a chip nobody knew to tap.
   List<Widget> _productRail() {
-    if (_tab == HomeTab.vehicles) return const [];
-    // A sub-category is selected: scope the rail to it so the listings
-    // under the chip the user just tapped are the ones that appear.
-    final scoped = _subCategoryId == null
-        ? _products
-        : _products.where((p) => p.categoryId == _subCategoryId).toList();
+    final scoped = _products;
     if (scoped.isEmpty) return const [];
-    final title = _tab == HomeTab.booking ? 'Recommended for you' : 'Fresh Finds';
+    const title = 'Fresh Finds';
     return [
       SliverToBoxAdapter(
         child: Padding(
@@ -1141,35 +1132,6 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
 
   // ------------------------------------------------------------ empty/err
 
-  /// Per-tab empty copy. "No hotels yet" tells the user which tab is empty;
-  /// one generic message across four tabs does not.
-  Widget _tabEmptyState(List<HomeTab> tabs) {
-    // The active tab has nothing because it no longer exists in the data.
-    if (tabs.length <= 1) {
-      return _inlineEmpty(
-        'Aliob',
-        'No services are available in your city yet.\nWe are adding providers every day.',
-        Icons.storefront_outlined,
-      );
-    }
-    return const TabEmptyState(
-      icon: Icons.inbox_outlined,
-      title: 'Nothing in this tab yet',
-      subtitle: 'We are adding categories and providers every day.',
-    );
-  }
-
-  Widget _inlineEmpty(String label, String message, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 28),
-      child: TabEmptyState(
-        icon: icon,
-        title: 'No ${label.toLowerCase()} yet',
-        subtitle: message,
-      ),
-    );
-  }
-
   String _greeting() {
     final hour = DateTime.now().hour;
     if (hour < 12) return 'Good morning \u2728';
@@ -1194,43 +1156,46 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             ),
           ),
           const SizedBox(height: 14),
+          // The quick-action row: two equal cards, same height.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
-              children: List.generate(
-                4,
-                (i) => Padding(
-                  padding: const EdgeInsets.only(right: 10),
+              children: const [
+                Expanded(
                   child: ShimmerEffect(
                     child: SkeletonBox(
-                      width: 72,
-                      height: 34,
-                      borderRadius: 17,
-                    ),
+                        width: double.infinity,
+                        height: 96,
+                        borderRadius: 16),
                   ),
                 ),
-              ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: ShimmerEffect(
+                    child: SkeletonBox(
+                        width: double.infinity,
+                        height: 96,
+                        borderRadius: 16),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
+          // The 3 big category cards.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: ShimmerEffect(
-              child: GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 3,
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                // Matches the real grid's ratio so the skeleton does not
-                // resize the layout when the data lands.
-                childAspectRatio: 0.80,
-                children: List.generate(
-                  6,
-                  (_) => const SkeletonBox(
-                    width: double.infinity,
-                    height: double.infinity,
-                    borderRadius: 14,
+            child: Column(
+              children: List.generate(
+                3,
+                (i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: ShimmerEffect(
+                    child: SkeletonBox(
+                      width: double.infinity,
+                      height: 108,
+                      borderRadius: 16,
+                    ),
                   ),
                 ),
               ),
@@ -1273,123 +1238,6 @@ class _HeaderIcon extends StatelessWidget {
               height: 38,
               child: Icon(icon, color: Colors.white, size: 20),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Pinned tab row. Kept as a [SliverPersistentHeader] so it stays reachable
-/// while scrolling a long category list.
-class _TabBarHeader extends SliverPersistentHeaderDelegate {
-    const _TabBarHeader({
-    required this.tabs,
-    required this.selected,
-    required this.onSelect,
-  });
-
-  final List<HomeTab> tabs;
-  final HomeTab selected;
-  final ValueChanged<HomeTab> onSelect;
-
-  @override
-  double get minExtent => 52;
-  @override
-  double get maxExtent => 52;
-
-  @override
-  Widget build(
-      BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return Container(
-      height: 52,
-      color: AppTheme.background,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-        itemCount: tabs.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final tab = tabs[i];
-          final isSelected = tab == selected;
-          return GestureDetector(
-            onTap: () => onSelect(tab),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: isSelected ? AppTheme.primaryGreen : Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: isSelected
-                      ? AppTheme.primaryGreen
-                      : AppTheme.cardBorder,
-                ),
-                boxShadow: isSelected
-                    ? [
-                        BoxShadow(
-                          color: AppTheme.primaryGreen.withOpacity(0.22),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ]
-                    : null,
-              ),
-              child: Text(
-                tab.label,
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w700,
-                  color: isSelected ? Colors.white : AppTheme.textSecondary,
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  @override
-  bool shouldRebuild(covariant _TabBarHeader oldDelegate) =>
-      oldDelegate.selected != selected || oldDelegate.tabs != tabs;
-}
-
-class _SubTabChip extends StatelessWidget {
-    const _SubTabChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? AppTheme.gold.withOpacity(0.16) : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: selected ? AppTheme.gold : Colors.transparent,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? AppTheme.textPrimary : AppTheme.textMuted,
           ),
         ),
       ),
@@ -1593,217 +1441,124 @@ class _MainCategoryCard extends StatelessWidget {
       ),
     );
   }
-}
+}// ============================================================== small views
 
-/// A 3-up category tile with the user-visible "photos" count column. The
-/// tallest column is capped on the client so a long list of photo columns
-/// never produces a page-filling scroll on a narrow phone — the tallest is
-/// chosen, and the rest are stacked compactly beside it.
+/// "+ Post product", beside the city selector in the header.
 ///
-/// The row is: photo (with caption), name, and price tag, so the customer
-/// sees the image, the name, and the money in one row.
-class _CategoryTile extends StatelessWidget {
-    const _CategoryTile({
-    required this.category,
-    required this.onTap,
-    this.childCount = 0,
-  });
+/// One button for every role, and it decides what happens next:
+///
+/// * signed out → the login screen;
+/// * signed in with no provider profile → an offer to become one;
+/// * a provider → the posting gate (verification + wallet minimum), and
+///   only then the add-product form.
+class _PostProductButton extends StatelessWidget {
+  const _PostProductButton();
 
-  final AppCategory category;
-  final VoidCallback onTap;
-  final int childCount;
+  Future<void> _start(BuildContext context) async {
+    final client = Supabase.instance.client;
+    final user = client.auth.currentUser;
+    if (user == null) {
+      await context.push('/login');
+      return;
+    }
+
+    Map<String, dynamic>? profile;
+    try {
+      profile = await client
+          .from('provider_profiles')
+          .select('id, status')
+          .eq('user_id', user.id)
+          .maybeSingle();
+    } catch (_) {
+      profile = null;
+    }
+    if (!context.mounted) return;
+
+    if (profile == null) {
+      await _offerBecomeProvider(context);
+      return;
+    }
+
+    final providerId = profile['id'] as String;
+    // The gate itself: a verified + funded provider walks straight through
+    // to the form; anyone else gets the checklist with somewhere to go.
+    await PostingGate.instance.ensure(
+      context,
+      providerId: providerId,
+      andContinue: () async {
+        if (context.mounted) await context.push('/provider/products/new');
+      },
+    );
+  }
+
+  /// A signed-in user who is not (yet) a provider is offered the choice
+  /// rather than dropped on a form that cannot save anything for them.
+  Future<void> _offerBecomeProvider(BuildContext context) async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.storefront_outlined,
+            color: AppTheme.primaryGreen, size: 30),
+        title: const Text('Become a provider'),
+        content: const Text(
+          'Selling on Aliob starts with a provider account: a business name, '
+          'a category, and a one-time ID check. It takes a few minutes.',
+          style: TextStyle(fontSize: 14, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'go'),
+            style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.primaryGreen),
+            child: const Text('Become a provider'),
+          ),
+        ],
+      ),
+    );
+    if (choice == 'go' && context.mounted) {
+      await context.push('/role-select');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    final maxCols = (width / 108).floorToDouble().clamp(2.0, 6.0);
-    // Cap the cross-axis count so the photo tile cannot overflow the screen
-    // on a 5-column layout. The row then renders two tiles side by side
-    // still, but with the tallest's column taking the extra width.
-    final columns = maxCols > 6 ? 6.0 : maxCols;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        // Vertical padding is pure slack: the Column is centred, so hands 4dp
-        // back to the label.
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
-        decoration: BoxDecoration(
-          color: AppTheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppTheme.cardBorder, width: 0.5),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Photo column: show the user-visible image, fall back to the
-            // provider's own gallery photo, and finally the green placeholder
-            // so an absent photo never renders a broken image.
-            Container(
-              width: 96,
-              height: 96,
-              decoration: BoxDecoration(
-                color: _tint.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(13),
-                border: Border.all(
-                  color: _tint.withOpacity(0.18),
-                  width: 1,
-                ),
-              ),
-              child: _photoColumn(),
-            ),
-            const SizedBox(height: 7),
-            // Label: flexible so a long name shrinks rather than pushing the
-            // count row off the bottom of the tile.
-            Flexible(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.center,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () => _start(context),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.add_circle_outline,
+                  size: 15, color: AppTheme.primaryGreenDark),
+              const SizedBox(width: 4),
+              Flexible(
                 child: Text(
-                  category.name,
-                  maxLines: 2,
+                  'Post product',
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 11.5,
-                    height: 1.25,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimary,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.primaryGreenDark,
                   ),
                 ),
               ),
-            ),
-            if (childCount > 0) ...[
-              const SizedBox(height: 2),
-              Text(
-                '$childCount',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: _tint.withOpacity(0.75),
-                ),
-              ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
-
-  /// The photo column. Reads the provider-visible image first (so a listing
-  /// that already has a photo shows it), then the first gallery image for
-  /// the same provider, and finally the green placeholder.
-  Widget _photoColumn() {
-    // This tile belongs to a category; the product rows under it carry the
-    // user-visible image. We do not have the product rows here, so we fall
-    // back to the provider's gallery photo, then a placeholder.
-    return Center(
-      child: Icon(
-        Icons.photo_library_outlined,
-        color: Colors.white38,
-        size: 40,
-      ),
-    );
-  }
-
-  Color get _tint => switch (categoryTabFor(category)) {
-        HomeTab.booking => AppTheme.teal,
-        HomeTab.vehicles => AppTheme.primaryGreen,
-        HomeTab.shops => AppTheme.gold,
-        HomeTab.all => AppTheme.textMuted,
-      };
-
-  IconData get _icon {
-    final s = category.slug;
-    if (s.contains('hotel') || s.contains('lodge') || s.contains('guest') ||
-        s.contains('resort') || s.contains('room') || s.contains('pension') ||
-        s.contains('hostel') || s.contains('apartment') || s.contains('vacation')) {
-      return Icons.hotel_outlined;
-    }
-    if (s.contains('food') || s.contains('restaurant') || s.contains('cafe') ||
-        s.contains('bakery') || s.contains('juice') || s.contains('coffee') ||
-        s.contains('truck') && s.contains('food')) {
-      return Icons.restaurant_outlined;
-    }
-    if (s.contains('retail') || s.contains('grocery') || s.contains('shop') ||
-        s.contains('supermarket') || s.contains('clothing') ||
-        s.contains('electronic') || s.contains('phone') ||
-        s.contains('furniture') || s.contains('cosmetic') ||
-        s.contains('wholesaler') || s.contains('stationery') ||
-        s.contains('garden') || s.contains('automotive')) {
-      return Icons.storefront_outlined;
-    }
-    if (s.contains('health') || s.contains('pharma') || s.contains('clinic') ||
-        s.contains('laborator') || s.contains('dental') || s.contains('medical')) {
-      return Icons.local_hospital_outlined;
-    }
-    if (s.contains('beauty') || s.contains('barber') || s.contains('salon') ||
-        s.contains('spa') || s.contains('tattoo') || s.contains('hair')) {
-      return Icons.content_cut;
-    }
-    if (s.contains('home') || s.contains('plumbing') || s.contains('electric') ||
-        s.contains('cleaning') || s.contains('construction') ||
-        s.contains('repair') || s.contains('maintenance') ||
-        s.contains('moving') || s.contains('interior') ||
-        s.contains('material')) {
-      return Icons.home_repair_service_outlined;
-    }
-    if (s.contains('education') || s.contains('school') || s.contains('tutor') ||
-        s.contains('course') || s.contains('training')) {
-      return Icons.school_outlined;
-    }
-    if (s.contains('fitness') || s.contains('gym') || s.contains('sport') ||
-        s.contains('yoga')) {
-      return Icons.fitness_center;
-    }
-    if (s.contains('real-estate') || s.contains('house') || s.contains('land') ||
-        s.contains('rental') || s.contains('property')) {
-      return Icons.apartment;
-    }
-    if (s.contains('agricultur') || s.contains('farm') || s.contains('equipment')) {
-      return Icons.agriculture_outlined;
-    }
-    if (s.contains('event') || s.contains('entertainment') ||
-        s.contains('recreation') || s.contains('photography')) {
-      return Icons.celebration_outlined;
-    }
-    if (s.contains('professional') || s.contains('accounting') ||
-        s.contains('legal') || s.contains('consulting') || s.contains('printing') ||
-        s.contains('translation')) {
-      return Icons.work_outline;
-    }
-    // Vehicles.
-    if (s.contains('motorcycle') || s.contains('bajaj') || s.contains('bike') ||
-        s.contains('two-wheeler')) {
-      return Icons.two_wheeler;
-    }
-    if (s.contains('bus') || s.contains('minibus') || s.contains('coach')) {
-      return Icons.directions_bus_outlined;
-    }
-    if (s.contains('truck') || s.contains('freight') || s.contains('cargo') ||
-        s.contains('moving-truck')) {
-      return Icons.local_shipping_outlined;
-    }
-    if (s.contains('ambulance') || s.contains('emergency')) {
-      return Icons.emergency_outlined;
-    }
-    if (s.contains('airport')) return Icons.flight_takeoff;
-    if (s.contains('tour') || s.contains('travel') || s.contains('safari')) {
-      return Icons.tour_outlined;
-    }
-    if (s.contains('delivery') || s.contains('freight') || s.contains('courier')) {
-      return Icons.local_shipping_outlined;
-    }
-    if (s.contains('rental')) return Icons.car_rental_outlined;
-    if (s.contains('ride') || s.contains('taxi') || s.contains('car') ||
-        s.contains('transport') || s.contains('special')) {
-      return Icons.directions_car_outlined;
-    }
-    return Icons.category_outlined;
-  }
 }
-
-// ============================================================== small views
 
 /// City chip, top-left of the header.
 class _CityChip extends ConsumerWidget {

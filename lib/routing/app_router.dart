@@ -18,6 +18,7 @@ import '../features/user/user_notifications_screen.dart';
 import '../features/user/user_product_detail_screen.dart';
 import '../features/user/user_provider_detail_screen.dart';
 import '../features/provider/provider_location_detail_screen.dart';
+import '../features/user/user_category_group_screen.dart';
 import '../features/user/user_category_screen.dart';
 import '../features/user/user_favorites_screen.dart';
 import '../features/user/user_cart_screen.dart';
@@ -355,6 +356,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/user/product/:id', builder: (_, s) => UserProductDetailScreen(productId: s.pathParameters['id']!)),
       GoRoute(path: '/user/provider/:id', builder: (_, s) => UserProviderDetailScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/user/category/:id', builder: (_, s) => UserCategoryScreen(categoryId: s.pathParameters['id']!)),
+      // One big category's own screen: its sub-categories, searchable. The
+      // 3-up card grid this replaces used to sit on Home, where it showed
+      // tiny labels and number-only tiles.
+      GoRoute(
+        path: '/user/category-group/:group',
+        builder: (_, s) =>
+            UserCategoryGroupScreen(group: s.pathParameters['group']!),
+      ),
       GoRoute(path: '/user/favorites', builder: (_, __) => const UserFavoritesScreen()),
       GoRoute(path: '/user/cart', builder: (_, __) => const UserCartScreen()),
       GoRoute(path: '/user/checkout', builder: (_, s) => UserCheckoutScreen(providerId: s.extra as String)),
