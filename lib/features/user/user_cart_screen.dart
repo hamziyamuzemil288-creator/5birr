@@ -236,8 +236,10 @@ class _UserCartScreenState extends ConsumerState<UserCartScreen> {
             child: PrimaryButton(
               label: 'CHECKOUT',
               icon: Icons.shopping_cart_checkout,
-              onPressed: () =>
-                  context.push('/user/checkout', extra: providerId),
+              // The gate, not payment: the provider confirms this group's
+              // items are available before checkout opens for them.
+              onPressed: () => context.push('/user/availability',
+                  extra: {'providerId': providerId}),
             ),
           ),
         ],

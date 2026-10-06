@@ -9,6 +9,7 @@ import '../../core/services/points_service.dart';
 import '../../core/services/posting_gate.dart';
 import '../../core/services/provider_readiness.dart';
 import '../../core/services/rank_service.dart';
+import '../../core/services/resilient_subscription.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/publish_readiness_banner.dart';
@@ -45,6 +46,18 @@ class _ServiceProviderDashboardState
   /// buyer is sitting on "Waiting for the provider to confirm availability" and
   /// cannot pay until this is answered.
   int _awaitingAvailability = 0;
+
+  /// Pre-order availability requests (the gate every Buy/Book now crosses,
+  /// migration 20261006000006) still PENDING on this provider's listings —
+  /// buyers sitting on a 15-minute countdown who cannot pay until this
+  /// provider answers.
+  List<Map<String, dynamic>> _pendingAvailability = [];
+
+  /// Ids already surfaced to this provider, so the realtime subscription
+  /// announces each new request exactly once (the first frame of a
+  /// subscription is the whole current queue, not news).
+  final Set<String> _knownPendingAvailability = {};
+  ResilientSubscription<List<Map<String, dynamic>>>? _availabilityLive;
   int _points = 0;
   RankProgress? _rankProgress;
   double? _walletBalance;
@@ -121,6 +134,9 @@ class _ServiceProviderDashboardState
       // showing a wrong "you are ready".
       final readiness =
           await ProviderReadiness.load(prov['id'] as String);
+      // The availability queue, alongside everything else: the section has
+      // to be right the moment the dashboard opens, then stay live.
+      await _loadAvailability(prov['id'] as String);
       if (mounted) {
         setState(() {
           _providerProfile = prov;
@@ -160,6 +176,247 @@ class _ServiceProviderDashboardState
     final readiness = await ProviderReadiness.load(id);
     if (!mounted) return;
     setState(() => _readiness = readiness);
+  }
+
+  @override
+  void dispose() {
+    _availabilityLive?.cancel();
+    super.dispose();
+  }
+
+  /// Reads (and re-reads) the PENDING pre-order availability requests for
+  /// this provider's listings, then keeps the realtime subscription alive.
+  ///
+  /// Best-effort: a database that has not run migration 20261006000006 has
+  /// no such table, and the section simply stays hidden — nothing else on
+  /// this dashboard depends on the gate existing.
+  Future<void> _loadAvailability(String providerId) async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('availability_requests')
+          .select(
+              'id, product_id, quantity, created_at, expires_at, products(name)')
+          .eq('provider_id', providerId)
+          .eq('status', 'PENDING')
+          .order('created_at', ascending: false)
+          .limit(20);
+      final list = List<Map<String, dynamic>>.from(rows as List);
+      if (!mounted) return;
+      setState(() {
+        _pendingAvailability = list;
+        _knownPendingAvailability
+          ..clear()
+          ..addAll(list.map((r) => r['id'] as String));
+      });
+      _subscribeAvailability(providerId);
+    } catch (_) {
+      // No table yet (migration pending) — the section stays hidden.
+    }
+  }
+
+  /// One subscription per dashboard life. Every frame that carries a
+  /// request this provider has not seen announces it once and re-reads the
+  /// queue; frames that carry nothing new only refresh silently.
+  void _subscribeAvailability(String providerId) {
+    if (_availabilityLive != null) return;
+    _availabilityLive = ResilientSubscription<List<Map<String, dynamic>>>(
+      stream: Supabase.instance.client
+          .from('availability_requests')
+          .stream(primaryKey: ['id'])
+          .eq('provider_id', providerId)
+          .order('created_at'),
+      onData: (rows) {
+        final fresh = rows
+            .where((r) =>
+                r['status'] == 'PENDING' &&
+                _knownPendingAvailability.add(r['id'] as String))
+            .toList();
+        if (!mounted) return;
+        if (fresh.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(fresh.length == 1
+                  ? 'A buyer is waiting: is this item available? They have '
+                      '15 minutes before the request expires.'
+                  : '${fresh.length} buyers are waiting for an availability '
+                      'answer.'),
+            ),
+          );
+        }
+        _loadAvailability(providerId);
+      },
+      // Connection quality only changes how much the poll matters; the
+      // reload above runs either way.
+      onState: (_) {},
+    );
+  }
+
+  /// Accept: the buyer is released into checkout immediately (their screen
+  /// is watching the same row over realtime).
+  Future<void> _respondToAvailability(Map<String, dynamic> request,
+      bool accept, {String? reason}) async {
+    try {
+      await Supabase.instance.client.rpc('respond_availability_request',
+          params: {
+            'p_request_id': request['id'],
+            'p_accept': accept,
+            if (reason != null && reason.isNotEmpty) 'p_reason': reason,
+          });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(accept
+              ? 'Told the buyer it is available — they can check out now.'
+              : 'Told the buyer it is not available.'),
+        ),
+      );
+      final id = _providerProfile?['id'] as String?;
+      if (id != null) await _loadAvailability(id);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content:
+                Text(friendlyError(e, context: 'Could not send your answer'))),
+      );
+    }
+  }
+
+  /// Decline asks for the reason the buyer will read, because "Not
+  /// available" with no words behind it sends the buyer to guess.
+  Future<void> _declineAvailability(Map<String, dynamic> request) async {
+    final ctrl = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Not available?'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLength: 120,
+          decoration: const InputDecoration(
+            labelText: 'Reason (optional)',
+            hintText: 'e.g. Sold out until Friday',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, ctrl.text.trim()),
+            child: const Text('SEND'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (reason == null || !mounted) return; // dismissed: nothing is sent
+    await _respondToAvailability(request, false, reason: reason);
+  }
+
+  /// The queue itself: one row per request, each directly answerable.
+  Widget _availabilitySection() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.warning.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.schedule, size: 20, color: AppTheme.warning),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Pending availability requests',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w700),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppTheme.warning.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '${_pendingAvailability.length}',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Buyers waiting before they can pay — 15 minutes to answer.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+          const Divider(height: 20),
+          ..._pendingAvailability.map(_availabilityTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _availabilityTile(Map<String, dynamic> request) {
+    final product = request['products'] as Map<String, dynamic>?;
+    final name = product?['name'] as String? ?? 'An item';
+    final qty = ((request['quantity'] as num?)?.toDouble() ?? 1);
+    final qtyText = qty == qty.roundToDouble()
+        ? qty.toInt().toString()
+        : qty.toString();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$name × $qtyText',
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _respondToAvailability(request, true),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.primaryGreen,
+                    side: const BorderSide(color: AppTheme.primaryGreen),
+                  ),
+                  child: const Text('AVAILABLE'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _declineAvailability(request),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.error,
+                    side: const BorderSide(color: AppTheme.error),
+                  ),
+                  child: const Text('NOT AVAILABLE'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -248,6 +505,12 @@ class _ServiceProviderDashboardState
                       readiness: _readiness,
                       onChanged: _reloadReadiness,
                     ),
+                    // The availability queue. A buyer is on a 15-minute
+                    // countdown before they can pay, and the notification
+                    // that announces it is easy to miss — the same rows stay
+                    // answerable here, so a missed popup is never missed
+                    // work.
+                    if (_pendingAvailability.isNotEmpty) _availabilitySection(),
                     // The one shortcut this role opens most: a provider's
                     // photos are what a customer reads before they book, and
                     // the Business tab buried them one tab and one list row

@@ -7835,6 +7835,195 @@ def check_unclaimed_rides_expire_and_one_driver_wins() -> list[str]:
     return problems
 
 
+def check_availability_gate_covers_every_checkout() -> list[str]:
+    """No order without an ACCEPTED availability request — on any path.
+
+    The report: buyers could reach payment without the provider ever being
+    asked whether the item exists (twice). The gate has three halves and
+    each one is load-bearing on its own:
+
+      * client: every place that starts checkout — the shared Buy/Book
+        button, the detail screen's buy-now, the cart's CHECKOUT, and the
+        checkout screen itself as the backstop for deep links — must route
+        through /user/availability, where the buyer taps "Is this product
+        available?";
+      * server: create_order_secure must require an ACCEPTED, unexpired,
+        UNUSED availability_requests row for every product in p_items and
+        claim it (used_at), raising AVAILABILITY_CONFIRMATION_REQUIRED —
+        otherwise the client half is decoration;
+      * lifecycle: create/respond/cancel RPCs, the PENDING-uniqueness index,
+        the 15-minute expiry on pg_cron, the realtime publication entry, the
+        two notification types, the provider dashboard's pending section,
+        the admin's view of the queue, and the live assertion Connectivity
+        CI runs.
+    """
+    problems: list[str] = []
+
+    # -- client: every checkout entry crosses the gate ------------------
+    for rel, needle in (
+        (LIB / "core" / "widgets" / "product_buy_button.dart",
+         "/user/availability"),
+        (LIB / "features" / "user" / "user_product_detail_screen.dart",
+         "/user/availability"),
+        (LIB / "features" / "user" / "user_cart_screen.dart",
+         "/user/availability"),
+        (LIB / "features" / "user" / "user_checkout_screen.dart",
+         "/user/availability"),
+    ):
+        code = _dart_without_comments(_read(rel))
+        if needle not in code:
+            problems.append(
+                "%s no longer routes checkout through %s — a buyer can "
+                "reach the payment step without the provider confirming "
+                "availability" % (rel.name, needle))
+    checkout = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_checkout_screen.dart"))
+    if "pushReplacement" not in checkout:
+        problems.append(
+            "user_checkout_screen.dart does not pushReplacement away — its "
+            "gate would stack-loop instead of taking over the route")
+
+    # -- server: the order path demands the request ---------------------
+    target, src = last_migration_defining("create_order_secure")
+    if target is None:
+        problems.append("no migration defines public.create_order_secure()")
+    else:
+        body = function_body(src, "create_order_secure")
+        for needle, why in (
+            ("AVAILABILITY_CONFIRMATION_REQUIRED",
+             "orders can be created with no availability request at all"),
+            ("availability_requests",
+             "the order path never reads the request table"),
+            ("used_at",
+             "an accepted request can be reused for a second order"),
+            ("PROVIDER_NOT_ACCEPTING_ORDERS",
+             "the unapproved-provider guard from 0013 was dropped, which "
+             "assert_orders_block_unapproved_providers exists to catch"),
+        ):
+            if needle not in body:
+                problems.append(
+                    "%s: create_order_secure() %s" % (target.name, why))
+
+    # -- lifecycle: the RPCs, the uniqueness, the expiry -----------------
+    for fn, why in (
+        ("create_availability_requests",
+         "the buyer cannot ask — the button would have nothing to call"),
+        ("respond_availability_request",
+         "the provider cannot answer from the app"),
+        ("cancel_availability_request",
+         "the buyer cannot stand the request down"),
+        ("expire_availability_requests",
+         "PENDING requests never time out server-side"),
+    ):
+        if last_migration_defining(fn)[0] is None:
+            problems.append("no migration defines public.%s() — %s" % (fn, why))
+
+    r_target, r_src = last_migration_defining("respond_availability_request")
+    if r_target is not None:
+        rbody = function_body(r_src, "respond_availability_request")
+        for needle, why in (
+            ("REQUEST_EXPIRED",
+             "a provider can answer after expiry"),
+            ("REQUEST_ALREADY_ANSWERED",
+             "a provider can answer twice"),
+        ):
+            if needle not in rbody:
+                problems.append(
+                    "%s: respond_availability_request() %s"
+                    % (r_target.name, why))
+
+    mig_texts = [(p, _read(p)) for p in migration_files()]
+    if not any("uq_availability_one_active" in t for _, t in mig_texts):
+        problems.append(
+            "no migration creates the uq_availability_one_active partial "
+            "index, so a buyer can stack duplicate PENDING requests for one "
+            "product — the double-tap duplicate the report forbids")
+    if not any("5birr-availability-expiry" in t for _, t in mig_texts):
+        problems.append(
+            "no migration schedules the pg_cron job 5birr-availability-"
+            "expiry, so an unanswered request sits PENDING forever")
+    if not any(re.search(r"ADD\s+VALUE\s+IF\s+NOT\s+EXISTS\s+'AVAILABILITY_REQUEST'",
+                         t, re.IGNORECASE) for _, t in mig_texts):
+        problems.append(
+            "the notification_type enum never gains AVAILABILITY_REQUEST — "
+            "the provider's notify insert raises invalid input value for "
+            "enum and the request creation fails with it")
+    if not any(re.search(r"ADD\s+VALUE\s+IF\s+NOT\s+EXISTS\s+'AVAILABILITY_RESPONSE'",
+                         t, re.IGNORECASE) for _, t in mig_texts):
+        problems.append(
+            "the notification_type enum never gains AVAILABILITY_RESPONSE — "
+            "the buyer is never told the answer")
+    if not any(re.search(r"alter\s+publication\s+supabase_realtime\s+"
+                         r"add\s+table\s+(?:public\.)?availability_requests",
+                         t, re.IGNORECASE) for _, t in mig_texts):
+        problems.append(
+            "availability_requests is never added to the supabase_realtime "
+            "publication, so neither the buyer's waiting screen nor the "
+            "provider's popup ever receives a realtime event")
+    # The name matters: 0074/0075 already define a TEXT-returning
+    # assert_availability_gate_is_wired() for the per-listing
+    # requires_availability_confirmation flow. This migration's
+    # pre-order-every-purchase assertion must be a DIFFERENT name —
+    # CREATE OR REPLACE cannot change a return type, so reusing the name
+    # would abort the deploy with 42P13.
+    if not any("assert_preorder_availability_gate_is_wired" in t
+               for _, t in mig_texts):
+        problems.append(
+            "no migration defines assert_preorder_availability_gate_is_wired(), "
+            "so the live database is never asked whether the gate survived a "
+            "later deploy")
+
+    # -- surfaces: provider answers, admin watches -----------------------
+    dash = _dart_without_comments(
+        _read(LIB / "features" / "provider" /
+              "service_provider_dashboard.dart"))
+    for needle, why in (
+        ("availability_requests",
+         "the dashboard never reads the pending queue"),
+        ("respond_availability_request",
+         "the dashboard cannot answer"),
+        ("Pending",
+         "a missed popup cannot still be answered from a section"),
+    ):
+        if needle not in dash:
+            problems.append(
+                "service_provider_dashboard.dart: %s" % why)
+
+    if not (LIB / "features" / "admin" /
+            "admin_availability_screen.dart").is_file():
+        problems.append(
+            "admin_availability_screen.dart is missing — the admin has no "
+            "view of the requests, their status or their response time")
+    router = _read(LIB / "routing" / "app_router.dart")
+    if "'/admin/availability'" not in router:
+        problems.append("app_router.dart has no /admin/availability route")
+    dash_admin = _dart_without_comments(
+        _read(LIB / "features" / "admin" / "admin_dashboard.dart"))
+    if "'/admin/availability'" not in dash_admin:
+        problems.append(
+            "admin_dashboard.dart never links /admin/availability — the "
+            "screen exists but is unreachable")
+
+    # -- the live assertion ------------------------------------------------
+    conn = _read(ROOT / "tools" / "integration_test" /
+                 "connectivity_test.dart")
+    if "assert_preorder_availability_gate_is_wired" not in conn:
+        problems.append(
+            "connectivity_test.dart does not run "
+            "assert_preorder_availability_gate_is_wired()")
+
+    err = _read(LIB / "core" / "utils" / "friendly_error.dart")
+    code = _dart_without_comments(err) if err else ""
+    if not re.search(r"_any\(\s*lower\s*,\s*\[[^\]]*availability_confirmation_required",
+                     code, re.DOTALL):
+        problems.append(
+            "friendly_error.dart has no matcher for "
+            "availability_confirmation_required — the refusal reaches the "
+            "buyer as a raw code")
+
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -7852,6 +8041,8 @@ CHECKS = [
      check_ride_request_insert_matches_the_ride_requests_table),
     ("an unclaimed ride expires in 3 minutes and only one driver can win the claim",
      check_unclaimed_rides_expire_and_one_driver_wins),
+    ("no order can be created without an ACCEPTED availability request, on any path",
+     check_availability_gate_covers_every_checkout),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

@@ -23,6 +23,7 @@ import '../features/user/user_category_screen.dart';
 import '../features/user/user_favorites_screen.dart';
 import '../features/user/user_cart_screen.dart';
 import '../features/user/user_checkout_screen.dart';
+import '../features/user/user_availability_screen.dart';
 import '../features/user/user_order_detail_screen.dart';
 import '../features/user/provider_order_waiting_screen.dart';
 import '../features/user/user_search_screen.dart';
@@ -49,6 +50,7 @@ import '../features/ceo/ceo_dashboard.dart';
 import '../features/admin/admin_provider_management_screen.dart';
 import '../features/admin/admin_history_screen.dart';
 import '../features/admin/admin_orders_screen.dart';
+import '../features/admin/admin_availability_screen.dart';
 import '../features/admin/admin_staff_screen.dart';
 import '../features/admin/admin_account_directory_screen.dart';
 import '../features/admin/admin_user_management_screen.dart';
@@ -368,6 +370,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/user/favorites', builder: (_, __) => const UserFavoritesScreen()),
       GoRoute(path: '/user/cart', builder: (_, __) => const UserCartScreen()),
       GoRoute(path: '/user/checkout', builder: (_, s) => UserCheckoutScreen(providerId: s.extra as String)),
+      // The availability gate every checkout entry funnels through: Buy/Book,
+      // the product page's buy-now and the cart's CHECKOUT push this route,
+      // and user_checkout_screen pushReplaces itself with it as the deep-link
+      // backstop — no path reaches payment without the provider's YES.
+      GoRoute(
+        path: '/user/availability',
+        builder: (_, s) {
+          final args = (s.extra as Map?) ?? const {};
+          return UserAvailabilityScreen(
+              providerId: args['providerId'] as String? ?? '');
+        },
+      ),
       GoRoute(
         path: '/user/order-waiting',
         builder: (_, s) {
@@ -532,6 +546,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // quick-stat tile opens. There was no admin order list at all before
       // this: the tile counted orders and went nowhere.
       GoRoute(path: '/admin/orders', builder: (_, __) => const AdminOrdersScreen()),
+      // The buyer/provider availability queue — who asked, who answered,
+      // how long it took. The pre-order gate's rows, visible to the person
+      // who has to arbitrate a dispute about them.
+      GoRoute(path: '/admin/availability', builder: (_, __) => const AdminAvailabilityScreen()),
       GoRoute(path: '/admin/providers/:id/wallet', builder: (_, s) => AdminProviderWalletScreen(providerId: s.pathParameters['id']!)),
       GoRoute(path: '/admin/providers/:id/wallet/recharge', builder: (_, s) => AdminCashRechargeScreen(providerId: s.pathParameters['id']!)),
       // ── Admin — New sections ──

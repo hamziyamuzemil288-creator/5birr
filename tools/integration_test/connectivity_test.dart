@@ -169,6 +169,26 @@ void main() {
     });
   });
 
+  group('pre-order availability gate: ask before every buy', () {
+    test('orders demand an ACCEPTED, unexpired, unused request', () async {
+      // The reported defect: buyers reached payment while the provider was
+      // never asked whether the item exists. Migration
+      // 20261006000006 makes create_order_secure raise
+      // AVAILABILITY_CONFIRMATION_REQUIRED per product unless a matching
+      // availability_requests row is ACCEPTED, inside its 15-minute window,
+      // and not yet consumed — then claims it with used_at so one answer
+      // cannot cover two orders. This reads the LIVE function, the cron
+      // job, the uniqueness index and the realtime publication entry.
+      expect(await ok('assert_preorder_availability_gate_is_wired'), isTrue,
+          reason: 'The pre-order availability gate lost a piece: '
+              'create_order_secure no longer demands (or can reuse) an '
+              'availability request, the 15-minute expiry cron is gone, the '
+              'provider can answer twice or late, or the one-active-request '
+              'index is missing. If this fails right after a deploy, '
+              'migration 20261006000006 did not run.');
+    });
+  });
+
   group('staff attribution: actions -> performance view (Phase 2 #6)', () {
     test('staff_performance uses the real ride ownership column', () async {
       expect(await ok('assert_staff_performance_uses_claimed_by'), isTrue,

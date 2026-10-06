@@ -12,8 +12,13 @@ import '../utils/friendly_error.dart';
 /// It is deliberately the same entry point on the home rail, a category list
 /// and a provider page, because there is only one flow behind it:
 ///
-///   Buy  ->  this listing joins the cart and checkout opens for its provider
-///        ->  checkout asks the provider to confirm availability when the
+///   Buy  ->  this listing joins the cart and the AVAILABILITY GATE opens
+///            for its provider (/user/availability): the provider is asked
+///            whether the item exists BEFORE any payment screen, and only
+///            their YES walks on to checkout (create_order_secure demands
+///            the same answer server-side, so the gate is the rule, not
+///            decoration)
+///        ->  checkout still asks the provider to confirm availability when the
 ///            listing is flagged `requires_availability_confirmation`
 ///            ("REQUEST ORDER"), and shows the payment step when it is not
 ///        ->  the provider answers from their order screen
@@ -70,9 +75,12 @@ class _ProductBuyButtonState extends ConsumerState<ProductBuyButton> {
       );
       ref.invalidate(cartCountProvider);
       if (!mounted) return;
-      // The provider id is the checkout's argument, so the cart's line for
-      // this listing is already what the checkout reads.
-      context.push('/user/checkout', extra: widget.providerId);
+      // The gate first: no buyer reaches payment without the provider's YES.
+      // The provider id is the argument both this screen and the checkout
+      // behind it read, so the cart's line for this listing is already what
+      // they both work from.
+      context.push('/user/availability',
+          extra: {'providerId': widget.providerId});
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

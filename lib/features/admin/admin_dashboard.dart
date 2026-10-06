@@ -613,6 +613,14 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                                     ? '$_pendingOrderPayments waiting to verify'
                                     : 'Verify customer payments',
                                 () => context.push('/admin/order-payments')),
+                          // The pre-order availability queue: who asked,
+                          // who answered, how long it took. Same
+                          // buyer/provider oversight as the approval
+                          // queues, so the same permission gates it.
+                          if (_can('registrations'))
+                            _menuCard(Icons.schedule_outlined, 'Availability Requests',
+                                'Pre-order stock checks',
+                                () => context.push('/admin/availability')),
                           if (_can('admin_history'))
                             _menuCard(Icons.history_edu_outlined, 'Admin History', 'Full audit trail', () => context.push('/admin/history')),
                           // Phase 2: staff management (server-side RBAC; the

@@ -182,6 +182,48 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         needsConfirmation = false;
       }
 
+      // THE AVAILABILITY-GATE BACKSTOP. Deep links, a restored navigation
+      // stack, or any future caller that forgets the gate can still land
+      // here — so this screen checks the basket itself: unless every
+      // product carries an ACCEPTED, unexpired, UNUSED availability request,
+      // it replaces itself with /user/availability (replace, not push, so
+      // Back cannot bounce straight back into payment).
+      //
+      // Best-effort by design: the RULE lives in create_order_secure
+      // (migration 20261006000006), which raises
+      // AVAILABILITY_CONFIRMATION_REQUIRED per product at submission. A
+      // failed read here must not block an order the server would accept —
+      // the server-side refusal is the guarantee; this is UX.
+      if (items.isNotEmpty) {
+        try {
+          final uid = Supabase.instance.client.auth.currentUser?.id;
+          final ids = items.map((i) => i.productId).toSet().toList();
+          final cleared = <String>{};
+          if (uid != null) {
+            final rows = await Supabase.instance.client
+                .from('availability_requests')
+                .select('product_id, status, expires_at, used_at')
+                .eq('buyer_id', uid)
+                .inFilter('product_id', ids);
+            final now = DateTime.now().toUtc();
+            for (final r in rows as List) {
+              if (r['status'] != 'ACCEPTED' || r['used_at'] != null) continue;
+              final exp = DateTime.tryParse('${r['expires_at']}');
+              if (exp == null || !exp.isAfter(now)) continue;
+              cleared.add(r['product_id'] as String);
+            }
+          }
+          if (mounted && !cleared.containsAll(ids)) {
+            context.pushReplacement('/user/availability',
+                extra: {'providerId': widget.providerId});
+            return;
+          }
+        } catch (_) {
+          // Table absent (migration not deployed) or read failed: the gate
+          // degrades to the server-side check at submission.
+        }
+      }
+
       if (mounted) {
         setState(() {
           _items = items;

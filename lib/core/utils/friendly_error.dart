@@ -395,6 +395,18 @@ String friendlyError(Object error, {String? context}) {
     'already claimed',
   ])) {
     message = 'This ride was just taken by another driver.';
+  }
+  // The pre-order availability gate's refusal (migration
+  // 20261006000006): create_order_secure raises
+  // AVAILABILITY_CONFIRMATION_REQUIRED: <product id> when an order is
+  // submitted without an ACCEPTED, unexpired, unused request for a product.
+  // The buyer's next action is the gate itself, so the sentence names it.
+  else if (_any(lower, [
+    'availability_confirmation_required',
+  ])) {
+    message = 'The provider has not confirmed this item is available yet. '
+        'Ask "Is this product available?" first — once they say yes, '
+        'you can pay.';
   } else if (_any(lower, [
     'ride_request_expired',
   ])) {

@@ -566,7 +566,9 @@ class _State extends ConsumerState<UserProductDetailScreen> {
       final providerId = ((_product!['provider_profiles']
           as Map<String, dynamic>?)?['id']) as String?;
       if (providerId != null) {
-        context.push('/user/checkout', extra: providerId);
+        // Through the availability gate, never straight to payment: the
+        // provider has to say the item exists before the checkout opens.
+        context.push('/user/availability', extra: {'providerId': providerId});
       } else {
         context.push('/user/cart');
       }
