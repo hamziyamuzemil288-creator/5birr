@@ -63,7 +63,8 @@ export function json(body: unknown, status = 200) {
 export function sanitizeError(msg: string): string {
   // Known safe error codes to pass through
   const safeCodes = [
-    "RIDE_ALREADY_TAKEN", "VEHICLE_NOT_ELIGIBLE", "PROVIDER_NOT_ELIGIBLE",
+    "RIDE_ALREADY_TAKEN", "RIDE_REQUEST_EXPIRED",
+    "VEHICLE_NOT_ELIGIBLE", "PROVIDER_NOT_ELIGIBLE",
     "WALLET_NOT_FOUND", "INSUFFICIENT_WALLET_BALANCE", "ORDER_NOT_FOUND",
     "RIDE_NOT_FOUND", "RECHARGE_REQUEST_NOT_FOUND", "RECHARGE_REQUEST_IS_NOT_PENDING",
     "PROVIDER_NOT_FOUND", "PROVIDER_MISMATCH", "FORBIDDEN", "UNAUTHORIZED",

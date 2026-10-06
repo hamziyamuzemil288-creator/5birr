@@ -86,6 +86,19 @@ class RideService {
     return data;
   }
 
+  /// Get a specific ride by id, regardless of status — the polling
+  /// fallback behind the unclaimed countdown. It must see a server-side
+  /// timeout flip the row to CANCELLED even when realtime is down, which
+  /// getMyActiveRide (status-filtered) never returns.
+  Future<Map<String, dynamic>?> getRideById(String rideId) async {
+    final data = await _client
+        .from('ride_requests')
+        .select('*, driver_status!current_ride_id(provider_id, current_location)')
+        .eq('id', rideId)
+        .maybeSingle();
+    return data;
+  }
+
   /// Get active ride for driver.
   Future<Map<String, dynamic>?> getMyActiveDriverRide() async {
     final userId = _client.auth.currentUser?.id;

@@ -396,6 +396,13 @@ String friendlyError(Object error, {String? context}) {
   ])) {
     message = 'This ride was just taken by another driver.';
   } else if (_any(lower, [
+    'ride_request_expired',
+  ])) {
+    // The 3-minute unclaimed timeout (claim_ride's RIDE_REQUEST_EXPIRED):
+    // the driver tapped Accept on a request the server already gave up on.
+    message = 'This request just expired — no driver accepted it in time. '
+        'The rider has been asked to try again.';
+  } else if (_any(lower, [
     'captcha',
   ])) {
     message = 'Please complete the security check and try again.';

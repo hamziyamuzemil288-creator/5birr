@@ -48,6 +48,24 @@ class _State extends State<UserActiveRideScreen> {
   bool _mapReady = false;
   bool _pendingCameraMove = false;
 
+  /// How long the search runs before the server gives up on an unclaimed
+  /// request (expire_stale_ride_requests, claim_ride's RIDE_REQUEST_EXPIRED)
+  /// and this screen offers a retry. Kept in lockstep with the driver-side
+  /// filter in driver_ride_requests_screen.dart.
+  static const Duration _searchTimeout = Duration(minutes: 3);
+
+  /// 1-second ticker while a request is unclaimed: drives the countdown and,
+  /// every 15th beat, re-reads the row from the server so the timeout is
+  /// honoured even when realtime is down.
+  Timer? _searchTimer;
+  int _searchTicks = 0;
+
+  /// True once THIS screen cancelled the ride, so a CANCELLED row seen while
+  /// still on the page is read as the server's timeout, not as the rider's
+  /// own cancel (which navigates away).
+  bool _iCancelled = false;
+  bool _retrying = false;
+
   // Real interactive map: controller lets us keep the camera glued to the
   // rider's live position; [_followUser] mirrors the dashboards' behavior.
   final MapController _mapController = MapController();
@@ -61,6 +79,7 @@ class _State extends State<UserActiveRideScreen> {
 
   @override
   void dispose() {
+    _searchTimer?.cancel();
     _sub?.cancel();
     _driverSub?.cancel();
     _posSub?.cancel();
@@ -83,6 +102,7 @@ class _State extends State<UserActiveRideScreen> {
               // The claim may only become known now (the unclaimed case
               // starts no driver subscription).
               _watchDriverLocation(updated);
+              _syncSearchTimer();
             }
           },
           onState: (s) {
@@ -98,6 +118,7 @@ class _State extends State<UserActiveRideScreen> {
           // screen instead of showing the ride behind stale error text.
           _error = null;
         });
+        _syncSearchTimer();
       }
       _parseDriverLocation(ride);
       _watchDriverLocation(ride);
@@ -110,6 +131,90 @@ class _State extends State<UserActiveRideScreen> {
         });
       }
     }
+  }
+
+  /// When the server stamped the request (requested_at; created_at for rows
+  /// predating the timeout column), or null when neither parses.
+  DateTime? _requestedAt() {
+    final raw = _ride?['requested_at'] ?? _ride?['created_at'];
+    if (raw is! String) return null;
+    return DateTime.tryParse(raw);
+  }
+
+  /// True when the unclaimed search has run out of time — either by the
+  /// clock (the cron may lag) or because the server already cancelled the
+  /// row while this screen was open (realtime down, poll caught it).
+  bool get _noDriver {
+    final r = _ride;
+    if (r == null || _iCancelled) return false;
+    final status = r['status'];
+    if (status == 'CANCELLED') return true;
+    if (status != 'REQUESTED') return false;
+    final at = _requestedAt();
+    return at != null && DateTime.now().difference(at) >= _searchTimeout;
+  }
+
+  /// Starts/stops the 1-second search ticker to match the ride's status.
+  /// Called whenever [_ride] changes; idempotent.
+  void _syncSearchTimer() {
+    final searching = _ride?['status'] == 'REQUESTED';
+    if (searching && _searchTimer == null) {
+      _searchTicks = 0;
+      _searchTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        _searchTicks++;
+        // Realtime has a ResilientSubscription behind it, but the one thing
+        // this screen must not do is sit on a stale "Searching" while the
+        // server gave up minutes ago — so poll the row itself every 15 s.
+        if (_searchTicks % 15 == 0) _pollRide();
+        setState(() {}); // repaint the countdown / timeout panel
+      });
+    } else if (!searching && _searchTimer != null) {
+      _searchTimer?.cancel();
+      _searchTimer = null;
+      _searchTicks = 0;
+    }
+  }
+
+  /// Polling fallback: re-read THIS ride by id (no status filter, so a
+  /// server-side timeout flipping it to CANCELLED is seen even when the
+  /// realtime channel is down).
+  Future<void> _pollRide() async {
+    final id = _ride?['id'] as String?;
+    if (id == null) return;
+    try {
+      final fresh = await RideService.instance.getRideById(id);
+      if (!mounted || fresh == null || fresh['id'] != _ride?['id']) return;
+      final status = fresh['status'];
+      if (status != _ride?['status']) {
+        setState(() => _ride = fresh);
+        _parseDriverLocation(fresh);
+        _watchDriverLocation(fresh);
+        _syncSearchTimer();
+      } else {
+        setState(() => _ride = fresh);
+      }
+    } catch (_) {
+      // A failed poll keeps the last known row; the ticker tries again.
+    }
+  }
+
+  /// "Try again": stand the timed-out request down (best effort — the cron
+  /// may already have cancelled it) and return to the request form, where
+  /// widening the search is one vehicle-type choice away.
+  Future<void> _retry() async {
+    if (_retrying) return;
+    setState(() => _retrying = true);
+    final id = _ride?['id'] as String?;
+    if (id != null) {
+      try {
+        await RideService.instance.cancelRide(id);
+      } catch (_) {
+        // Already expired server-side, or already cancelled — either way
+        // there is nothing left to stand down.
+      }
+    }
+    if (mounted) context.go('/user/ride-request');
   }
 
   /// The ride row embeds `driver_status(current_location)`; RLS now lets the
@@ -255,6 +360,9 @@ class _State extends State<UserActiveRideScreen> {
     if (confirm != true) return;
     try {
       await RideService.instance.cancelRide(_ride!['id']);
+      // On-screen CANCELLED from here on means the rider's own cancel, not
+      // the server's no-driver timeout.
+      _iCancelled = true;
       if (mounted) context.go('/user');
     } catch (e) {
       if (mounted) {
@@ -449,6 +557,19 @@ class _State extends State<UserActiveRideScreen> {
                     fontWeight: FontWeight.w600,
                     color: _statusColor(status))),
           ),
+          // The unclaimed countdown, ticking down to the 3-minute window
+          // the server enforces (expire_stale_ride_requests).
+          if (!_noDriver && status == 'REQUESTED')
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                _countdownText(),
+                style:
+                    const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+              ),
+            ),
+          // Out of time: the retry / widen-search panel.
+          if (_noDriver) _noDriverPanel(),
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
@@ -519,6 +640,82 @@ class _State extends State<UserActiveRideScreen> {
                     style: TextStyle(color: AppTheme.error)),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// "No driver yet — 2:41 left before we stop looking": the countdown to
+  /// the server's 3-minute unclaimed timeout, computed from requested_at so
+  /// it survives app close/reopen.
+  String _countdownText() {
+    final at = _requestedAt();
+    if (at == null) return 'Looking for a driver nearby…';
+    var left = _searchTimeout - DateTime.now().difference(at);
+    if (left.isNegative) left = Duration.zero;
+    final seconds = (left.inSeconds % 60).toString().padLeft(2, '0');
+    return 'No driver yet — ${left.inMinutes}:$seconds left before we stop '
+        'looking';
+  }
+
+  /// The timed-out state: what happened, and the two ways out. "Try again"
+  /// stands the old request down and returns to the form; widening the
+  /// search is choosing any vehicle type there, which is what the caption
+  /// tells the rider to do.
+  Widget _noDriverPanel() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.warning.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.warning.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.block,
+                  color: AppTheme.warning, size: 20),
+              const SizedBox(width: 8),
+              Text('No driver found',
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.warning)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'No driver accepted your ride within 3 minutes. Try again — or '
+            'widen your search: on the next request, pick any vehicle type '
+            'to reach more drivers.',
+            style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: PrimaryButton(
+                  label: 'TRY AGAIN',
+                  isLoading: _retrying,
+                  onPressed: _retry,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => context.go('/user'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: const Text('BACK TO HOME'),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );

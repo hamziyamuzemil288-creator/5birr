@@ -7591,6 +7591,250 @@ def check_admin_taps_have_handlers() -> list[str]:
     return problems
 
 
+def _split_top_level(text: str) -> list[str]:
+    """Split a CREATE TABLE column list on its top-level commas only.
+
+    Types carry commas of their own — numeric(12,2), geography(Point,4326)
+    — so a plain split() would invent columns that do not exist.
+    """
+    parts: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur))
+    return parts
+
+
+def _ride_requests_schema() -> tuple[set[str], set[str]]:
+    """(all columns, NOT-NULL-without-default columns) of ride_requests,
+    as the migration chain builds the table.
+
+    The chain is the only schema the deploy runs, so a column that appears
+    in no CREATE TABLE and no ADD COLUMN does not exist on the live database
+    — no matter what a function body believes.
+    """
+    cols: set[str] = set()
+    required: set[str] = set()
+    create_rx = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        r"(?:public\.)?ride_requests\s*\((.*?)\)\s*;",
+        re.IGNORECASE | re.DOTALL)
+    # One ALTER can carry several ADD COLUMN clauses on separate lines, so
+    # the statement (up to its first ';') is scanned — a per-clause pattern
+    # anchored on the table name would capture only the first one.
+    alter_rx = re.compile(
+        r"ALTER\s+TABLE\s+(?:ONLY\s+)?(?:public\.)?ride_requests\b",
+        re.IGNORECASE)
+    add_col_rx = re.compile(
+        r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+        re.IGNORECASE)
+    for path in migration_files():
+        src = _strip_comments(_read(path))
+        for m in create_rx.finditer(src):
+            for seg in _split_top_level(m.group(1)):
+                tok = seg.strip()
+                if not tok:
+                    continue
+                head = tok.split()[0].lower()
+                if head in {"constraint", "primary", "unique", "foreign",
+                            "check", "like"}:
+                    continue
+                name = head
+                cols.add(name)
+                if re.search(r"\bNOT\s+NULL\b", tok, re.IGNORECASE) and not re.search(
+                        r"\bDEFAULT\b", tok, re.IGNORECASE):
+                    required.add(name)
+        for m in alter_rx.finditer(src):
+            semi = src.find(";", m.end())
+            stmt = src[m.end(): semi if semi != -1 else len(src)]
+            for am in add_col_rx.finditer(stmt):
+                cols.add(am.group(1).lower())
+    return cols, required
+
+
+def check_ride_request_insert_matches_the_ride_requests_table() -> list[str]:
+    """create_ride_request() may only write columns ride_requests has.
+
+    Reproduced root cause of "GPS rides are not being claimed" (reported
+    twice): the last two restatements of create_ride_request (0107, 0114)
+    INSERT INTO ride_requests (user_id, pickup_lat, pickup_lng,
+    destination_lat, destination_lng, ..., requested_at) — but no migration
+    in the chain ever creates those five columns (the table has
+    pickup_location/destination_location geography instead), and PL/pgSQL
+    does not check column names at CREATE OR REPLACE time. Every call fails
+    at runtime with SQLSTATE 42703 `column "pickup_lat" of relation
+    "ride_requests" does not exist`, friendly_error maps "of relation" +
+    "does not exist" to its "problem on our side" sentence, no row is ever
+    written, and there is therefore nothing for a driver to claim.
+
+    The same INSERT also has to fill the table's NOT NULL columns that carry
+    no default (user_id, pickup_location, destination_location) or it trades
+    the 42703 for a 23502, and it has to stamp requested_at — the 3-minute
+    unclaimed timeout counts from it.
+    """
+    problems: list[str] = []
+
+    cols, required = _ride_requests_schema()
+    if not cols:
+        return ["ride_requests has no CREATE TABLE in any migration, so the "
+                "schema side of this check is reading nothing"]
+
+    target, src = last_migration_defining("create_ride_request")
+    if target is None:
+        return ["no migration defines public.create_ride_request()"]
+    body = function_body(src, "create_ride_request")
+    m = re.search(
+        r"INSERT\s+INTO\s+(?:public\.)?ride_requests\s*\((.*?)\)\s*VALUES",
+        body, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return ["%s: the last create_ride_request() has no "
+                "INSERT INTO ride_requests ( ... ) VALUES at all, so a "
+                "request can never reach the database" % target.name]
+    inserted = {c.strip().lower().removeprefix("public.")
+                for c in m.group(1).split(",") if c.strip()}
+
+    for col in sorted(inserted - cols):
+        problems.append(
+            "%s: create_ride_request() INSERTs ride_requests.%s, which no "
+            "migration ever adds to the table — every call fails at runtime "
+            "with 42703 'column ... of relation \"ride_requests\" does not "
+            "exist' and the rider sees 'problem on our side'; no row exists, "
+            "so no driver can ever claim" % (target.name, col))
+
+    for col in sorted(required - inserted):
+        problems.append(
+            "%s: create_ride_request() does not fill ride_requests.%s, "
+            "which is NOT NULL with no default — the insert trades its "
+            "column error for 23502 not-null violation" % (target.name, col))
+
+    if "requested_at" not in inserted:
+        problems.append(
+            "%s: create_ride_request() does not stamp requested_at, so the "
+            "3-minute unclaimed timeout has nothing to count from and stale "
+            "requests can never be identified" % target.name)
+
+    return problems
+
+
+def check_unclaimed_rides_expire_and_one_driver_wins() -> list[str]:
+    """An unclaimed ride dies in 3 minutes, and only one driver can win.
+
+    The other half of the rides report: even with rows reaching the table,
+    a REQUESTED ride used to sit there forever (no expiry anywhere) and the
+    claim had to prove its race handling stays put. Pins:
+
+      * claim_ride() must take the ride with a conditional
+        `WHERE id = ... AND status = 'REQUESTED'` UPDATE that raises
+        RIDE_ALREADY_TAKEN when it matches nothing — the atomic compare-and-
+        swap that makes exactly one of two concurrent drivers the winner;
+      * claim_ride() must refuse a request older than 3 minutes
+        (RIDE_REQUEST_EXPIRED), so a cron lag cannot award dead work;
+      * expire_stale_ride_requests() must exist and be scheduled on pg_cron,
+        so a request is never stuck forever even if nobody opens the app;
+      * both screens must act on the same 3-minute window (the rider is
+        shown "No driver found" with retry, the driver's list drops stale
+        rows), and Connectivity CI must run the live assertions.
+    """
+    problems: list[str] = []
+
+    claim_src_fn = last_migration_defining("claim_ride")
+    claim_target, claim_src = claim_src_fn
+    if claim_target is None:
+        problems.append("no migration defines public.claim_ride()")
+    else:
+        cbody = function_body(claim_src, "claim_ride")
+        if not re.search(
+                r"WHERE\s+id\s*=\s*p_ride_id\s+AND\s+status\s*=\s*'REQUESTED'",
+                cbody, re.IGNORECASE | re.DOTALL):
+            problems.append(
+                "%s: claim_ride() no longer takes the ride with a "
+                "conditional UPDATE ... WHERE status = 'REQUESTED' — "
+                "without the compare-and-swap two drivers accepting at "
+                "once can both win" % claim_target.name)
+        if "RIDE_ALREADY_TAKEN" not in cbody:
+            problems.append(
+                "%s: claim_ride() no longer raises RIDE_ALREADY_TAKEN for "
+                "the driver who lost the race, so the loser is told "
+                "nothing useful" % claim_target.name)
+        if "RIDE_REQUEST_EXPIRED" not in cbody or not re.search(
+                r"3\s*minutes", cbody, re.IGNORECASE):
+            problems.append(
+                "%s: claim_ride() will still award a request older than "
+                "3 minutes (no RIDE_REQUEST_EXPIRED guard against the "
+                "interval), so a driver can claim work the timeout already "
+                "gave up on" % claim_target.name)
+
+    exp_target, exp_src = last_migration_defining("expire_stale_ride_requests")
+    if exp_target is None:
+        problems.append(
+            "no migration defines public.expire_stale_ride_requests() — "
+            "with nothing expiring them, unclaimed requests are stuck in "
+            "REQUESTED forever")
+    else:
+        ebody = function_body(exp_src, "expire_stale_ride_requests")
+        if not re.search(r"status\s*=\s*'REQUESTED'", ebody, re.IGNORECASE) \
+                or "CANCELLED" not in ebody.upper():
+            problems.append(
+                "%s: expire_stale_ride_requests() no longer moves stale "
+                "REQUESTED rides to CANCELLED" % exp_target.name)
+        if not re.search(r"3\s*minutes", ebody, re.IGNORECASE):
+            problems.append(
+                "%s: expire_stale_ride_requests() does not use the "
+                "3-minute window" % exp_target.name)
+
+    if not any("5birr-ride-request-expiry" in _read(p)
+               for p in migration_files()):
+        problems.append(
+            "no migration schedules the pg_cron job "
+            "'5birr-ride-request-expiry', so nothing ever calls the expiry "
+            "function and a request the app never reopens stays REQUESTED "
+            "forever")
+
+    active = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_active_ride_screen.dart"))
+    if "No driver found" not in active:
+        problems.append(
+            "user_active_ride_screen.dart never tells the rider 'No driver "
+            "found' — a rider whose request times out gets no retry or "
+            "widen-search option")
+    if "Duration(minutes: 3)" not in active:
+        problems.append(
+            "user_active_ride_screen.dart does not use the 3-minute window, "
+            "so the rider-side timeout disagrees with the server's")
+
+    driver = _dart_without_comments(
+        _read(LIB / "features" / "vehicle" / "driver_ride_requests_screen.dart"))
+    if "Duration(minutes: 3)" not in driver:
+        problems.append(
+            "driver_ride_requests_screen.dart does not drop requests older "
+            "than 3 minutes — a realtime filter that only sees INSERTs "
+            "leaves expired work on the driver's screen to be claimed and "
+            "refused")
+
+    conn = _read(ROOT / "tools" / "integration_test" /
+                 "connectivity_test.dart")
+    for fn in ("assert_ride_request_write_matches_schema",
+               "assert_ride_claim_race_has_one_winner",
+               "assert_unclaimed_ride_expiry_is_wired"):
+        if fn not in conn:
+            problems.append(
+                "connectivity_test.dart does not run %s(), so the live "
+                "database is never asked whether the rides fix is "
+                "deployed" % fn)
+
+    return problems
+
+
 CHECKS = [
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
@@ -7604,6 +7848,10 @@ CHECKS = [
      check_admin_taps_have_handlers),
     ("the admin image delete removes the file from every bucket, and says why when it cannot",
      check_admin_image_delete_is_complete),
+    ("a ride request writes only columns ride_requests actually has",
+     check_ride_request_insert_matches_the_ride_requests_table),
+    ("an unclaimed ride expires in 3 minutes and only one driver can win the claim",
+     check_unclaimed_rides_expire_and_one_driver_wins),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

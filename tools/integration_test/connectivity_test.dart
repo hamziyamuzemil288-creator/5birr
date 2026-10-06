@@ -134,6 +134,41 @@ void main() {
     });
   });
 
+  group('GPS rides: creation -> claim -> timeout', () {
+    test('the ride request write matches the ride_requests table', () async {
+      // The reported root cause of "rides are not being claimed": the last
+      // create_ride_request restatements INSERTed pickup_lat / requested_at
+      // — columns no migration ever created — so every call failed with
+      // 42703, the rider saw "problem on our side", and no row ever existed
+      // for a driver to claim. This reads the LIVE body and checks every
+      // column it writes against information_schema.
+      expect(await ok('assert_ride_request_write_matches_schema'), isTrue,
+          reason: 'create_ride_request() writes a column ride_requests does '
+              'not have (42703) or skips a NOT NULL one (23502) — no request '
+              'reaches the database, so nothing can ever be claimed. If this '
+              'fails right after a deploy, migration '
+              '20261006000005 did not run.');
+    });
+    test('two drivers accepting at once: exactly one wins', () async {
+      // Write test, rolled back by sentinel: a fulfilment-ready driver
+      // claims a real REQUESTED row, a second driver claims the same row and
+      // must lose with RIDE_ALREADY_TAKEN without overwriting the first, and
+      // exactly one REQUESTED -> CLAIMED history row must remain.
+      expect(await ok('assert_ride_claim_race_has_one_winner'), isTrue,
+          reason: 'claim_ride() lost its conditional UPDATE on '
+              'status = REQUESTED (or stopped reporting the loser), so two '
+              'drivers accepting at once can both believe they won.');
+    });
+    test('unclaimed rides expire after 3 minutes (cron + claim guard)',
+        () async {
+      expect(await ok('assert_unclaimed_ride_expiry_is_wired'), isTrue,
+          reason: 'expire_stale_ride_requests is missing, the 5birr-ride-'
+              'request-expiry cron job is not scheduled, or claim_ride no '
+              'longer refuses 3-minute-stale requests — a request nobody '
+              'answers would stay REQUESTED forever.');
+    });
+  });
+
   group('staff attribution: actions -> performance view (Phase 2 #6)', () {
     test('staff_performance uses the real ride ownership column', () async {
       expect(await ok('assert_staff_performance_uses_claimed_by'), isTrue,

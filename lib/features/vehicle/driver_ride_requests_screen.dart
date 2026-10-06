@@ -19,10 +19,16 @@ class DriverRideRequestsScreen extends StatefulWidget {
 }
 
 class _State extends State<DriverRideRequestsScreen> {
+  /// How long a request may sit unclaimed before the server gives up on it
+  /// (expire_stale_ride_requests) and this screen stops offering it. Kept in
+  /// lockstep with the rider-side countdown in user_active_ride_screen.dart.
+  static const Duration _unclaimedTimeout = Duration(minutes: 3);
+
   ResilientSubscription<List<Map<String, dynamic>>>? _rideSub;
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   List<Map<String, dynamic>> _requests = [];
   bool _loading = true;
+  bool _claiming = false;
   String? _error;
   String? _providerId;
 
@@ -79,7 +85,18 @@ class _State extends State<DriverRideRequestsScreen> {
     _rideSub = ResilientSubscription(
       stream: RideService.instance.watchRideRequests(),
       onData: (rides) {
-        if (mounted) setState(() => _requests = rides);
+        // The realtime filter only sees INSERTs and matching UPDATEs: a
+        // request the server expired (3-minute unclaimed timeout) can linger
+        // in this feed, offering a CLAIM button that would only come back as
+        // "expired". Drop rows the timeout has already claimed as its own.
+        final cutoff =
+            DateTime.now().subtract(_unclaimedTimeout);
+        final fresh = rides.where((r) {
+          final raw = (r['requested_at'] ?? r['created_at']) as String?;
+          final at = raw == null ? null : DateTime.tryParse(raw);
+          return at == null || at.isAfter(cutoff);
+        }).toList(growable: false);
+        if (mounted) setState(() => _requests = fresh);
       },
       onState: (s) {
         if (mounted) setState(() => _rideConn = s);
@@ -103,29 +120,33 @@ class _State extends State<DriverRideRequestsScreen> {
   }
 
   Future<void> _claim(Map<String, dynamic> ride) async {
-    if (_providerId == null) return;
-    // Task 7: one-time document check before accepting an order — the
-    // post-recharge trigger point. Missing docs open the upload + QR
-    // verification sheet; declining keeps the ride available to others.
-    if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
-    // Get first available vehicle
-    final client = Supabase.instance.client;
-    final vehicles = await client
-        .from('vehicles')
-        .select('id')
-        .eq('provider_id', _providerId!)
-        .eq('is_available', true)
-        .eq('status', 'APPROVED')
-        .limit(1);
-    if (vehicles.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No available vehicles')));
-      }
-      return;
-    }
-
+    // Double-tap guard: two rapid taps fire two claims — the second loses
+    // the race the first one just won and tells the driver the ride was
+    // "taken by another driver".
+    if (_providerId == null || _claiming) return;
+    setState(() => _claiming = true);
     try {
+      // Task 7: one-time document check before accepting an order — the
+      // post-recharge trigger point. Missing docs open the upload + QR
+      // verification sheet; declining keeps the ride available to others.
+      if (!(await ProviderDocGate.instance.ensureDocuments(context))) return;
+      // Get first available vehicle
+      final client = Supabase.instance.client;
+      final vehicles = await client
+          .from('vehicles')
+          .select('id')
+          .eq('provider_id', _providerId!)
+          .eq('is_available', true)
+          .eq('status', 'APPROVED')
+          .limit(1);
+      if (vehicles.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('No available vehicles')));
+        }
+        return;
+      }
+
       await RideService.instance.claimRide(
         rideId: ride['id'],
         providerId: _providerId!,
@@ -138,14 +159,23 @@ class _State extends State<DriverRideRequestsScreen> {
       }
     } catch (e) {
       if (mounted) {
-        // Keep the specific "someone beat you to it" wording, but stop
-        // interpolating the raw exception for every other failure.
-        final msg = e.toString().contains('RIDE_ALREADY_TAKEN')
+        // Keep the specific "someone beat you to it" and "it expired"
+        // wordings, but stop interpolating the raw exception for every
+        // other failure.
+        final text = e.toString();
+        final msg = text.contains('RIDE_ALREADY_TAKEN')
             ? 'This ride was just taken by another driver'
-            : friendlyError(e, context: 'Could not claim this ride');
+            : text.contains('RIDE_REQUEST_EXPIRED')
+                ? 'This request just expired — the rider has been asked to try again'
+                : friendlyError(e, context: 'Could not claim this ride');
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
+        // An expired or taken row must stop being offered immediately —
+        // rebuild the feed from the server instead of trusting it.
+        await _init();
       }
+    } finally {
+      if (mounted) setState(() => _claiming = false);
     }
   }
 
@@ -286,7 +316,9 @@ class _State extends State<DriverRideRequestsScreen> {
                                     child: SizedBox(
                                       height: 42,
                                       child: ElevatedButton(
-                                        onPressed: () => _claim(r),
+                                        onPressed: _claiming
+                                            ? null
+                                            : () => _claim(r),
                                         style: ElevatedButton.styleFrom(
                                           backgroundColor: AppTheme.teal,
                                           padding: const EdgeInsets
