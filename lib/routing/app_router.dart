@@ -29,7 +29,9 @@ import '../features/user/live_map_screen.dart';
 import '../features/user/review_form_screen.dart';
 import '../features/provider/service_provider_dashboard.dart';
 import '../features/provider/provider_orders_screen.dart';
+import '../features/about/about_us_screen.dart';
 import '../features/provider/provider_category_settings_screen.dart';
+import '../features/provider/provider_business_profile_screen.dart';
 import '../features/admin/admin_category_fields_screen.dart';
 import '../features/provider/provider_subscription_screen.dart';
 import '../features/provider/provider_payment_methods_screen.dart';
@@ -67,6 +69,7 @@ import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/admin/admin_settings_screen.dart';
 import '../features/admin/fee_settings_screen.dart';
 import '../features/admin/admin_content_control_screen.dart';
+import '../features/admin/widgets/image_delete_sheet.dart';
 import '../features/shared/transaction_documents_screen.dart';
 import '../features/admin/category_fee_settings_screen.dart';
 import '../features/appeal/appeal_screen.dart';
@@ -329,6 +332,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),      GoRoute(path: '/terms',
         builder: (_, s) => TermsPolicyScreen(returnToSignup: s.extra == true),
       ),
+      // What Aliob is, and how to reach a human. The profile's "About Aliob"
+      // row pushed /terms before this screen existed -- legal copy where a
+      // description belonged. The Terms screen is still reachable from signup,
+      // the help chat and this screen's own footer.
+      GoRoute(path: '/about', builder: (_, __) => const AboutUsScreen()),
       // Standalone profile. UserProfileScreen is normally a tab inside
       // /user, so providers and vehicle owners had no way to reach their own
       // account details — both dashboards offered a "Profile" button that
@@ -430,6 +438,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/provider/category-settings',
           builder: (_, __) => const ProviderCategorySettingsScreen()),
+      // The provider's own business profile: name, description, contact, GPS,
+      // photo, and the price range a buyer reads on their public page.
+      // `/provider/business` is what the dashboard's Business Profile card and
+      // the readiness banner already push -- with no route registered those
+      // taps went nowhere, and `provider_profiles.price_range` had no editor
+      // anywhere in the app.
+      GoRoute(
+          path: '/provider/business',
+          builder: (_, __) => const ProviderBusinessProfileScreen()),
       GoRoute(path: '/provider/orders', builder: (_, __) => const ProviderOrdersScreen()),
       // Provider-side buyer-payment verification. A payment from a buyer INTO
       // the provider's own account may be confirmed by the provider (who can
@@ -553,6 +570,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/admin/content',
           builder: (_, __) => const AdminContentControlScreen()),
+
+      // The dedicated image-delete list, reached from Content Control's own
+      // delete strip. Content Control renders a short strip of the gallery it
+      // already loaded; this is the full-page tool over the same
+      // `admin_public_image_gallery` rows.
+      GoRoute(
+          path: '/admin/content/image-delete',
+          builder: (_, __) => const ImageDeleteSheet()),
 
       // The slips for one order or one ride. Both parties and admins may read
       // them; `my_transaction_documents` decides who, not this route.

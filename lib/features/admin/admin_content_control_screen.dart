@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import 'widgets/public_image_gallery.dart';
-import 'widgets/image_delete_sheet.dart';
 
 /// Content control: the queue of reports, the record of what has been taken
 /// down, and the two actions this screen exists for.
@@ -165,6 +165,17 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     );
     controller.dispose();
     return reason;
+  }
+
+  /// Open the dedicated image-delete list (`ImageDeleteSheet`).
+  ///
+  /// The strip below is built from the gallery rows this screen already
+  /// loaded; the sheet is the full-page tool over the same
+  /// `admin_public_image_gallery` result. Content Control reloads when it
+  /// closes, so an image removed there does not leave a dead row behind here.
+  Future<void> _openImageDeleteSheet() async {
+    await context.push('/admin/content/image-delete');
+    if (mounted) await _load();
   }
 
   /// Remove an image chosen from the delete-only gallery strip.
@@ -333,12 +344,28 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                       // gallery, not the queue.
                       const PublicImageGallery(),
                       const SizedBox(height: 20),
-                      const Text('Delete image',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.primaryGreenDark,
-                          )),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text('Delete image',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.primaryGreenDark,
+                                )),
+                          ),
+                          TextButton.icon(
+                            onPressed: _working ? null : _openImageDeleteSheet,
+                            icon: const Icon(Icons.delete_sweep_outlined,
+                                size: 18),
+                            label: const Text('Full list'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppTheme.error,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 4),
                       const Text(
                         'Pick any published image and delete it permanently. '

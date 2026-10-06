@@ -349,9 +349,12 @@ class UserProfileScreen extends ConsumerWidget {
                       AppTheme.error,
                       onTap: () => context.push('/account/deletion')),
                   _divider(),
+                  // Opens the About screen, not the Terms policy it used to
+                  // point at -- the one place a user goes to find out what the
+                  // app is should not show them a legal document.
                   _menuTile(Icons.info_outline, 'About Aliob',
                       AppTheme.textSecondary,
-                      onTap: () => context.push('/terms')),
+                      onTap: () => context.push('/about')),
                 ],
               ),
             ),
