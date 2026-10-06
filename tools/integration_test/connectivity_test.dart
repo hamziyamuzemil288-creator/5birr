@@ -209,6 +209,25 @@ void main() {
     });
   });
 
+  group('admin content control: hide, delete, audit (item 2)', () {
+    test('Hide works for every image table and is reversible', () async {
+      // The reported defect: the sheet offered "Hide from public" on every
+      // published image, but admin_set_gallery_image_public only knew how to
+      // resolve provider_gallery ids — every product photo tap came back
+      // NO_SUCH_IMAGE (a dead action), and the gallery chip ignored
+      // products.is_active so a hidden listing still read "Public".
+      // Migration 20261006000010 resolves the id against all three image
+      // tables, flips the switch that table actually uses, and audits the
+      // change. If this fails right after a deploy, that migration did not
+      // run.
+      expect(await ok('assert_image_hide_is_reversible'), isTrue,
+          reason: 'Hide/restore lost a piece: it no longer handles all '
+              'three image tables, a change stops landing in '
+              'moderation_actions, or the gallery still reports a hidden '
+              'listing as Public.');
+    });
+  });
+
   group('staff attribution: actions -> performance view (Phase 2 #6)', () {
     test('staff_performance uses the real ride ownership column', () async {
       expect(await ok('assert_staff_performance_uses_claimed_by'), isTrue,

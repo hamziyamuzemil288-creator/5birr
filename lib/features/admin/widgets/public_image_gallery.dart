@@ -158,7 +158,7 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
       _snack(text);
       await _load();
     } catch (e) {
-      if (mounted) _snack(friendlyError(e, context: label), bad: true);
+      if (mounted) _snack(friendlyErrorWithCode(e, context: label), bad: true);
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -348,9 +348,11 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
         ),
         const SizedBox(height: 6),
         const Text(
-          'Every image a customer can see right now, grouped by city. Hide one '
-          'to take it down without deleting it — the provider keeps their copy '
-          'and can publish it again.',
+          'Every image a customer can see right now, grouped under the '
+          'uploader\'s city — so a shop that uploaded the app\'s own logo '
+          'appears there as an ordinary image (under Addis Ababa, say). Hide '
+          'one to take it down without deleting it; delete removes the file '
+          'for good.',
           style: TextStyle(fontSize: 12, height: 1.4),
         ),
         const SizedBox(height: 10),
@@ -510,17 +512,26 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
               const SizedBox(height: 14),
               // Hide is offered before delete, and is the default emphasis:
               // removal is irreversible and takes the provider's copy too.
+              //
+              // Item 2: hide AND restore now work for every source — the
+              // server resolves the id against provider_gallery,
+              // product_images or vehicle_images and flips whichever
+              // switch controls that image's public visibility, so the
+              // restore row is no longer gated to provider_gallery only.
               if (image['is_public'] == true)
                 _action(
                   icon: Icons.visibility_off_outlined,
                   label: 'Hide from public',
-                  detail: 'Reversible. They keep the photo.',
+                  detail: image['source'] == 'provider_gallery'
+                      ? 'Reversible. They keep the photo.'
+                      : 'Reversible. Takes it out of buyers\' sight; '
+                          'nothing is deleted.',
                   onTap: () {
                     Navigator.pop(ctx);
                     _setPublic(image, false);
                   },
                 )
-              else if (image['source'] == 'provider_gallery')
+              else
                 _action(
                   icon: Icons.visibility_outlined,
                   label: 'Put back in public',

@@ -7519,6 +7519,79 @@ def check_admin_image_delete_is_complete() -> list[str]:
             "with _bucketFor() again — that helper is what stranded "
             "product/vehicle files in storage")
 
+    # ── item 2's second half: Hide is reversible for EVERY image, and the
+    # admin sees the real refusal code ──
+    hide_target, hide_src = last_migration_defining(
+        "admin_set_gallery_image_public")
+    if hide_target is None:
+        problems.append("no migration defines admin_set_gallery_image_public")
+    else:
+        hide_body = function_body(hide_src, "admin_set_gallery_image_public")
+        for needle, why in (
+            ("product_images",
+             "Hide does not resolve product-image ids — the product-photo "
+             "tap dies with NO_SUCH_IMAGE"),
+            ("vehicle_images",
+             "Hide does not resolve vehicle-image ids — that action is "
+             "dead too"),
+            ("moderation_actions",
+             "a hide or restore writes no audit row"),
+            ("is_active",
+             "hiding a product image no longer flips products.is_active, "
+             "so nothing disappears"),
+        ):
+            if needle not in hide_body:
+                problems.append("%s: admin_set_gallery_image_public %s"
+                                % (hide_target.name, why))
+        if "SUSPENDED" not in hide_body:
+            problems.append(
+                "%s: vehicle images are not hidden by moving the vehicle "
+                "out of APPROVED — the public read policy still shows it"
+                % hide_target.name)
+
+    gallery_target, gallery_src = last_migration_defining(
+        "admin_public_image_gallery")
+    if gallery_target is not None:
+        gallery_body = function_body(gallery_src, "admin_public_image_gallery")
+        if "p.is_active" not in gallery_body:
+            problems.append(
+                "%s: the gallery chip ignores products.is_active, so a "
+                "listing the admin just hid still reads Public"
+                % gallery_target.name)
+
+    gallery_dart = _dart_without_comments(
+        _read(LIB / "features" / "admin" / "widgets" /
+              "public_image_gallery.dart"))
+    if "else if (image['source'] == 'provider_gallery')" in gallery_dart:
+        problems.append(
+            "public_image_gallery.dart: Put-back-in-public is gated to "
+            "provider_gallery again, so a hidden product photo can never "
+            "be restored")
+    if "friendlyErrorWithCode" not in gallery_dart:
+        problems.append(
+            "public_image_gallery.dart hides the server's real refusal code "
+            "from the moderator (item 2: show the real error code)")
+    ctrl_dart = _dart_without_comments(ctrl)
+    if "friendlyErrorWithCode" not in ctrl_dart:
+        problems.append(
+            "admin_content_control_screen.dart hides the server's real "
+            "refusal code from the moderator")
+
+    ferr = _dart_without_comments(_read(LIB / "core" / "utils" /
+                                        "friendly_error.dart"))
+    for fn, why in (("errorCodeOf", "no way to extract the real code"),
+                    ("friendlyErrorWithCode",
+                     "no admin-facing sentence that carries the code")):
+        if "String" + ("?" if fn == "errorCodeOf" else "") + " " + fn \
+                not in ferr:
+            problems.append("friendly_error.dart: %s (%s)" % (fn, why))
+
+    if "assert_image_hide_is_reversible" not in _read(
+            ROOT / "tools" / "integration_test" / "connectivity_test.dart"):
+        problems.append(
+            "connectivity_test.dart does not run "
+            "assert_image_hide_is_reversible()")
+
     return problems
 
 

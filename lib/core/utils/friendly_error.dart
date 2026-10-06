@@ -530,3 +530,58 @@ bool isNotFound(Object error) {
     '404',
   ]);
 }
+
+/// The server's own refusal code, for surfaces where the code IS the
+/// information.
+///
+/// [friendlyError] deliberately hides codes from end users — `PGRST301` or
+/// `42P01` tells a buyer nothing. An administrator diagnosing a moderation
+/// refusal needs exactly that, plus the app's own sentinel
+/// (`ADMIN_ONLY`, `A_REASON_IS_REQUIRED`, `NO_SUCH_IMAGE`), which PostgREST
+/// carries in the exception's `message` field rather than its `code`.
+///
+/// Returns the two joined (`ADMIN_ONLY · P0001`), the one that exists, or
+/// null when the error carries no recognisable code — never an invented one.
+/// Dependency-free (dart:core only) so it can be imported anywhere without
+/// risking an import cycle, like everything else in this file.
+String? errorCodeOf(Object error) {
+  final raw = error.toString();
+
+  // PostgrestException(message: ADMIN_ONLY, code: P0001, details: …)
+  final message = RegExp(r'\bmessage:\s*([^,)]+)')
+      .firstMatch(raw)
+      ?.group(1)
+      ?.trim();
+  final transport =
+      RegExp(r'\bcode:\s*([A-Za-z0-9_]+)', caseSensitive: false)
+          .firstMatch(raw)
+          ?.group(1)
+          ?.toUpperCase();
+
+  // `42703: column … does not exist` — the SQLSTATE the transport left in
+  // front of the message.
+  final sqlstate =
+      RegExp(r'^\s*([0-9][0-9A-Z]{4}):').firstMatch(raw)?.group(1);
+
+  // A bare server sentinel (`ADMIN_ONLY`) with no envelope around it.
+  final bare = RegExp(r'^\s*([A-Z][A-Z0-9_]{3,})\s*$').firstMatch(raw)?.group(1);
+
+  final parts = <String>[
+    if (message != null &&
+        RegExp(r'^[A-Za-z0-9_]{4,}$').hasMatch(message))
+      message,
+    if (sqlstate != null) sqlstate,
+    if (bare != null && !(message != null && message == bare)) bare,
+    if (transport != null && transport != sqlstate) transport,
+  ];
+  if (parts.isEmpty) return null;
+  return parts.join(' · ');
+}
+
+/// [friendlyError] plus the real code — the sentence an ADMIN surface shows.
+/// End-user screens keep using [friendlyError] alone.
+String friendlyErrorWithCode(Object error, {String? context}) {
+  final sentence = friendlyError(error, context: context);
+  final code = errorCodeOf(error);
+  return code == null ? sentence : '$sentence [$code]';
+}

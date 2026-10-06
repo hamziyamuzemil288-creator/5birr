@@ -123,7 +123,11 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
       await _load();
     } catch (e) {
       if (mounted) {
-        _snack(friendlyError(e, context: label), bad: true);
+        // Item 2: the admin sees the REAL refusal code next to the friendly
+        // sentence ([ADMIN_ONLY · P0001], [NO_SUCH_IMAGE], …). End users keep
+        // the plain sentence; a moderator diagnosing a failed takedown needs
+        // the code the server actually raised.
+        _snack(friendlyErrorWithCode(e, context: label), bad: true);
       }
     } finally {
       if (mounted) setState(() => _working = false);
@@ -341,8 +345,11 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                       ),
                       const SizedBox(height: 4),
                       const Text(
-                        'Pick any published image and delete it permanently. '
-                        'This removes the file and unlinks the row in one call.',
+                        'Tap a row to delete it for good — file, row, every '
+                        'reference, plus an audit entry. For the reversible '
+                        'Hide action (or to restore), tap any image in the '
+                        'gallery above; failures show the server\'s real '
+                        'error code.',
                         style:
                             TextStyle(fontSize: 12, color: AppTheme.textMuted),
                       ),
