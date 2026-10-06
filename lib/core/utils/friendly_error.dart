@@ -203,6 +203,34 @@ String friendlyError(Object error, {String? context}) {
         'exists.';
   }
 
+  // ── Admin image takedown (Content Control) ──
+  //
+  // The moderation RPC refuses for reasons an administrator can ACT on —
+  // and must never show them "Something went wrong": the whole point of the
+  // clear-reason wrapper (0141) is that the server's own sentence reaches
+  // the screen. `IMAGE_MODERATION_FAILED: <cause>` carries the underlying
+  // error after the colon, so it is passed through verbatim (trimmed to a
+  // readable length); the two stable refusals get fixed sentences.
+  else if (_any(lower, ['image_moderation_failed'])) {
+    final reason = RegExp(
+            r'image_moderation_failed:\s*(.+)',
+            caseSensitive: false)
+        .firstMatch(raw)
+        ?.group(1)
+        ?.trim();
+    final cleaned = reason == null || reason.isEmpty
+        ? null
+        : (reason.length > 160 ? '${reason.substring(0, 160)}…' : reason);
+    message = cleaned == null
+        ? 'The image could not be removed. Please try again.'
+        : 'The image could not be removed: $cleaned';
+  } else if (_any(lower, ['no_row_references_that_image'])) {
+    message = 'That image is already gone — no row references it any more. '
+        'Refresh the list to see the current state.';
+  } else if (_any(lower, ['that_bucket_is_not_moderable'])) {
+    message = 'That storage bucket cannot be moderated from this screen.';
+  }
+
   // ── Authorisation (RLS denials arrive as plain 403s) ──
   //
   // `not_your_provider` is raised by the two create paths when the provider id

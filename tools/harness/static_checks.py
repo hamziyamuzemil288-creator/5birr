@@ -3707,11 +3707,47 @@ def check_content_control_is_wired() -> list[str]:
     else:
         s = _strip_comments(_read(screen))
         for rpc in ("admin_content_reports", "admin_moderation_actions",
-                    "admin_moderate_image", "admin_suspend_account",
-                    "admin_resolve_content_report"):
+                    "admin_suspend_account", "admin_resolve_content_report"):
             if "'%s'" % rpc not in s:
                 problems.append(
                     "admin_content_control_screen.dart never calls %s()" % rpc)
+        # The delete path calls the clear-reason WRAPPER (0141), which
+        # delegates to admin_moderate_image — accepted only while that
+        # delegation is verifiable in the migration that defines the
+        # wrapper. A wrapper that stops delegating would otherwise pass
+        # this check while the client's only delete call reaches nothing.
+        if ("'admin_moderate_image'" not in s
+                and "'admin_moderate_image_with_reason'" not in s):
+            problems.append(
+                "admin_content_control_screen.dart never calls "
+                "admin_moderate_image() — neither directly nor via the "
+                "admin_moderate_image_with_reason wrapper, so the delete "
+                "button has no RPC behind it")
+        else:
+            # Scan every migration that DEFINES the wrapper for the
+            # delegation. last_migration_defining() can name a file that
+            # merely GRANTs the wrapper (a restatement), whose body is not
+            # the wrapper at all — so the definition itself is what is
+            # searched.
+            defined = False
+            delegated = False
+            for mig in migration_files():
+                mbody = function_body(_read(mig),
+                                      "admin_moderate_image_with_reason")
+                if not mbody:
+                    continue
+                defined = True
+                if "admin_moderate_image(" in mbody:
+                    delegated = True
+            if not defined:
+                problems.append(
+                    "no migration defines admin_moderate_image_with_reason() "
+                    "— the client's delete call has nothing to reach")
+            elif not delegated:
+                problems.append(
+                    "the admin_moderate_image_with_reason wrapper no longer "
+                    "delegates to admin_moderate_image(), so the client's "
+                    "only delete call reaches nothing")
 
     router = _read(LIB / "routing" / "app_router.dart")
     if "'/admin/content'" not in router:
@@ -7424,6 +7460,68 @@ def check_account_deletion_removes_the_files() -> list[str]:
     return problems
 
 
+def check_admin_image_delete_is_complete() -> list[str]:
+    """The admin image delete must remove the FILE, not just the row.
+
+    Reproduced root cause: admin_moderate_image() deleted storage.objects
+    with `bucket_id = p_bucket`, and the client's `_bucketFor()` guessed that
+    bucket from path SUBSTRINGS (`/product` → product-images) that real
+    upload paths — `uid/<productId>/<file>` — never contain. Every product
+    and vehicle image was therefore sent as 'provider-gallery', the storage
+    delete matched zero rows, and the FILE stayed in the bucket while the DB
+    row went and the UI reported success. Migration 20261006000004 deletes
+    the object from ALL moderable buckets by name; friendly_error must show
+    the server's real refusal instead of the generic fallback; and the
+    guessing helper must not come back.
+    """
+    problems: list[str] = []
+
+    target, _ = last_migration_defining("admin_moderate_image")
+    if target is None:
+        problems.append("no migration defines admin_moderate_image()")
+    else:
+        body = function_body(_read(target), "admin_moderate_image")
+        if "storage.objects" not in body:
+            problems.append(
+                "%s: admin_moderate_image() no longer touches "
+                "storage.objects at all, so deleted images live forever in "
+                "the bucket" % target.name)
+        if not re.search(r"bucket_id\s*=\s*ANY", body):
+            problems.append(
+                "%s: admin_moderate_image() deletes the storage object "
+                "with the caller's single p_bucket only. The client's "
+                "bucket guess (path substrings that real upload paths never "
+                "contain) stranded product/vehicle files in the bucket "
+                "while the row was deleted — the object must be deleted "
+                "from ALL moderable buckets by name" % target.name)
+
+    err = _read(LIB / "core" / "utils" / "friendly_error.dart")
+    code = _dart_without_comments(err) if err else ""
+    for needle, why in (
+        ("image_moderation_failed",
+         "the server's own takedown failure reason is hidden behind the "
+         "generic fallback, so the admin cannot act on it"),
+        ("no_row_references_that_image",
+         "the already-gone refusal reaches the admin as a raw code"),
+        ("that_bucket_is_not_moderable",
+         "the bucket refusal reaches the admin as a raw code"),
+    ):
+        if not re.search(r"_any\(\s*lower\s*,\s*\[[^\]]*%s"
+                         % re.escape(needle), code, re.DOTALL):
+            problems.append(
+                "friendly_error.dart has no matcher-list entry for %s — %s"
+                % (needle, why))
+
+    ctrl = _read(LIB / "features" / "admin" / "admin_content_control_screen.dart")
+    if ctrl and re.search(r"'p_bucket':\s*_bucketFor\(", ctrl):
+        problems.append(
+            "admin_content_control_screen.dart guesses the delete bucket "
+            "with _bucketFor() again — that helper is what stranded "
+            "product/vehicle files in storage")
+
+    return problems
+
+
 def check_admin_taps_have_handlers() -> list[str]:
     """Every tappable surface in the admin area must have a real handler.
 
@@ -7504,6 +7602,8 @@ CHECKS = [
      check_publish_refusal_is_actionable),
     ("every tappable surface in the admin area has a real handler",
      check_admin_taps_have_handlers),
+    ("the admin image delete removes the file from every bucket, and says why when it cannot",
+     check_admin_image_delete_is_complete),
     ("signup OTP toggle contract (server pre-checks the toggle; bypass records no verification)",
      check_signup_otp_contract),
     ("every RPC called from lib/ exists in supabase/migrations",

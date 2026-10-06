@@ -206,45 +206,18 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     });
   }
 
-  /// Remove an image by its storage path.
-  ///
-  /// The bucket is recovered from the path shape -- every upload in this
-  /// project is `<uid>/...`. An unknown shape is refused by the server rather
-  /// than guessed at here.
-  Future<void> _removeImage(String path) async {
-    if (path.isEmpty || !path.contains('/')) {
-      _snack('That path has no owner folder, so it cannot be removed.',
-          bad: true);
-      return;
-    }
-    final reason = await _askReason(
-      'Remove this image?',
-      confirm: 'Remove image',
-    );
-    if (reason == null || !mounted) return;
-
-    await _run('Image removal', () {
-      return Supabase.instance.client.rpc('admin_moderate_image', params: {
-        'p_bucket': _bucketFor(path),
-        'p_path': path,
-        'p_reason': reason,
-        'p_severity': 'SERIOUS',
-      });
-    });
-  }
-
-  /// The bucket is not stored on the report, so it is recovered from the
-  /// path's shape -- every upload in this project is `<uid>/...`. An unknown
-  /// shape is refused by the server rather than guessed at here.
-  String _bucketFor(String path) {
-    if (path.contains('/photo') || path.contains('/gallery')) {
-      return 'provider-gallery';
-    }
-    if (path.contains('/avatar')) return 'profile-avatars';
-    if (path.contains('/product')) return 'product-images';
-    if (path.contains('/vehicle')) return 'vehicle-images';
-    return 'provider-gallery';
-  }
+  // ` _removeImage(path)` and its `_bucketFor(path)` bucket-guessing helper
+  // used to live here. They were the defective half of the delete flow: the
+  // bucket was recovered from SUBSTRINGS in the path (`/product` →
+  // product-images), while real upload paths are `uid/<productId>/<file>` —
+  // a uuid folder containing none of those words — so every product and
+  // vehicle image was sent to the RPC as 'provider-gallery', the
+  // storage.objects delete matched zero rows, and the FILE stayed in the
+  // bucket while the row went. Both methods had no callers left after the
+  // strip moved to `_removeImageFromRow` (which uses the row's own bucket
+  // column), and migration 20261006000004 now deletes the object from ALL
+  // moderable buckets by name server-side, so no client-side guess can
+  // strand a file again. The decoy is gone rather than left to rot.
 
   Future<void> _suspend(Map<String, dynamic> report) async {
     final id = report['reported_user_id'] as String?;
