@@ -20,79 +20,38 @@
 // net must never silently pass), except on fork PRs where secrets are
 // unavailable; there the workflow skips with an explicit notice.
 
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:supabase/supabase.dart';
+
+import 'pending_deploy.dart';
 
 const _url = String.fromEnvironment('SUPABASE_URL');
 const _anonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
 
-/// The migration the live database has actually applied — the same marker the
-/// harness uses (tools/harness/pending.py). It is written by hand after a
-/// deploy log reports `Applying migration <name>`.
-const _deployedHeadFile = 'supabase/DEPLOYED_HEAD';
-const _migrationsDir = 'supabase/migrations';
-
-/// Function names that exist ONLY in migrations newer than [_deployedHeadFile].
+/// Function names that exist ONLY in migrations newer than [deployedHeadFile].
 ///
 /// A push creates them, but the live database does not have them yet, so a call
 /// comes back as PGRST202 "Could not find the function <name> in the schema
 /// cache". That error is indistinguishable on its face from a misspelt name or
 /// a GRANT that closed the function off — the reported cause of this suite's
 /// last red run — so the suite must NOT tolerate the error. It tolerates the
-/// NAME, and only when the repo itself proves the name is not deployed: no
-/// migration at or before the applied head defines it. A deployed function that
-/// fails the same way is a real finding (a typo, or a missing grant) and still
-/// fails, exactly as any returned `false` does.
+/// NAME, and only when the repo itself proves BOTH halves: no migration at or
+/// before the applied head defines it, AND the live database agrees it is
+/// absent. A deployed function that fails the same way is a real finding (a
+/// typo, or a missing grant) and still fails, exactly as any returned `false`
+/// does.
 ///
 /// Empty when the boundary cannot be read, which restores the old strict
 /// behaviour instead of inventing a tolerance.
-final Set<String> _pendingDeployFunctions = _readPendingDeployFunctions();
-
-final RegExp _functionDefinition = RegExp(
-    r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?([a-z_][a-z0-9_]*)',
-    caseSensitive: false);
-
-Set<String> _readPendingDeployFunctions() {
-  try {
-    final head = File(_deployedHeadFile).readAsStringSync().trim();
-    if (head.isEmpty) return const <String>{};
-    final files = Directory(_migrationsDir)
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.sql'))
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
-    final headIndex = files.indexWhere((f) => f.path.endsWith(head));
-    if (headIndex < 0) return const <String>{};
-    Set<String> definedBy(Iterable<File> fs) => fs
-        .expand((f) => _functionDefinition.allMatches(f.readAsStringSync()))
-        .map((m) => m.group(1)!)
-        .toSet();
-    return definedBy(files.skip(headIndex + 1))
-        .difference(definedBy(files.take(headIndex + 1)));
-  } catch (_) {
-    return const <String>{};
-  }
-}
+final Set<String> _pendingDeployFunctions = readPendingDeployFunctions();
 
 /// Report a call to a not-yet-deployed function as a SKIPPED test rather than a
 /// silent pass: the assertion cannot run until the next `Deploy Supabase`, but
 /// that absence is expected, not a defect. Any real failure in the same test
 /// still fails it.
 void _reportPendingDeploy(String fn) {
-  markTestSkipped('PENDING DEPLOY: $fn is created only by a migration newer '
-      'than $_deployedHeadFile, so the live database does not have it yet '
-      '(PostgREST reports it as PGRST202 "could not find the function in the '
-      'schema cache"). Deploy Supabase creates it and this test then runs for '
-      'real.');
+  markTestSkipped(pendingDeployNotice(fn));
 }
-
-/// The value a text/report helper returns for a pending function: non-null so
-/// the caller's `isNotNull` passes, and never starting with `FAIL`, so it is
-/// not mistaken for a finding.
-String _pendingDeployNotice(String fn) => 'PENDING DEPLOY: $fn';
 
 void main() {
   if (_url.isEmpty || _anonKey.isEmpty) {
@@ -108,17 +67,54 @@ void main() {
     client = SupabaseClient(_url, _anonKey);
   });
 
+  /// Asks the live database whether `fn` exists for the role this suite calls
+  /// as, so a stale [deployedHeadFile] can never turn a real failure into a
+  /// skip. A function that is present is never tolerated, even when PostgREST
+  /// answered PGRST202 — that combination is exactly a missing-GRANT finding
+  /// (migration 20261007000008 exists to catch four of them).
+  ///
+  /// Probes through the same PostgREST surface as the assertion itself, so the
+  /// answer reflects anon's visibility rather than a superuser's. Returns
+  /// `null` when the probe cannot be answered, which is treated as "not proven
+  /// absent" — a stale marker must not be able to skip anything on its own.
+  Future<bool?> _functionExists(String fn) async {
+    try {
+      final result = await client.rpc('pg_func_exists',
+          params: {'p_fn_name': fn});
+      return result is bool ? result : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Whether this failure may be reported as PENDING DEPLOY instead of a
+  /// finding. Tolerates only the one case that is genuinely not a defect yet:
+  /// the server says the function is not there (PGRST202), the repo says no
+  /// migration at or before the applied head defines it, AND the live catalog
+  /// agrees it is absent.
+  ///
+  /// Every other outcome is a real finding — including a deployed function
+  /// PostgREST cannot resolve because anon lost EXECUTE (also PGRST202), and a
+  /// body error such as PRODUCT_NOT_FOUND for a name that happens to sit past
+  /// the head. Both were being relabelled PENDING DEPLOY before the live check
+  /// was added.
+  Future<bool> _tolerate(String fn, Object e) async {
+    if (!isPendingDeploy(e, fn, _pendingDeployFunctions)) return false;
+    // The repo says "not deployed"; the live database must agree. `null` means
+    // the probe could not answer, which is not proof of absence.
+    if (await _functionExists(fn) != false) return false;
+    _reportPendingDeploy(fn);
+    return true;
+  }
+
   Future<bool> ok(String fn) async {
     try {
       return (await client.rpc(fn)) == true;
-    } catch (_) {
+    } catch (e) {
       // A function the next deploy creates cannot be asserted yet; a function
       // already on the live database that fails is a real finding (and a
       // misspelt/closed function fails the same way).
-      if (_pendingDeployFunctions.contains(fn)) {
-        _reportPendingDeploy(fn);
-        return true;
-      }
+      if (await _tolerate(fn, e)) return true;
       rethrow;
     }
   }
@@ -131,11 +127,8 @@ void main() {
     try {
       final result = await client.rpc(fn);
       return result is String ? result : null;
-    } catch (_) {
-      if (_pendingDeployFunctions.contains(fn)) {
-        _reportPendingDeploy(fn);
-        return _pendingDeployNotice(fn);
-      }
+    } catch (e) {
+      if (await _tolerate(fn, e)) return pendingDeployNotice(fn);
       return null;
     }
   }
@@ -157,10 +150,7 @@ void main() {
       if (result is String) return (result, null);
       return (null, 'returned ${result.runtimeType} ($result), not a String');
     } catch (e) {
-      if (_pendingDeployFunctions.contains(fn)) {
-        _reportPendingDeploy(fn);
-        return (_pendingDeployNotice(fn), null);
-      }
+      if (await _tolerate(fn, e)) return (pendingDeployNotice(fn), null);
       return (null, '$e');
     }
   }
