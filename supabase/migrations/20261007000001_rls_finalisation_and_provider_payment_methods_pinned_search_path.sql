@@ -25,6 +25,20 @@
 -- already had RLS. The live DB already had provider_payment_methods RLS on and
 -- the two policies in place, so this file just makes the repo truthful and
 -- future-proof.
+--
+-- REPAIRED after the Connectivity CI + Deploy Supabase failure on c3729bb.
+-- Two defects lived in this file and both had to be fixed HERE, not in a later
+-- migration:
+--   1. The RLS loop caught `invalid_algorithm_for_policy_or_constraint`, which
+--      is not a PostgreSQL condition name. A DO block that cannot be compiled
+--      aborts the whole `supabase db push` at this file, so no later migration
+--      ever runs — a new file cannot repair a parse error. Clause deleted.
+--   2. It re-created public.provider_payment_accounts to "pin search_path",
+--      dropping the availability/used_at gate that 20261006000002 and
+--      20261006000009 install. Restatement removed (the search_path was
+--      already pinned by the file that owns the body).
+-- The one fix that DOES belong in the next migration — the assertion functions
+-- this batch left unreachable by anon — is in 20261007000008.
 
 DO $$
 DECLARE
@@ -88,34 +102,22 @@ BEGIN
     USING (public.is_admin());
 
   -- -------------------------------------------------------
-  -- 3. provider_payment_accounts: pin search_path (SECURITY
-  --    DEFINER). Does not depend on provider_payment_methods
-  --    existing in any particular state.
+  -- 3. provider_payment_accounts: search_path was ALREADY pinned
+  --    here, so there is nothing to do.
   -- -------------------------------------------------------
-  IF EXISTS (
-    SELECT 1 FROM pg_proc
-     WHERE pronamespace = 'public'::regnamespace
-       AND proname = 'provider_payment_accounts'
-  ) THEN
-    -- Idempotent: if the function already carries the pinned search_path,
-    -- this is a no-op. We set it explicitly rather than reading the
-    -- current value and comparing, because the important property is the
-    -- pinned value, not the historical one.
-    CREATE OR REPLACE FUNCTION public.provider_payment_accounts(p_provider_id uuid)
-    RETURNS SETOF public.provider_payment_methods
-    LANGUAGE plpgsql
-    SECURITY DEFINER
-    SET search_path = public, pg_temp
-    AS $$
-    BEGIN
-      RETURN QUERY
-        SELECT m.*::public.provider_payment_methods
-          FROM public.provider_payment_methods m
-         WHERE m.provider_id = p_provider_id
-           AND public.owns_provider_profile(m.provider_id);
-    END;
-    $$;
-  END IF;
+  -- Earlier drafts of this file re-created the function here "to pin its
+  -- search_path". That was both unnecessary and destructive: migration
+  -- 20261006000009 (which runs BEFORE this file) already ships it with
+  -- `SET search_path = public, pg_temp`, and the local body it was replaced
+  -- with dropped the availability_requests / used_at gate that 09 and
+  -- 20261006000002 added — so every number was revealed to a buyer without
+  -- the provider's YES, and the connectivity assertion
+  -- assert_no_contact_before_payment (plus the needle check
+  -- assert_source_needles_match) failed on the next deploy. Pinning
+  -- search_path is a property of the function that created it; this file
+  -- must not restate the body to "keep" it. If a future gate is added to
+  -- provider_payment_accounts, the file that adds the gate owns the body;
+  -- re-assert it there, not here.
 
   -- -------------------------------------------------------
   -- 4. Generic loop: enable RLS on any of OUR public tables
@@ -223,14 +225,19 @@ BEGIN
       'vehicle_images'
     ]) AS tbl_name
   LOOP
+    -- `undefined_table` is the only condition worth catching: a table that is
+    -- not there yet is safe to skip. An earlier draft ALSO caught
+    -- `invalid_algorithm_for_policy_or_constraint`, which is not a PostgreSQL
+    -- condition name at all — the block failed to compile with
+    -- "unrecognized exception condition ... compilation of PL/pgSQL function",
+    -- so the entire `supabase db push` aborted at this file (a parse-time
+    -- error cannot be repaired by a later migration) and neither this loop nor
+    -- anything after it ever ran. There is no SQLSTATE behind that name, so
+    -- the clause is deleted rather than corrected. Verified against
+    -- /usr/share/postgresql/14/errcodes.txt (254 valid condition names).
     BEGIN
       EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', r.tbl_name);
-    EXCEPTION WHEN invalid_algorithm_for_policy_or_constraint THEN
-      -- If a table is in a weird state, fail loudly rather than silently
-      -- pretending we hardened it.
-      RAISE;
     EXCEPTION WHEN undefined_table THEN
-      -- Table does not exist yet (not applied). Safe to skip.
       NULL;
     END;
   END LOOP;
