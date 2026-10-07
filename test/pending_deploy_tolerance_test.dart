@@ -14,42 +14,96 @@
 // The third condition, the live database confirming the function is absent,
 // needs a SupabaseClient and belongs to the connectivity suite itself; what
 // this file pins down is that the repo-side half can never widen on its own.
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import '../tools/integration_test/pending_deploy.dart';
 
 void main() {
-  group('the repo half of the rule reads the real migration boundary', () {
-    late Set<String> pending;
-
-    setUpAll(() {
-      pending = readPendingDeployFunctions();
+  group('the repo half of the rule reads the migration boundary', () {
+    // The set of functions newer than the applied head is a property of how
+    // far the live database has been deployed, not of the code: a fully
+    // deployed repo has NONE, so asserting the set is non-empty — or that a
+    // particular function is in it — turns green into red for a reason nobody
+    // can act on, and would pass for the wrong reason the moment a name is
+    // redefined. What must hold at every deploy state is the RULE, so it is
+    // exercised below against a synthetic tree; the working tree is checked
+    // only for the thing that is genuinely its job — that the marker is
+    // readable and names a real migration, because an unreadable marker
+    // silently degrades the tolerance to "never skip".
+    test('the marker is readable and names a real migration', () {
+      final head = File(deployedHeadFile).readAsStringSync().trim();
+      expect(head, isNotEmpty,
+          reason: 'supabase/DEPLOYED_HEAD is empty, so the tolerance would '
+              'silently degrade to "never skip" and turn every pre-deploy '
+              'push red.');
+      final migrations = Directory(migrationsDir)
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.sql'))
+          .map((f) => f.path)
+          .toList();
+      expect(migrations.any((p) => p.endsWith(head)), isTrue,
+          reason: 'supabase/DEPLOYED_HEAD must name a migration that exists '
+              'in supabase/migrations; when it does not, '
+              'readPendingDeployFunctions() returns an empty set and the '
+              'tolerance degrades to "never skip".');
     });
 
-    test('the boundary is readable and non-empty in this working tree', () {
-      // An unreadable marker yields an empty set, which is the strict
-      // behaviour — but silently losing the boundary entirely would be a
-      // different bug, so assert we are actually reading it.
-      expect(pending, isNotEmpty,
-          reason: 'supabase/DEPLOYED_HEAD or supabase/migrations could not be '
-              'read; the tolerance would silently degrade to "never skip", '
-              'which turns every pre-deploy push red.');
+    late Directory root;
+    late String headPath;
+    late String migrationsPath;
+
+    setUp(() {
+      root = Directory.systemTemp.createTempSync('pending-deploy-test');
+      migrationsPath = '${root.path}/migrations';
+      Directory(migrationsPath).createSync();
+      // shared_fn is restated by a newer migration, so it is on the live
+      // database and must not be classified pending; after_the_head_fn is not.
+      File('$migrationsPath/20260101000000_old.sql').writeAsStringSync(
+          "create or replace function public.shared_fn() returns boolean "
+          "language sql as 'select true';\n"
+          "create or replace function public.at_the_head_fn() returns boolean "
+          "language sql as 'select true';\n");
+      File('$migrationsPath/20260202000000_new.sql').writeAsStringSync(
+          "create or replace function public.shared_fn() returns boolean "
+          "language sql as 'select true';\n"
+          "create or replace function public.after_the_head_fn() returns "
+          "boolean language sql as 'select true';\n");
+      headPath = '${root.path}/DEPLOYED_HEAD';
+      File(headPath).writeAsStringSync('20260101000000_old.sql');
+    });
+
+    tearDown(() {
+      root.deleteSync(recursive: true);
     });
 
     test('a function created only after the head is classified pending', () {
-      expect(pending, contains('assert_charge_paths_use_the_shared_fee_resolvers'),
-          reason: 'defined only by 20261007000005 and 20261007000008, both '
-              'newer than supabase/DEPLOYED_HEAD');
+      final pending = readPendingDeployFunctions(
+          headPath: headPath, migrationsPath: migrationsPath);
+      expect(pending, contains('after_the_head_fn'),
+          reason: 'defined only by the migration past the applied head');
     });
 
     test('functions defined at or before the head are never pending', () {
-      expect(pending, isNot(contains('assert_income_ledger_consistent')),
-          reason: 'created by 20260922000007, long before the applied head — '
-              'classifying it pending would let a real failure skip');
-      expect(pending, isNot(contains('assert_every_assertion_is_reachable')),
-          reason: 'created by 20260927000091, before the applied head — this '
-              'is the assertion whose whole job is to catch unreachable '
-              'assertions, so it must never be skippable');
+      final pending = readPendingDeployFunctions(
+          headPath: headPath, migrationsPath: migrationsPath);
+      expect(pending, isNot(contains('shared_fn')),
+          reason: 'restated by a newer migration, but defined at or before '
+              'the head too, so it is on the live database — classifying it '
+              'pending would let a real failure skip');
+      expect(pending, isNot(contains('at_the_head_fn')),
+          reason: 'defined by the head migration itself');
+    });
+
+    test('an unreadable boundary skips nothing', () {
+      final pending = readPendingDeployFunctions(
+          headPath: '${root.path}/does-not-exist',
+          migrationsPath: migrationsPath);
+      expect(pending, isEmpty,
+          reason: 'a boundary that cannot be read must widen the tolerance '
+              'to nothing, never to everything');
     });
   });
 
