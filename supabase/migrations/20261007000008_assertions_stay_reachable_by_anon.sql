@@ -40,6 +40,39 @@
 -- Idempotent: GRANT is a no-op if the privilege is already held, and the guard
 -- at the end only reads the catalog.
 
+-- -----------------------------------------------------------------------------
+-- pg_func_exists(p_fn_name text) -> boolean
+-- 
+-- Probe used by the connectivity suite's pending-deploy tolerance. The suite
+-- calls a function by name; when that function is defined only by a migration
+-- past the deployed head, the tolerance must confirm with the live database
+-- that the function really is absent before it can skip the test. This probe
+-- runs as the same role the suite calls it as (anon), so it reflects what the
+-- suite can actually reach.
+--
+-- SECURITY DEFINER so it can read pg_proc even when called by anon.
+-- STABLE because catalog reads are stable within a transaction.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.pg_func_exists(p_fn_name text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname = p_fn_name
+  );
+END
+$$;
+
+GRANT EXECUTE ON FUNCTION public.pg_func_exists(text)
+  TO anon, authenticated, service_role;
+
 GRANT EXECUTE ON FUNCTION public.assert_provider_payment_methods_phone_guard()
   TO anon, authenticated, service_role;
 
