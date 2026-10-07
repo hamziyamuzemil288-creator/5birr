@@ -14,6 +14,7 @@ import '../../core/services/fee_resolver.dart';
 import '../../core/services/document_upload_service.dart';
 import '../../core/utils/order_number_format.dart' as onf;
 import '../../core/utils/friendly_error.dart';
+import '../../core/utils/friendly_failure.dart';
 
 class UserCheckoutScreen extends ConsumerStatefulWidget {
   final String providerId;
@@ -527,7 +528,10 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
         return;
       }
       setState(() {
-        _error = friendlyError(e, context: 'Could not place your order');
+        // With a reference code, so a buyer whose order failed has something
+        // exact to send support instead of a screenshot of a sentence.
+        _error = friendlyErrorWithRef(e,
+            context: 'Could not place your order', source: 'checkout');
       });
     }
   }

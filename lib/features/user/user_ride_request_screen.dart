@@ -14,6 +14,7 @@ import '../../core/services/location_service.dart';
 import '../../core/widgets/where_to_picker.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/utils/friendly_failure.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/primary_button.dart';
@@ -706,7 +707,11 @@ class _State extends State<UserRideRequestScreen>
       AppUpdateService.instance.notePossibleRefusal(e);
       setState(() {
         _submitting = false;
-        _error = friendlyError(e, context: 'Could not request this ride');
+        // With a reference code: a failed ride request is the one a rider is
+        // most likely to screenshot at a driver, so the sentence carries the
+        // code support can look up.
+        _error = friendlyErrorWithRef(e,
+            context: 'Could not request this ride', source: 'ride_request');
       });
     }
   }

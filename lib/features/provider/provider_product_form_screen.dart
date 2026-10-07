@@ -14,6 +14,7 @@ import '../../core/services/provider_doc_gate.dart';
 import '../../core/services/app_update_service.dart';
 import '../../core/services/fee_resolver.dart';
 import '../../core/utils/friendly_error.dart';
+import '../../core/utils/friendly_failure.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/photo_grid.dart';
 
@@ -475,8 +476,9 @@ class _State extends State<ProviderProductFormScreen> {
           await showPublishBlockedDialog(context, e.toString());
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(friendlyError(
-                  e, context: 'Could not save this product'))));
+              content: Text(friendlyErrorWithRef(e,
+                  context: 'Could not save this product',
+                  source: 'product_save'))));
         }
       }
     } finally {

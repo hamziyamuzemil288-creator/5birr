@@ -83,7 +83,11 @@ class ErrorLogger {
   /// [ClientErrorReport] by hand is how call sites end up omitting the source
   /// or the context, which is exactly the information that makes a log row
   /// useful.
-  void logError(
+  /// Returns the short reference code shown to the user, or null when the
+  /// report was suppressed as a duplicate. Callers that only want the row
+  /// ignore the return value; `friendlyErrorWithRef()` uses it to print
+  /// "… (Ref AL-3F9C21)" beside the sentence.
+  String? logError(
     Object error,
     StackTrace? stack, {
     String source = 'app',
@@ -91,7 +95,7 @@ class ErrorLogger {
     Map<String, Object?>? details,
     bool isFatal = false,
   }) {
-    log(ClientErrorReport(
+    return log(ClientErrorReport(
       message: error.toString(),
       stackTrace: stack?.toString(),
       source: source,
@@ -103,25 +107,53 @@ class ErrorLogger {
   }
 
   /// Queue a report. Never throws, never blocks.
-  void log(ClientErrorReport report) {
+  ///
+  /// Returns the short reference code the user can be shown and support can
+  /// search on — `AL-3F9C21` — or null when the report was suppressed (a
+  /// duplicate, the session cap, or a failure while logging). The code is
+  /// generated BEFORE the insert and returned regardless of whether the insert
+  /// succeeded, so even a report that could not be stored still gives the user
+  /// something to quote: the code is the handle, the row is the detail.
+  String? log(ClientErrorReport report) {
     try {
-      if (_sentThisSession >= _maxPerSession) return;
+      if (_sentThisSession >= _maxPerSession) return null;
 
       final message = _clip(report.message, _maxMessageChars);
       final fingerprint = _fingerprint(report.source, message);
       final now = DateTime.now();
       final last = _lastSent[fingerprint];
-      if (last != null && now.difference(last) < _dedupeWindow) return;
+      if (last != null && now.difference(last) < _dedupeWindow) return null;
       _lastSent[fingerprint] = now;
       _sentThisSession++;
 
-      unawaited(_send(report, message, fingerprint));
+      final reference = _newReference();
+      unawaited(_send(report, message, fingerprint, reference));
+      return reference;
     } catch (_) {
       // Logging must never be the reason the app fails.
+      return null;
     }
   }
 
-  Future<void> _send(ClientErrorReport report, String message, String fingerprint) async {
+  /// A short, speakable code: `AL-` plus six upper-case hex characters derived
+  /// from the clock and a per-session counter. Not a uuid and not secrets — its
+  /// only job is to be readable over the phone and searchable in the table.
+  String _newReference() {
+    _referenceCounter = (_referenceCounter + 1) & 0xFFFF;
+    final stamp = DateTime.now().millisecondsSinceEpoch & 0xFFFFFF;
+    final mixed = (stamp ^ (_referenceCounter * 2654435761)) & 0xFFFFFF;
+    final hex = mixed.toRadixString(16).toUpperCase().padLeft(6, '0');
+    return 'AL-$hex';
+  }
+
+  int _referenceCounter = 0;
+
+  Future<void> _send(
+    ClientErrorReport report,
+    String message,
+    String fingerprint,
+    String reference,
+  ) async {
     try {
       final client = Supabase.instance.client;
       final userId = client.auth.currentUser?.id;
@@ -138,6 +170,7 @@ class ErrorLogger {
             : jsonEncode(_sanitise(report.context!)),
         'is_fatal': report.isFatal,
         'fingerprint': fingerprint,
+        'reference_code': reference,
       });
     } catch (_) {
       // Swallowed on purpose. See the library docs: the most likely reason
