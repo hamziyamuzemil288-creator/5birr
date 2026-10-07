@@ -82,7 +82,8 @@ ALTER TABLE public.ride_requests
   ADD COLUMN IF NOT EXISTS pickup_lng double precision,
   ADD COLUMN IF NOT EXISTS destination_lat double precision,
   ADD COLUMN IF NOT EXISTS destination_lng double precision,
-  ADD COLUMN IF NOT EXISTS requested_at timestamptz;
+  ADD COLUMN IF NOT EXISTS requested_at timestamptz,
+  ADD COLUMN IF NOT EXISTS city text;
 
 -- Backfill from the geography halves that DO exist, so the timeout and any
 -- distance display behave identically for rows created before this deploy.
