@@ -1092,6 +1092,7 @@ void main() {
       for (final row in (rows as List)) {
         final r = Map<String, dynamic>.from(row as Map);
         final roles = '${r['roles'] ?? ''}';
+    }
     });
 
     test('the client write surface is closed, not just reported', () async {
