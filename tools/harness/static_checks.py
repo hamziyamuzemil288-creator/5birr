@@ -3540,37 +3540,88 @@ def check_category_fees_are_wired() -> list[str]:
 
         save_call = s[s.find("'admin_save_category_fee'"):]
         save_call = save_call[:save_call.find("});")] if "});" in save_call else save_call
-        for group in ("_rideFields", "_bookingFields", "_commissionFields",
-                      "_productFields"):
-            if group not in save_call:
-                problems.append(
-                    "category_fee_settings_screen.dart renders %s but the "
-                    "admin_save_category_fee call does not include it -- every "
-                    "input in that group is discarded on save" % group)
+
+        # Two shapes satisfy the contract, and the check must know both or it
+        # reports the second one as a defect:
+        #   * the call names each group literally, or
+        #   * the call iterates the groups the selected fee MODEL uses and
+        #     sends `f.param` for each field -- which is what this screen does.
+        # In the second shape the group names live in the model mapping, so
+        # that mapping is read. Either way the invariant is unchanged: a group
+        # that is rendered but can never be sent is a control that silently
+        # discards what the admin typed.
+        sends_every_field = re.search(
+            r"for\s*\(\s*final\s+\w+\s+in\s+_?[A-Za-z0-9]+\s*\)\s*"
+            r"for\s*\(\s*final\s+(\w+)\s+in\s+\w+\s*\)\s*"
+            r"\n?\s*\1\.param\s*:",
+            save_call, re.S)
+        reachable_groups = set(_groups_the_model_mapping_can_return(s))
+
+        declared_groups = re.findall(
+            r"const\s+List<_FeeField>\s+(_[A-Za-z0-9]+)\s*=\s*\[", s)
+        if not declared_groups:
+            problems.append(
+                "category_fee_settings_screen.dart declares no "
+                "const List<_FeeField> group -- the field lists were renamed "
+                "or removed")
+
+        for group in declared_groups:
+            if group in save_call:
+                continue  # named literally by the call
+            if sends_every_field and group in reachable_groups:
+                continue  # sent through the model mapping's loop
+            problems.append(
+                "category_fee_settings_screen.dart renders %s but the "
+                "admin_save_category_fee call can never send it -- every "
+                "input in that group is discarded on save" % group)
 
         # Seeding a draft from the row would freeze the platform default.
         # Checked structurally rather than by lookahead: a negative lookahead
         # after `\?\?\s*` is defeated by backtracking the `\s*` to zero, so it
         # matches nothing and reports nothing forever.
-        seeds = re.findall(r"TextEditingController\(text:\s*([^)]*)\)", s)
-        if not seeds:
+        ctrl_re = re.compile(r"TextEditingController\(text:\s*([^)]*)\)")
+        matches = list(ctrl_re.finditer(s))
+        if not matches:
             problems.append(
                 "category_fee_settings_screen.dart builds no "
                 "TextEditingController -- the fee form has no inputs")
-        for seed in seeds:
+
+        # The SIMULATOR's inputs are not fee inputs. `_SimState` seeds its
+        # example distance ('5' km), nights ('1') and amount ('1000' birr) on
+        # purpose: they are the numbers the preview example is computed from,
+        # and a blank one would make the simulator meaningless. Reading every
+        # controller in the file as a fee input reported those three as
+        # "prefilled fee fields" -- a false positive that made a correct screen
+        # look broken. Fee inputs are the ones built from their own draft.
+        sim_block = re.search(r"class _SimState\b.*?\n\}", s, re.S)
+        sim_src = sim_block.group(0) if sim_block else ""
+
+        fee_inputs = 0
+        for m in matches:
+            seed = m.group(1).strip()
+            in_simulator = bool(sim_src) and m.group(0) in sim_src
             if re.search(r"effective|\brow\b|column", seed):
                 problems.append(
                     "category_fee_settings_screen.dart seeds a fee input from "
                     "%r. Seeding it with the EFFECTIVE number means the first "
                     "save writes the platform default back as a hard override "
                     "and it can never move again. Show effective values as "
-                    "hints under the field instead." % seed.strip())
-            elif not re.fullmatch(r"_drafts\[[^\]]+\]\s*\?\?\s*''", seed.strip()):
+                    "hints under the field instead." % seed)
+            elif re.fullmatch(r"_drafts\[[^\]]+\]\s*\?\?\s*''", seed):
+                fee_inputs += 1
+            elif not in_simulator:
                 problems.append(
                     "category_fee_settings_screen.dart seeds a fee input from "
                     "%r rather than from its own empty draft -- a prefilled "
                     "field cannot express 'inherit the platform default'."
-                    % seed.strip())
+                    % seed)
+
+        if fee_inputs == 0:
+            problems.append(
+                "category_fee_settings_screen.dart builds no fee input from "
+                "its own empty draft (_drafts[...] ?? '') -- a fee field that "
+                "cannot be left blank cannot express 'inherit the platform "
+                "default'")
 
     return problems
 
@@ -4211,18 +4262,45 @@ def _dynamic_param_names(site: str, fn: str) -> set[str]:
     chunk = _rpc_call_chunk(site, fn)
     if chunk is None:
         return set()
+
+    attr: str | None = None
+    lists: list[str] = []
+
+    # Shape 1: a single loop over a LITERAL list of declared field groups.
     loop = re.search(r"for\s*\(\s*final\s+(\w+)\s+in\s*\[(.*?)\]\s*\)", chunk, re.S)
-    if not loop:
+    if loop:
+        var = loop.group(1)
+        # The element is `f.param: parse(f.param)` and sits AFTER the loop's
+        # closing bracket, so it is read from the chunk past the match.
+        # (Splitting the loop match on `"in"` does not work: the first "in" is
+        # inside `final`, and the match does not contain the element at all.)
+        tail = re.match(r"\s*([\w.]+):", chunk[loop.end():])
+        attr = (tail.group(1) if tail else var).split(".")[-1]
+        lists = re.findall(r"\b(_[A-Za-z0-9]+)\b", loop.group(2))
+    else:
+        # Shape 2, introduced by the per-model fee editor: a NESTED loop --
+        # `for (final group in _modelFields) for (final f in group)
+        # f.param: ...`. No literal list appears in the call at all, so there
+        # is nothing here to read the group names from and the check reported
+        # the call as sending two arguments. The groups are read from the
+        # model mapping instead, which is the only place that states which
+        # groups can ever be sent.
+        nested = re.search(
+            r"for\s*\(\s*final\s+\w+\s+in\s+_?[A-Za-z0-9]+\s*\)\s*"
+            r"for\s*\(\s*final\s+(\w+)\s+in\s+\w+\s*\)\s*"
+            r"\n?\s*([\w.]+):",
+            chunk, re.S)
+        if not nested:
+            return set()
+        attr = nested.group(2).split(".")[-1]
+        lists = _groups_the_model_mapping_can_return(site)
+        if not lists:
+            return set()
+
+    if attr is None:
         return set()
-    var = loop.group(1)
-    # The element is `f.param: parse(f.param)` and sits AFTER the loop's
-    # closing bracket, so it is read from the chunk past the match. (Splitting
-    # the loop match on `"in"` does not work: the first "in" is inside
-    # `final`, and the match does not contain the element at all.)
-    tail = re.match(r"\s*([\w.]+):", chunk[loop.end():])
-    attr = (tail.group(1) if tail else var).split(".")[-1]
     names: set[str] = set()
-    for list_name in re.findall(r"\b(_[A-Za-z0-9]+)\b", loop.group(2)):
+    for list_name in lists:
         decl = re.search(
             r"\b%s\s*=\s*\[(.*?)\n\];" % re.escape(list_name), site, re.S)
         if not decl:
@@ -4230,6 +4308,29 @@ def _dynamic_param_names(site: str, fn: str) -> set[str]:
         names.update(re.findall(
             r"\b%s:\s*'([a-z_0-9]+)'\s*," % re.escape(attr), decl.group(1)))
     return names
+
+
+def _groups_the_model_mapping_can_return(site: str) -> list[str]:
+    """Every declared _FeeField group the fee-model mapping can return.
+
+    The per-model editor sends `for (final group in _modelFields) for (final f
+    in group) f.param: ...`, and `_modelFields` returns whatever the mapping
+    function picks for the selected model. The UNION of that function's
+    branches is therefore exactly the set of groups the call can send -- which
+    is what has to match 0124's transcription -- and a group that no branch
+    returns is the "rendered but never sent" defect, reported by
+    check_category_fees_are_wired.
+    """
+    fn = re.search(
+        r"List<List<_FeeField>>\s+\w+\s*\(\s*_FeeModel\s+\w+\s*\)\s*\{"
+        r"(.*?)\n\}", site, re.S)
+    if not fn:
+        return []
+    seen: list[str] = []
+    for name in re.findall(r"\b(_[A-Za-z0-9]*Fields[A-Za-z0-9]*)\b", fn.group(1)):
+        if name not in seen:
+            seen.append(name)
+    return seen
 
 
 def _rpc_call_sites(fn: str) -> str:

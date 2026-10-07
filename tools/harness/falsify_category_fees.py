@@ -106,12 +106,20 @@ def main() -> int:
         print("[skip] B: the subscription resolver call shape changed; "
               "the A/C/D cases still prove the check bites")
 
-    # C. a rendered field group is not sent on save
+    # C. a rendered field group can never be sent on save.
+    #
+    # Re-anchored for the per-model editor: the save call no longer names the
+    # groups (it iterates whatever the model mapping returns), so the defect is
+    # now "declared and rendered, but no fee model returns it". Dropping
+    # _productFields from the mapping is exactly that -- the product section
+    # still renders and every input in it is discarded.
+    product_branch = screen_src.replace("    _productFields,\n", "", 1)
+    if product_branch == screen_src:
+        raise AssertionError(
+            "falsifier anchor missing: _productFields in the model mapping")
     ok &= expect_red(
-        "C: _productFields is rendered but not sent",
-        {screen.name: screen_src.replace(
-            "..._commissionFields,\n          ..._productFields\n",
-            "..._commissionFields\n")},
+        "C: _productFields is rendered but no fee model sends it",
+        {screen.name: product_branch},
     )
 
     # D. the sidebar door is removed
