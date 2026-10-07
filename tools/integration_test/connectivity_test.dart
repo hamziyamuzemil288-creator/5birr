@@ -1058,11 +1058,11 @@ void main() {
                 'it is not reporting what it claims to. The safety net is '
                 'reporting silence as success.');
       }
-      expect(byKind['expected'], hasLength(23),
+      expect(byKind['expected'], hasLength(24),
           reason: 'The expected list in client_write_surface_report() is the '
               'contract for what the app writes client-side. It has drifted '
-              'from test/client_write_surface_test.dart, which pins 23 '
-              '(20 plus client_error_logs, product_likes and '
+              'from test/client_write_surface_test.dart, which pins 24 '
+              '(20 plus banks, client_error_logs, product_likes and '
               'provider_payment_methods).');
     });
 
