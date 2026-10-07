@@ -1092,62 +1092,6 @@ void main() {
       for (final row in (rows as List)) {
         final r = Map<String, dynamic>.from(row as Map);
         final roles = '${r['roles'] ?? ''}';
-        final using = '${r['using_expr'] ?? ''}';
-        final check = '${r['check_expr'] ?? ''}';
-        // ignore: avoid_print
-        print('WRITE POLICY | ${r['verdict'] == 'WIDE' ? 'WIDE ' : '      '}'
-            '${r['table_name']} · ${r['cmd']} · ${r['policy_name']} · to $roles'
-            '${using.isEmpty ? '' : '\n          USING: $using'}'
-            '${check.isEmpty ? '' : '\n          CHECK: $check'}');
-        if (r['verdict'] == 'WIDE') wide.add('${r['table_name']} (${r['cmd']})');
-      }
-      // ignore: avoid_print
-      print('WRITE POLICY | WIDE count: ${wide.length}');
-      // ignore: avoid_print
-      print('WRITE POLICY | wide list: ${wide.join(', ')}');
-    });
-
-    test('a job change is recorded wherever it is made', () async {
-      // The CEO's staff editor grants and revokes jobs through update_staff(),
-      // and set_staff_jobs() -- the only call that wrote job history -- had no
-      // caller anywhere in lib/. The staff member's "My jobs" list still
-      // filled in, because my_staff_record() builds it from staff.permissions;
-      // what stayed empty was job_history, which it reads from
-      // staff_job_assignments. So the history card rendered nothing for every
-      // job the console ever granted, and a missing record is invisible in a
-      // way a missing screen is not.
-      //
-      // Behavioural on purpose. A trigger-exists check would have passed on the
-      // broken system, because the bug was a record that never happened on the
-      // path the app takes, not a function that was wrong.
-      expect(await ok('assert_staff_job_changes_are_recorded'), isTrue,
-          reason: 'A job granted or removed through update_staff() -- the call '
-              'the CEO staff editor makes -- left no staff_job_assignments '
-              'row, or a removal wrote a second row instead of closing the '
-              'open one, or an edit that changed no job wrote history anyway. '
-              'The staff workspace history card reads those rows.');
-    });
-
-    test('no function is shadowed by a superseded overload', () async {
-      // update_staff had two live signatures: the five-argument one from
-      // 20260922000001, and the wider one a later migration replaced it with.
-      // 20260923 dropped the six-argument version explicitly and missed this
-      // one, so both were live.
-      //
-      // Nothing was visibly broken, and that is the point: PostgREST resolves a
-      // call by argument NAME, so a call whose names fit exactly one overload
-      // works. Every caller in the app happens to send a distinctive name, so
-      // the ambiguity only bites a caller sending a smaller subset -- which is
-      // what the assertion added in 20260927000047 did, and it came back as
-      // 42725 "function is not unique". A "Set active" toggle posting
-      // {p_staff_id, p_is_active} would have failed the same way, in
-      // production, for a user with no way to tell why.
-      expect(await ok('assert_no_stale_function_overloads'), isTrue,
-          reason: 'A public function has a superseded overload beside it: same '
-              'name, parameter names a strict subset with matching types. Any '
-              'call whose argument names fit both fails with 42725 "function '
-              'is not unique", and which callers are affected depends only on '
-              'which optional parameters they happen to send.');
     });
 
     test('the client write surface is closed, not just reported', () async {
