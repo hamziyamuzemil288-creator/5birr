@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_prompt.dart';
+import '../../core/services/app_update_service.dart';
 import '../../core/services/fee_resolver.dart';
 import '../../core/services/location_service.dart';
 import '../../core/widgets/where_to_picker.dart';
@@ -699,6 +700,10 @@ class _State extends State<UserRideRequestScreen>
       // Keep the real message. The old wrapper swallowed the cause and showed
       // a generic "problem on our side" even when the failure was a validation
       // error the user could act on (bad vehicle category, missing city, etc.).
+      // Item I: a refusal because this build is below the platform minimum
+      // raises the update gate immediately, instead of leaving the rider
+      // retrying a request the server will keep rejecting.
+      AppUpdateService.instance.notePossibleRefusal(e);
       setState(() {
         _submitting = false;
         _error = friendlyError(e, context: 'Could not request this ride');

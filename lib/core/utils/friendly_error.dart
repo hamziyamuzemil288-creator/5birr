@@ -85,8 +85,18 @@ String friendlyError(Object error, {String? context}) {
 
   String message;
 
+  // ── The forced-update gate (item I) ──
+  //
+  // A write from a build below the platform's minimum is refused with
+  // APP_UPDATE_REQUIRED. This is checked FIRST because it is not a retryable
+  // error: it is an instruction. Reading it as "no internet, try again" would
+  // have the user retrying a call that will keep failing until they update.
+  if (_any(lower, ['app_update_required'])) {
+    message = 'This version of Aliob is no longer supported. Update the app '
+        'to continue — your data and sign-in are kept.';
+  }
   // ── Transport-level failures: the user's own situation, not the app's ──
-  if (_any(lower, [
+  else if (_any(lower, [
     'socketexception',
     'failed host lookup',
     'connection refused',

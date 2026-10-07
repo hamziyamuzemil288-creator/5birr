@@ -678,6 +678,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                             _menuCard(Icons.badge_outlined, 'Registration History', 'Buyers & sellers', () => context.push('/admin/registrations')),
                           if (_can('*') || _can('admin_history'))
                             _menuCard(Icons.notifications_outlined, 'Send Notifications', 'To users or broadcast', () => context.push('/admin/send-notifications')),
+                          // Item I: the forced-update policy — latest/minimum
+                          // build, store link, per-locale message, the force
+                          // switch and the notify-all-users blast.
+                          if (_can('*') || _can('admin_history'))
+                            _menuCard(Icons.system_update_alt_rounded, 'App Releases', 'Force-update policy', () => context.push('/admin/app-releases')),
                           if (_can('support_chat'))
                             _menuCard(Icons.support_agent, 'Support Tickets', 'From the in-app help chat', () => context.push('/admin/support-tickets')),
                           if (_can('*') || _can('account_deletion'))

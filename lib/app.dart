@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'routing/app_router.dart';
 import 'core/theme/app_theme.dart';
+import 'core/widgets/app_update_gate.dart';
 import 'core/widgets/connectivity_banner.dart';
 import 'features/help_chat/floating_chat_button.dart';
 
@@ -30,7 +31,14 @@ class Birr5App extends ConsumerWidget {
           // Expanded, not Expanded-less: without it the Column would size
           // itself to the banner and the app would collapse to a sliver.
           Expanded(
-            child: FloatingChatOverlay(child: child ?? const SizedBox.shrink()),
+            // Item I: the forced-update gate, above the Navigator and beside
+            // the connectivity banner, so it covers every route including
+            // /auth. A build below the minimum cannot sign in — the server
+            // would reject its writes anyway.
+            child: AppUpdateGate(
+              child: FloatingChatOverlay(
+                  child: child ?? const SizedBox.shrink()),
+            ),
           ),
         ],
       ),

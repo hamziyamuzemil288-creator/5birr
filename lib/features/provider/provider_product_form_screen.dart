@@ -11,6 +11,7 @@ import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
+import '../../core/services/app_update_service.dart';
 import '../../core/services/fee_resolver.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -460,6 +461,10 @@ class _State extends State<ProviderProductFormScreen> {
         context.pop();
       }
     } catch (e) {
+      // Item I: if the server refused because this build is too old, raise the
+      // update gate at once rather than leaving the provider retrying a save
+      // that cannot succeed until the app is updated.
+      AppUpdateService.instance.notePossibleRefusal(e);
       if (mounted) {
         // A refusal from the fulfilment gate is not a failed save, it is an
         // answer about what the provider must do first. Showing it as a

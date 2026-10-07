@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../app_build.dart';
 import '../config/env.dart';
 
 /// Thin wrapper around the Supabase client. Role checks are NEVER done
@@ -33,6 +37,19 @@ class SupabaseService {
     await Supabase.initialize(
       url: url,
       anonKey: Env.supabaseAnonKey,
+      // Item I: every request carries the build this binary was compiled with,
+      // so the server-side gate (assert_client_build_is_supported, read from
+      // the request headers) can reject a write from a build the platform no
+      // longer accepts. Sending it in a header rather than as a parameter on
+      // each RPC means no RPC signature changed to become gated, and an old
+      // client that sends nothing reads as build 0 — below every minimum — so
+      // omitting it is not a bypass.
+      headers: {
+        'x-client-build': kAppBuildNumber.toString(),
+        'x-client-platform': kIsWeb
+            ? 'android'
+            : (Platform.isIOS ? 'ios' : 'android'),
+      },
       // Limit realtime event rate to prevent abuse and reduce bandwidth.
       realtimeClientOptions: const RealtimeClientOptions(
         eventsPerSecond: 2,

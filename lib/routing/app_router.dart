@@ -72,6 +72,7 @@ import '../features/admin/admin_order_payments_screen.dart';
 import '../features/admin/admin_staff_assignment_screen.dart';
 import '../features/admin/admin_role_permissions_screen.dart';
 import '../features/admin/admin_settings_screen.dart';
+import '../features/admin/admin_app_releases_screen.dart';
 import '../features/admin/fee_settings_screen.dart';
 import '../features/admin/admin_content_control_screen.dart';
 import '../features/admin/widgets/image_delete_sheet.dart';
@@ -580,6 +581,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // The generic settings editor: fees, thresholds, the points awards and
       // the points-to-birr rate, editable without a migration.
       GoRoute(path: '/admin/settings', builder: (_, __) => const AdminSettingsScreen()),
+      // Item I: the forced-update policy — latest/minimum build per platform,
+      // the store link, the per-locale message, the force switch, and the
+      // "notify all users" blast. Admin-only; the server gates every write on
+      // is_admin() and refuses a force without the store confirmation.
+      GoRoute(
+          path: '/admin/app-releases',
+          builder: (_, __) => const AdminAppReleasesScreen()),
       // Fee & pricing control panel. Editing is CEO/owner-only, enforced inside
       // admin_update_setting() — a non-owner admin sees the values and why
       // they cannot change them, instead of buttons that would fail.
