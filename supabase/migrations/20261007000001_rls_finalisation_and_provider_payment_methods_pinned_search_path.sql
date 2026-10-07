@@ -137,11 +137,6 @@ BEGIN
           WHERE rl.relname = c.relname
             AND rl.relnamespace = n.oid
        )
-       AND EXISTS (
-         SELECT 1
-           FROM pg_class o
-          WHERE o.oid = c.relparent
-       )
   LOOP
     BEGIN
       -- Skip tables that are clearly not ours: the relname above already
@@ -149,6 +144,17 @@ BEGIN
       -- created (i.e. has a parent rel for the to-regclass test above is
       -- wrong; fix: use pg_depend instead) — simpler: only enable on tables
       -- whose name appears in our CREATE TABLE/VIEW migration history.
+      --
+      -- This loop's body is a deliberate no-op (the real work is the explicit
+      -- table set below), so nothing is lost by removing the predicate that
+      -- used to close this FOR: `EXISTS (SELECT 1 FROM pg_class o WHERE
+      -- o.oid = c.relparent)`. `pg_class` has NO `relparent` column — the
+      -- parent link lives in pg_inherits, and pg_class only has the boolean
+      -- `relispartition`. That reference raised
+      --   ERROR: column c.relparent does not exist (SQLSTATE 42703)
+      -- on the very first loop iteration, aborting `supabase db push` at this
+      -- file (seen live in run 37623790221). A loop that executes no body is
+      -- not worth a predicate that cannot compile.
       CONTINUE;
     END;
   END LOOP;
