@@ -164,6 +164,12 @@ ALTER_RLS_RE = re.compile(
     re.I,
 )
 
+DROP_TABLE_RE = re.compile(
+    r"(?P<leading>\bdrop\s+table\s+(?:if\s+exists\s+)?)\s*"
+    r"(?P<table>\w+(?:\.\w+)?)",
+    re.I,
+)
+
 
 def _is_comment_only(text: str, pos: int) -> bool:
     """True when `pos` is inside an SQL comment line."""
@@ -259,10 +265,61 @@ def tables_with_rls_in_migration_text(files: list[Path]) -> set[str]:
     return has
 
 
+def _capture_drop_tables(text: str) -> list[str]:
+    """Return table names this file drops (accepts `public.foo` or `foo`)."""
+    out: list[str] = []
+    for m in DROP_TABLE_RE.finditer(text):
+        if _is_comment_only(text, m.start()):
+            continue
+        words = (m.group("leading") or "").lower().split()
+        # `leading` is "drop table" or "drop table if exists", so the test is
+        # on the first two words: an endswith("table") check would reject the
+        # IF EXISTS form, which is how 20260927000053 spells its DROP.
+        if len(words) < 2 or words[0] != "drop" or words[1] != "table":
+            continue
+        raw = m.group("table") or ""
+        tbl = _normalize_table_name(raw.split(".")[-1])
+        if not tbl or tbl in SQL_NOISE_WORDS:
+            continue
+        out.append(tbl)
+    return out
+
+
+def tables_dropped_by_migration_set(files: list[Path]) -> set[str]:
+    """Tables whose FINAL statement in this migration set is a DROP TABLE.
+
+    A table the migration set no longer has must not be required to carry an
+    ENABLE ROW LEVEL SECURITY statement: the requirement is vacuous for
+    something that does not exist, and satisfying it is impossible without
+    emitting DDL against a missing relation.
+
+    That is not hypothetical. `appeals` was dropped by
+    20260927000053_drop_legacy_appeals_table.sql, but because this lint had no
+    notion of DROP it still demanded an enabling statement for it. The only
+    place left to put one was 20261007000004, whose
+    `ALTER TABLE public.appeals ENABLE ROW LEVEL SECURITY;` then raised 42P01
+    "relation public.appeals does not exist" at statement 2 and aborted the
+    whole `supabase db push` — taking every other pending migration down with
+    it.
+
+    A DROP followed by a later CREATE puts the table back, so the re-creation
+    clears it: only the tables still absent at the end of the set are skipped.
+    """
+    dropped: set[str] = set()
+    for f in sorted(files):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for tbl in _capture_drop_tables(text):
+            dropped.add(tbl)
+        for _pos, tbl in _capture_create_tables(text):
+            dropped.discard(tbl)
+    return dropped
+
+
 def main() -> None:
     files = iter_migration_files()
     our_tables = extract_our_tables_by_latest(files)
     rls_tables = tables_with_rls_in_migration_text(files)
+    dropped_tables = tables_dropped_by_migration_set(files)
 
     table_names = sorted(our_tables["first"].keys())
     missing: list[tuple[str, str]] = []
@@ -270,6 +327,12 @@ def main() -> None:
         if tbl in INTENTIONALLY_POLICYLESS_INTERNAL_TABLES:
             continue
         if tbl in SQL_NOISE_WORDS:
+            continue
+        # The migration set no longer has this table: the last thing that
+        # happened to it was a DROP TABLE. Requiring an enabling statement for
+        # it is what forced 20261007000004 to emit DDL against a relation that
+        # does not exist, which aborted `supabase db push`.
+        if tbl in dropped_tables:
             continue
         # Known repo-state detail: some tables are first INTRODUCED in an early
         # core migration (0001_core_schema.sql) and then re-stated verbatim in a

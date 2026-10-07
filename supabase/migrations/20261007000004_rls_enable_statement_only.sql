@@ -10,13 +10,28 @@
 --
 -- What this migration does:
 --  - Adds one `ALTER TABLE public.<t> ENABLE ROW LEVEL SECURITY;` line for each
---    of the 41 tables the lint lists. Each is idempotent by nature: running it
+--    of the 40 tables the lint lists. Each is idempotent by nature: running it
 --    again when RLS is already enabled is a no-op in Postgres.
+--
+--    The list is 40, not 41: an earlier revision also carried `public.appeals`,
+--    which is a table this repo no longer has. 20260927000053 dropped it (the
+--    audit in that file records why: no Dart caller, no Edge Function caller,
+--    no FK, no assertion, no test — appeal_cases replaced it in
+--    20260923000000), so `ALTER TABLE public.appeals ...` raised 42P01
+--    "relation public.appeals does not exist" at statement 2 and aborted the
+--    whole `supabase db push` before this file's own assertion could run.
+--
+--    It is not replaced with appeal_cases either: that table already carries
+--    its own `ALTER TABLE public.appeal_cases ENABLE ROW LEVEL SECURITY;` in
+--    the migration that creates it, so it is not one of the tables this file
+--    exists to cover. The lint stays green without the appeals line because it
+--    only asks for the statement *somewhere* in the migration set, and
+--    0002_rls_policies.sql already has it (as do 0021, 0022 and 0022a).
 --  - Changes NO policies. Adds NO `using (true)` or `with check` policies.
 --  - Adds NO new tables, columns, indexes, functions, or grants. This file is
 --    purely a statement of existing posture, so the repo text and the live DB
 --    agree on the "RLS enabled" claim.
---  - VERIFIES its own outcome: the DO block at the end fails if any of the 41
+--  - VERIFIES its own outcome: the DO block at the end fails if any of the 40
 --    tables above still has relrowsecurity = false. A statement-only file used
 --    to claim a change nobody checked; now the file checks itself.
 --
@@ -43,7 +58,6 @@ BEGIN;
 
 -- Core tables first introduced in 0001_core_schema.sql.
 ALTER TABLE public.admin_actions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.appeals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.approval_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.approval_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
@@ -90,7 +104,7 @@ ALTER TABLE public.payment_methods ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ride_ratings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wallet_recharge_requests ENABLE ROW LEVEL SECURITY;
 
--- The assertion: the 41 statements above must have taken effect. It runs inside
+-- The assertion: the 40 statements above must have taken effect. It runs inside
 -- the same transaction, so a failure rolls the whole file back rather than
 -- leaving a half-claimed state.
 --
@@ -105,7 +119,7 @@ BEGIN
   FOR r IN
     SELECT t.name
       FROM unnest(ARRAY[
-        'admin_actions', 'appeals', 'approval_history', 'approval_requests',
+        'admin_actions', 'approval_history', 'approval_requests',
         'audit_logs', 'categories', 'favorites', 'notification_preferences',
         'notifications', 'order_items', 'order_status_history', 'orders',
         'payment_agreements', 'payment_proofs', 'product_images', 'products',
