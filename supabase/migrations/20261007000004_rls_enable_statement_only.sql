@@ -16,6 +16,9 @@
 --  - Adds NO new tables, columns, indexes, functions, or grants. This file is
 --    purely a statement of existing posture, so the repo text and the live DB
 --    agree on the "RLS enabled" claim.
+--  - VERIFIES its own outcome: the DO block at the end fails if any of the 41
+--    tables above still has relrowsecurity = false. A statement-only file used
+--    to claim a change nobody checked; now the file checks itself.
 --
 -- What it does NOT do:
 --  - It does not enable RLS where it is genuinely missing on the live DB. If a
@@ -29,6 +32,12 @@
 --
 -- Ordering: this runs AFTER 20261007000003, and is the migration that makes the
 -- static lint exit 0. It is harmless to re-apply in any later deploy.
+--
+-- NOTE: the previous revision of this file ended with
+-- `COMMENT ON MIGRATION ... IS '...'`, which is not a Postgres statement at all
+-- and would have aborted the deploy at that line. The description below is a
+-- plain SQL comment instead, and the migration's real closing statement is the
+-- assertion.
 
 BEGIN;
 
@@ -81,7 +90,54 @@ ALTER TABLE public.payment_methods ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ride_ratings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wallet_recharge_requests ENABLE ROW LEVEL SECURITY;
 
-COMMIT;
+-- The assertion: the 41 statements above must have taken effect. It runs inside
+-- the same transaction, so a failure rolls the whole file back rather than
+-- leaving a half-claimed state.
+--
+-- It is also what gives this file a plpgsql body for the harness's body
+-- extractor; a statement-only file is reported as "found 0 plpgsql bodies ...
+-- this file was NOT checked", which meant nothing verified the claim above.
+DO $$
+DECLARE
+  r record;
+  v_missing text[] := '{}';
+BEGIN
+  FOR r IN
+    SELECT t.name
+      FROM unnest(ARRAY[
+        'admin_actions', 'appeals', 'approval_history', 'approval_requests',
+        'audit_logs', 'categories', 'favorites', 'notification_preferences',
+        'notifications', 'order_items', 'order_status_history', 'orders',
+        'payment_agreements', 'payment_proofs', 'product_images', 'products',
+        'profiles', 'provider_profiles', 'reviews', 'ride_requests',
+        'ride_status_history', 'subscriptions', 'support_tickets',
+        'system_settings', 'user_documents', 'user_roles', 'vehicle_images',
+        'vehicles', 'wallet_transactions', 'wallets',
+        'listing_images', 'provider_gallery', 'provider_stores',
+        'admin_wallet_actions', 'cart_items', 'driver_status', 'fcm_tokens',
+        'n8n_events', 'payment_methods', 'ride_ratings',
+        'wallet_recharge_requests'
+      ]) AS t(name)
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND c.relname = r.name
+         AND c.relkind IN ('r', 'p')
+         AND c.relrowsecurity
+    ) THEN
+      v_missing := v_missing || r.name;
+    END IF;
+  END LOOP;
 
-COMMENT ON MIGRATION 20261007000004 IS
-  'Idempotent statement-only migration: records ALTER TABLE public.<t> ENABLE ROW LEVEL SECURITY for the 41 migration-created public tables the static lint lists, with no policy changes. The live DB already has RLS enabled on all of these (verified by live scan); this file makes the repo text agree with that fact so the static lint exits 0. Runs after 20261007000003. Does not touch extension-owned tables or the three intentionally-policyless internal tables.';
+  IF array_length(v_missing, 1) IS NOT NULL THEN
+    RAISE EXCEPTION
+      'RLS_NOT_ENABLED_AFTER_20261007000004: %',
+      array_to_string(v_missing, ', ');
+  END IF;
+END;
+$$;
+
+COMMIT;

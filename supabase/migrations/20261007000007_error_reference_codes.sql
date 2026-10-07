@@ -40,7 +40,11 @@ create index if not exists idx_client_error_logs_reference_code
 -- -----------------------------------------------------------------------------
 create or replace function public.assert_error_logs_carry_a_reference()
 returns boolean
-language plpgsql
+-- `LANGUAGE plpgsql` is upper-cased on purpose: the harness's body extractor
+-- recognises the clause case-sensitively, so a lowercase `language plpgsql`
+-- makes it report "found 0 plpgsql bodies" and skip the file entirely. The SQL
+-- is identical either way; this only makes the file actually get checked.
+LANGUAGE plpgsql
 stable
 security definer
 set search_path = public, pg_temp

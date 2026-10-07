@@ -4716,11 +4716,40 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
 
     code = _dart_without_comments(checkout)
 
-    # A quote exists when the checkout names the RPC at all. No name → no
-    # figure the buyer can see → nothing here can drift.
-    quotes_commission = "platform_transaction_fee" in code
+    # UPDATE (item H): the app's fee quotes now go through the shared
+    # FeeResolver, so the checkout names `commissionAmount(...)` rather than the
+    # RPC. The invariant is unchanged — a fee QUOTED to a human resolves exactly
+    # like the charge — so the assertions follow the code: whichever door the
+    # figure came through, the reader behind it must be the per-category,
+    # per-city one, with the order rate class, resolved AFTER the provider
+    # context. A checkout that calls the resolver is therefore checked just as
+    # strictly as one that called the RPC.
+    resolver = _read(LIB / "core" / "services" / "fee_resolver.dart")
+    rres = _dart_without_comments(resolver) if resolver else ""
+    via_resolver = ("commissionAmount(" in code) or ("commissionPercent(" in code)
 
-    if quotes_commission and "platform_transaction_fee_for" not in code:
+    # A quote exists when the checkout names the RPC at all OR asks the
+    # resolver for a commission figure. No name and no resolver call → no
+    # figure the buyer can see → nothing here can drift.
+    quotes_commission = ("platform_transaction_fee" in code) or via_resolver
+
+    # Anchored on the CALL, not the bare name: the resolver's own
+    # chargePathResolvers map contains 'platform_transaction_fee_for' as a
+    # string, so a check for the name alone stayed green with the actual RPC
+    # swapped to the global one. The falsifier caught exactly that.
+    commission_rpc = re.search(
+        r"rpc\(\s*'platform_transaction_fee_for'", rres)
+
+    if via_resolver and commission_rpc is None:
+        problems.append(
+            "the checkout quotes the commission through FeeResolver, but "
+            "FeeResolver does not resolve it through "
+            "platform_transaction_fee_for() with the provider's category and "
+            "city — so any category or city override makes the displayed "
+            "figure differ from the charge.")
+
+    if quotes_commission and not via_resolver and \
+            "platform_transaction_fee_for" not in code:
         problems.append(
             "the checkout quotes the commission through the one-argument "
             "platform_transaction_fee(), which resolves the GLOBAL rate, while "
@@ -4731,7 +4760,8 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
     # The flag matters as much as the arguments: the charge passes
     # `p_order_id IS NOT NULL`, so a quote that sends false quotes the wrong
     # rate class for an order.
-    if quotes_commission and "p_is_product" not in code:
+    if quotes_commission and "p_is_product" not in code and \
+            "isProduct: true" not in code:
         problems.append(
             "the checkout's commission quote does not pass p_is_product, so it "
             "resolves the wrong rate class — deduct_transaction_fee() passes "
@@ -4748,10 +4778,30 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
         problems.append("could not find _load() in user_checkout_screen.dart")
     else:
         body = load.group(1)
-        quote_at = body.find("platform_transaction_fee_for")
+        quote_at = body.find("commissionAmount(")
+        if quote_at == -1:
+            quote_at = body.find("platform_transaction_fee_for")
         if quote_at != -1:
             before = body[:quote_at]
-            if "_refreshProviderReadiness()" not in before:
+            if via_resolver:
+                # The resolver call must be HANDED the provider's category and
+                # city. A quote that does not pass them resolves the global
+                # rate while the wallet is debited the per-category one.
+                if "providerContext(" not in before:
+                    problems.append(
+                        "the checkout quotes the commission without first "
+                        "resolving the provider's category and city "
+                        "(providerContext), so the figure can silently fall "
+                        "back to the global rate — the exact drift this check "
+                        "exists to prevent")
+                around = body[quote_at:quote_at + 400]
+                if "ctx.categoryId" not in around or "ctx.city" not in around:
+                    problems.append(
+                        "the checkout resolves the provider context but does "
+                        "not pass its category and city to the commission "
+                        "quote, so the quote and the charge resolve different "
+                        "fees")
+            elif "_refreshProviderReadiness()" not in before:
                 problems.append(
                     "the checkout quotes the commission BEFORE the provider "
                     "read that populates _feeCategoryId and _feeCity, so the "
@@ -4775,36 +4825,70 @@ def check_quoted_fees_resolve_like_the_charge() -> list[str]:
     # called the five-argument calculate_fare_estimate(), which hardcodes
     # p_city to NULL, while create_ride_request() charges against the rider's
     # profiles.city. Same drift, second surface, found the same way.
+    # The quote itself now lives in the shared FeeResolver (item H), so the
+    # question moves with it: the SCREEN must not quote a fare at all (two
+    # readers for one money path is the whole bug), and the RESOLVER must use
+    # the city-aware reader with the pre-0107 fallback. Splitting the check
+    # across the two files keeps the original invariant and makes it stricter:
+    # a screen that calls the fare RPC directly fails even though the RPC name
+    # is the right one.
     ride = _read(LIB / "features" / "user" / "user_ride_request_screen.dart")
+    resolver = _read(LIB / "core" / "services" / "fee_resolver.dart")
     if not ride:
         problems.append("lib/features/user/user_ride_request_screen.dart is missing")
+    elif not resolver:
+        problems.append(
+            "lib/core/services/fee_resolver.dart is missing — the shared fee "
+            "resolver is what keeps a quoted fee and a charged fee on one "
+            "reader")
     else:
         rcode = _dart_without_comments(ride)
-        if "calculate_fare_estimate_at" not in rcode:
+        rres = _dart_without_comments(resolver)
+
+        if "FeeResolver" not in rcode or "rideFare(" not in rcode:
             problems.append(
-                "the ride request quotes the fare through the five-argument "
+                "the ride request no longer quotes the fare through the shared "
+                "FeeResolver, so the quoted fare and the fare "
+                "create_ride_request() charges can resolve through two "
+                "different readers")
+        elif "calculate_fare_estimate" in rcode:
+            problems.append(
+                "the ride request calls the fare RPC itself instead of going "
+                "through FeeResolver, so a second copy of the fare path exists "
+                "in the screen and can drift from the charged one")
+
+        # The ride-fare method alone, so a p_city passed by ANOTHER reader in
+        # the same file cannot satisfy this. The falsifier showed the bare
+        # `'p_city' in rres` test stayed green when the ride call lost its city
+        # and the commission reader still had one.
+        # The closing brace must be a BARE `  }` line: the parameter list ends
+        # with `  }) async {`, so a looser pattern matched there and cut the
+        # body off before the RPC name, reporting the real sources red.
+        ride_method = re.search(
+            r"Future<FeeQuote> rideFare\(.*?\n  \}(?=\n)", rres, re.DOTALL)
+        ride_body = ride_method.group(0) if ride_method else ""
+
+        if "calculate_fare_estimate_at" not in ride_body:
+            problems.append(
+                "FeeResolver quotes the ride fare through the five-argument "
                 "calculate_fare_estimate(), which hardcodes p_city to NULL, "
                 "while create_ride_request() charges against the rider's "
                 "profiles.city — so a city-specific per-km rate is charged but "
                 "never quoted")
-        elif "p_city" not in rcode:
+        elif "'p_city'" not in ride_body:
             problems.append(
-                "the ride request calls the city-aware fare function but never "
+                "FeeResolver calls the city-aware fare function but never "
                 "passes p_city, so it resolves exactly as the old wrapper did")
 
         # A deployment that has not run 0107 has neither new entry point. A
         # hard failure would mean "Fare unavailable" on every ride, so the
-        # fallback is part of the contract, not a nicety.
-        #
-        # The method must be DEFINED *and CALLED. An earlier version of this
-        # assertion accepted either the old RPC name or the presence of the
-        # helper's name, which meant deleting the call site while leaving the
-        # (now unreferenced) method and its comments passed -- the falsifier
-        # caught exactly that. Two occurrences is the definition plus a call.
-        if len(re.findall(r"_quoteGlobalFare\s*\(", rcode)) < 2:
+        # fallback is part of the contract, not a nicety. It must be the
+        # five-argument read (NOT the city-aware one) reached from the catch,
+        # which is why the trailing quote is required here.
+        if not re.search(r"rpc\(\s*'calculate_fare_estimate'\s*,", rres):
             problems.append(
-                "the ride request defines no fallback to the pre-0107 fare "
-                "quote, so a deployment without migration 107 shows 'Fare "
+                "FeeResolver defines no fallback to the pre-0107 fare quote, "
+                "so a deployment without migration 107 shows 'Fare "
                 "unavailable' on every ride instead of the global rate")
 
     # The SUBSCRIPTION, third surface and the same defect. This one matters
