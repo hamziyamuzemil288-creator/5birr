@@ -8,7 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/geocoding_service.dart';
 import '../../core/services/location_prompt.dart';
-import '../../core/services/city_service.dart';
+import '../../core/services/fee_resolver.dart';
 import '../../core/services/location_service.dart';
 import '../../core/widgets/where_to_picker.dart';
 import '../../core/services/ride_service.dart';
@@ -160,95 +160,28 @@ class _State extends State<UserRideRequestScreen>
       _fareLoading = true;
       _fareError = null;
     });
-    try {
-      final res = await Supabase.instance.client.rpc(
-        // NOT the five-argument calculate_fare_estimate(): that wrapper was
-        // kept for older clients and hardcodes p_city to NULL, so it cannot
-        // quote a city-specific fare at all. calculate_fare_estimate_at() is
-        // the city-aware entry point, granted to `authenticated` (not anon) —
-        // this screen is behind RequireAuth, so that is the right grant.
-        'calculate_fare_estimate_at',
-        params: {
-          'p_pickup_lat': p.latitude,
-          'p_pickup_lng': p.longitude,
-          'p_dest_lat': d.latitude,
-          'p_dest_lng': d.longitude,
-          if (_selectedVehicleCategory != null)
-            'p_vehicle_category_id': _selectedVehicleCategory,
-          // The rider's OWN city, which is what create_ride_request() charges
-          // against (`SELECT city FROM public.profiles WHERE id = p_user_id`).
-          //
-          // This was missing, so the estimate resolved p_city as NULL and
-          // inherited the global per-km rate while the charge used the
-          // city-specific one — the rider was quoted one fare and charged
-          // another as soon as an admin set a city rate. Note it is
-          // `savedCity` and NOT `activeCity`: activeCity is the travel city
-          // when someone is browsing elsewhere, and quoting that would drift
-          // in the opposite direction. The server normalises the value
-          // (`lower(btrim(...))` inside category_fee), so it is passed raw.
-          if (CityService.instance.savedCity != null &&
-              CityService.instance.savedCity!.trim().isNotEmpty)
-            'p_city': CityService.instance.savedCity!.trim(),
-        },
-      );
-      // A newer request superseded this one — discard.
-      if (_fareRequestKey != key) return;
-      if (mounted) {
-        setState(() {
-          _fareEstimate = (res as num?)?.toDouble();
-          _fareLoading = false;
-        });
-      }
-    } catch (_) {
-      // A deployment that has not run 0107 has no calculate_fare_estimate_at
-      // at all, and the city-aware quote would show "Fare unavailable" on
-      // EVERY ride — a worse outcome than quoting the global rate, which is
-      // the only rate such a deployment has. So fall back, exactly as the
-      // checkout does for the commission.
-      final fellBack = await _quoteGlobalFare(p, d);
-      if (!fellBack) {
-        if (_fareRequestKey != key) return;
-        if (mounted) {
-          setState(() {
-            _fareLoading = false;
-            _fareError = 'Fare unavailable';
-          });
-        }
-      }
-    }
-  }
-
-  /// The pre-0107 quote: global rate, no city, no category override.
-  ///
-  /// Only reached when the city-aware entry point is missing. Returns whether
-  /// a figure was actually obtained, so the caller can tell "fell back and
-  /// have a number" from "fell back and failed too".
-  Future<bool> _quoteGlobalFare(LatLng p, LatLng d) async {
-    final key = (p.latitude, p.longitude, d.latitude, d.longitude,
-        _selectedVehicleCategory);
-    try {
-      final res = await Supabase.instance.client.rpc(
-        'calculate_fare_estimate',
-        params: {
-          'p_pickup_lat': p.latitude,
-          'p_pickup_lng': p.longitude,
-          'p_dest_lat': d.latitude,
-          'p_dest_lng': d.longitude,
-          if (_selectedVehicleCategory != null)
-            'p_vehicle_category_id': _selectedVehicleCategory,
-        },
-      );
-      if (_fareRequestKey != key) return true;
-      if (!mounted) return true;
-      setState(() {
-        _fareEstimate = (res as num?)?.toDouble();
-        _fareLoading = false;
-        _fareError = null;
-      });
-      return true;
-    } catch (_) {
-      return false;
-    }
+    // ONE resolver for this money path. FeeResolver.rideFare calls
+    // calculate_fare_estimate_at — the very reader create_ride_request
+    // charges with — and carries the pre-0107 fallback itself, so the quoted
+    // number and the charged number cannot resolve through two different
+    // readers. The rider's OWN city is resolved inside the service
+    // (savedCity, never activeCity), which is what create_ride_request()
+    // charges against.
+    final quote = await FeeResolver.instance.rideFare(
+      pickupLat: p.latitude,
+      pickupLng: p.longitude,
+      destLat: d.latitude,
+      destLng: d.longitude,
+      vehicleCategoryId: _selectedVehicleCategory,
+    );
+    // A newer request superseded this one — discard.
+    if (_fareRequestKey != key) return;
+    if (!mounted) return;
+    setState(() {
+      _fareEstimate = quote.value;
+      _fareLoading = false;
+      _fareError = quote.hasValue ? null : 'Fare unavailable';
+    });
   }
 
   /// Loads vehicle categories. The only gate on the loading spinner — GPS

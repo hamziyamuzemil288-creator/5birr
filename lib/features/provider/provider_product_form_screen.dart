@@ -11,6 +11,7 @@ import '../../core/services/city_service.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/provider_activation_service.dart';
 import '../../core/services/provider_doc_gate.dart';
+import '../../core/services/fee_resolver.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/photo_grid.dart';
@@ -71,6 +72,13 @@ class _State extends State<ProviderProductFormScreen> {
   bool _registrationFeePaid = true;
   String _activationMessage = '';
   bool _saving = false;
+  // Item H: the listing fee and the product commission, resolved by the SAME
+  // readers the charge uses (fee_product_listing_fee, fee_commission_percent)
+  // and shown inline, so a provider sees the cost before publishing instead of
+  // discovering it in the wallet. Null until loaded; "unavailable" when the
+  // reader could not be reached.
+  FeeQuote? _listingFeeQuote;
+  FeeQuote? _commissionQuote;
   final _picker = ImagePicker();
 
   // Listing GPS: defaults from the business profile; can be re-captured.
@@ -84,6 +92,29 @@ class _State extends State<ProviderProductFormScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  /// Item H: resolve the listing fee and product commission through the shared
+  /// [FeeResolver] so the numbers on this form are the numbers the charge
+  /// uses. Resolved against the selected category (falling back to the
+  /// provider's own) and the provider's city — the same context the charge
+  /// reads — so changing the category re-quotes rather than showing a stale
+  /// fee.
+  Future<void> _loadFeePreview(String providerId) async {
+    final ctx = await FeeResolver.instance.providerContext(providerId);
+    final categoryId = _categoryId ?? ctx.categoryId;
+    final listing = await FeeResolver.instance
+        .listingFee(categoryId: categoryId, city: ctx.city);
+    final commission = await FeeResolver.instance.commissionPercent(
+      categoryId: categoryId,
+      city: ctx.city,
+      isProduct: true,
+    );
+    if (!mounted) return;
+    setState(() {
+      _listingFeeQuote = listing;
+      _commissionQuote = commission;
+    });
   }
 
   Future<void> _load() async {
@@ -115,6 +146,11 @@ class _State extends State<ProviderProductFormScreen> {
         return;
       }
       _providerId = prov['id'];
+      // Item H: the fees this listing will be charged, best-effort. A failure
+      // leaves the preview hidden — it must never block the form.
+      try {
+        await _loadFeePreview(prov['id'] as String);
+      } catch (_) {}
       // Prime the listing location from the business profile GPS.
       final fullProv = await client
           .from('provider_profiles')
@@ -560,7 +596,16 @@ class _State extends State<ProviderProductFormScreen> {
                               value: c['id'] as String,
                               child: Text(c['name'] ?? '')))
                           .toList(),
-                      onChanged: (v) => setState(() => _categoryId = v),
+                      onChanged: (v) {
+                        setState(() => _categoryId = v);
+                        // Item H: re-quote through the same resolver when the
+                        // category changes — a stale fee on screen is exactly
+                        // the drift this preview exists to remove.
+                        final pid = _providerId;
+                        if (pid != null) {
+                          _loadFeePreview(pid);
+                        }
+                      },
                     ),
                     const SizedBox(height: 16),
                     // City: which market this listing belongs to. "All
@@ -689,6 +734,11 @@ class _State extends State<ProviderProductFormScreen> {
                                 fontSize: 13, color: AppTheme.textSecondary)),
                       ),
                     ],
+                    if (_listingFeeQuote != null || _commissionQuote != null)
+                      _InlineFeePreview(
+                        listing: _listingFeeQuote,
+                        commission: _commissionQuote,
+                      ),
                     SizedBox(
                       width: double.infinity,
                       child: PrimaryButton(
@@ -701,6 +751,85 @@ class _State extends State<ProviderProductFormScreen> {
                 ),
               ),
             ),
+    );
+  }
+}
+
+/// Item H: the inline fee preview for a listing — the product listing fee and
+/// the commission percent, each labelled with the reader that answered it.
+/// A reader that could not be reached renders as "unavailable" instead of a
+/// confident zero, because the server re-resolves on save and a fabricated 0
+/// would read as "free".
+class _InlineFeePreview extends StatelessWidget {
+  const _InlineFeePreview({this.listing, this.commission});
+
+  final FeeQuote? listing;
+  final FeeQuote? commission;
+
+  String _feeText(FeeQuote? q) {
+    if (q == null || !q.hasValue) return 'unavailable';
+    final v = q.value!;
+    return v == v.roundToDouble()
+        ? 'ETB ${v.toStringAsFixed(0)}'
+        : 'ETB ${v.toStringAsFixed(2)}';
+  }
+
+  String _pctText(FeeQuote? q) {
+    if (q == null || !q.hasValue) return 'unavailable';
+    final v = q.value!;
+    return v == v.roundToDouble()
+        ? '${v.toStringAsFixed(0)}%'
+        : '${v.toStringAsFixed(2)}%';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: AppTheme.creamDark,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.receipt_long_rounded,
+                  size: 18, color: AppTheme.primaryGreen),
+              SizedBox(width: 8),
+              Text(
+                'Fees on this listing',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Listing fee: ${_feeText(listing)}',
+            style: const TextStyle(
+                fontSize: 12.5, height: 1.4, color: AppTheme.textSecondary),
+          ),
+          Text(
+            'Commission per sale: ${_pctText(commission)}',
+            style: const TextStyle(
+                fontSize: 12.5, height: 1.4, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Resolved by the same readers the charge uses.',
+            style: TextStyle(
+                fontSize: 11.5, height: 1.35, color: AppTheme.textMuted),
+          ),
+        ],
+      ),
     );
   }
 }

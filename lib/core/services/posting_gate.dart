@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../theme/app_theme.dart';
+import 'fee_resolver.dart';
 import 'provider_doc_gate.dart';
 import 'provider_readiness.dart';
 
@@ -79,6 +80,8 @@ class PostingGateState {
     required this.balance,
     required this.requiredAmount,
     required this.verificationRequired,
+    this.activationFee,
+    this.listingFee,
   });
 
   /// False when `provider_fulfilment_blockers()` could not be reached.
@@ -105,6 +108,15 @@ class PostingGateState {
 
   /// Whether the admin currently requires verified documents at all.
   final bool verificationRequired;
+
+  /// Item H: the one-time activation fee, resolved by the SAME reader the
+  /// charge withholds with (`fee_activation`). Null when the reader was
+  /// unreachable — the row then shows "unavailable", never 0.
+  final FeeQuote? activationFee;
+
+  /// Item H: the product listing fee, resolved by `fee_product_listing_fee`.
+  /// Null when unreachable.
+  final FeeQuote? listingFee;
 
   static const PostingGateState unknown = PostingGateState(
     checked: false,
@@ -175,6 +187,8 @@ class PostingGateState {
     required bool verificationRequired,
     String? rejectionReason,
     bool? hasPaymentAccount,
+    FeeQuote? activationFee,
+    FeeQuote? listingFee,
   }) {
     final docsBlocked = blockers.contains('DOCUMENTS_UNVERIFIED');
     final walletBlockers =
@@ -199,6 +213,8 @@ class PostingGateState {
       balance: balance,
       requiredAmount: requiredAmount,
       verificationRequired: verificationRequired,
+      activationFee: activationFee,
+      listingFee: listingFee,
     );
   }
 
@@ -470,6 +486,16 @@ class PostingGate {
       hasPaymentAccount = (rows as List).isNotEmpty;
     } catch (_) {}
 
+    // 6. Item H: the two provider-side fees this path touches, resolved by the
+    //    SAME readers the charge uses. Best-effort like every other read here.
+    FeeQuote? activationFee;
+    FeeQuote? listingFee;
+    try {
+      final preview = await _feePreview(providerId);
+      activationFee = preview.activation;
+      listingFee = preview.listing;
+    } catch (_) {}
+
     return PostingGateState.from(
       checked: checked,
       blockers: blockers,
@@ -479,6 +505,8 @@ class PostingGate {
       verificationRequired: verificationRequired,
       rejectionReason: rejectionReason,
       hasPaymentAccount: hasPaymentAccount,
+      activationFee: activationFee,
+      listingFee: listingFee,
     );
   }
 
@@ -743,6 +771,17 @@ class _PostingChecklistDialogState extends State<PostingChecklistDialog>
           const SizedBox(height: 10),
           _StepRow(
               step: s.paymentAccount, onTap: () => _runAction(s.paymentAccount)),
+          // Item H: the fees this path touches, shown inline. Each number comes
+          // from the SAME resolver the charge calls (activation from
+          // fee_activation, listing from fee_product_listing_fee), so the
+          // provider is never quoted one fee and charged another.
+          if (s.activationFee != null || s.listingFee != null) ...[
+            const SizedBox(height: 14),
+            _FeePreviewBlock(
+              activation: s.activationFee,
+              listing: s.listingFee,
+            ),
+          ],
           if (s.extraBlockers.isNotEmpty) ...[
             const SizedBox(height: 14),
             for (final code in s.extraBlockers) ...[
@@ -803,6 +842,87 @@ class _PostingChecklistDialogState extends State<PostingChecklistDialog>
           child: const Text('Continue'),
         ),
       ],
+    );
+  }
+}
+
+/// Item H: the inline fee preview. Two provider-side fees, each labelled with
+/// the reader that answered it, so a number with no live resolver behind it is
+/// shown as "unavailable" rather than as a confident zero.
+class _FeePreviewBlock extends StatelessWidget {
+  const _FeePreviewBlock({this.activation, this.listing});
+
+  final FeeQuote? activation;
+  final FeeQuote? listing;
+
+  String _row(String label, FeeQuote? quote) {
+    if (quote == null || !quote.hasValue) {
+      return '$label: unavailable';
+    }
+    final v = quote.value!;
+    final n = v == v.roundToDouble()
+        ? v.toStringAsFixed(0)
+        : v.toStringAsFixed(2);
+    return '$label: ETB $n';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.creamDark,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.receipt_long_rounded,
+                  size: 18, color: AppTheme.primaryGreen),
+              SizedBox(width: 8),
+              Text(
+                'What posting costs',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _row('One-time activation fee', activation),
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          Text(
+            _row('Product listing fee', listing),
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Quoted by the same readers the charge uses, so this is the number '
+            'you are charged.',
+            style: TextStyle(
+              fontSize: 11.5,
+              height: 1.35,
+              color: AppTheme.textMuted,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -892,4 +1012,28 @@ class _StepRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Item H: the two provider-side fees this path touches, resolved through the
+/// shared [FeeResolver] so the numbers shown are the numbers charged — the
+/// one-time activation fee (`fee_activation`, the reader
+/// approve_wallet_recharge withholds with) and the product listing fee
+/// (`fee_product_listing_fee`). Both resolve against the provider's own
+/// category and city (`provider_fee_context`), the same context the charge
+/// reads, so the preview and the charge cannot disagree about which fee
+/// applies. Best-effort like every other read in the gate: an unreachable
+/// reader comes back as a quote with no value, and the row says
+/// "unavailable" instead of inventing a zero.
+Future<({FeeQuote activation, FeeQuote listing})> _feePreview(
+    String providerId) async {
+  final ctx = await FeeResolver.instance.providerContext(providerId);
+  final activation = await FeeResolver.instance.activationFee(
+    categoryId: ctx.categoryId,
+    city: ctx.city,
+  );
+  final listing = await FeeResolver.instance.listingFee(
+    categoryId: ctx.categoryId,
+    city: ctx.city,
+  );
+  return (activation: activation, listing: listing);
 }

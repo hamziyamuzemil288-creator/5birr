@@ -10,6 +10,7 @@ import '../../core/widgets/birr_text_field.dart';
 import '../../core/widgets/payment_accounts_card.dart';
 import '../../core/widgets/primary_button.dart';
 import '../../core/services/cart_service.dart';
+import '../../core/services/fee_resolver.dart';
 import '../../core/services/document_upload_service.dart';
 import '../../core/utils/order_number_format.dart' as onf;
 import '../../core/utils/friendly_error.dart';
@@ -62,6 +63,15 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   bool _providerActivated = true;
   bool _providerHasBalance = true;
   String _providerName = 'The provider';
+
+  // Item H: the platform commission this order will incur, resolved by the
+  // SAME reader deduct_transaction_fee charges with
+  // (platform_transaction_fee_for). Display-only and rendered OUTSIDE the
+  // totals card, deliberately: the buyer pays the product price and nothing
+  // else, and the row says so. It exists so the number on screen is the
+  // number the provider is charged, from one resolver — not a second copy of
+  // the commission arithmetic.
+  FeeQuote? _commissionPreview;
 
   /// The provider's saved payment accounts (bank / Telebirr / CBE Birr),
   /// shown on the card above the payment reference. Null until the first
@@ -126,11 +136,31 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
       final all = await CartService.instance.getCart();
       final items =
           all.where((i) => i.providerId == widget.providerId).toList();
-      // BEFORE the fee quote. This read is what populates _feeCategoryId and
-      // _feeCity; quoting first would resolve them as null, fall back to the
-      // global rate, and silently reintroduce exactly the drift this quote
-      // exists to remove. Ordering, not correctness, is the whole fix here.
+      // Read the provider BEFORE quoting: the quote resolves the provider's
+      // category and city through provider_fee_context(), and quoting first
+      // would resolve them as null, fall back to the global rate, and silently
+      // reintroduce exactly the drift this quote exists to remove. Ordering,
+      // not correctness, is the whole fix here.
       await _refreshProviderReadiness();
+      // Item H: the platform commission this order will incur, through the SAME
+      // reader deduct_transaction_fee charges with — platform_transaction_fee_for
+      // resolved against the provider's own category and city, with
+      // is_product = true (an order, not a ride). Best-effort: a failure hides
+      // the row; it never blocks checkout.
+      try {
+        final orderTotal = items.fold<double>(0, (s, i) => s + i.lineTotal);
+        if (orderTotal > 0) {
+          final ctx =
+              await FeeResolver.instance.providerContext(widget.providerId);
+          final quote = await FeeResolver.instance.commissionAmount(
+            amount: orderTotal,
+            categoryId: ctx.categoryId,
+            city: ctx.city,
+            isProduct: true,
+          );
+          if (mounted) setState(() => _commissionPreview = quote);
+        }
+      } catch (_) {}
       // The provider's payment accounts, shown on the card above the payment
       // reference. Best-effort like every read on this screen: a failure
       // leaves the card in its loading state instead of inventing an answer.
@@ -598,6 +628,24 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                 ),
                               ],
                             ),
+                            // Item H: the platform commission, rendered OUTSIDE
+                            // the totals card because the buyer pays no fee for
+                            // it. It is resolved by the same reader
+                            // deduct_transaction_fee charges with, so the
+                            // number on screen is the number the provider is
+                            // charged — one resolver, not two copies.
+                            if (_commissionPreview?.hasValue ?? false) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                'Platform commission on this order: '
+                                'ETB ${_commissionPreview!.value!.toStringAsFixed(2)} '
+                                '(deducted from the provider — no extra cost to you)',
+                                style: const TextStyle(
+                                    fontSize: 11.5,
+                                    height: 1.35,
+                                    color: AppTheme.textMuted),
+                              ),
+                            ],
                           ],
                         ),
                       ),
