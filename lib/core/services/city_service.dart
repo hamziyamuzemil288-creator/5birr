@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../utils/ethiopia_cities.dart'
@@ -9,7 +10,19 @@ import '../utils/ethiopia_cities.dart'
 /// browse city ("travel mode"). The active city is the travel city while
 /// travel mode is on, otherwise the saved city. Travel mode is a browse
 /// session: it intentionally resets to the saved default on app restart.
-class CityService {
+///
+/// ## Why this notifies
+///
+/// The active city is app-global state, but the screens that scope their
+/// query to it (the home feed, a category page, search) each read it once and
+/// hold the result. Only the home chip's own flow remembered to reload — so
+/// changing the city from anywhere else (the profile screen's city picker, in
+/// particular) left those screens showing the OLD city's products, which is
+/// exactly the reported "it keeps showing the old city's products". The fix is
+/// to make the change observable: [CityService] is a [ChangeNotifier] and
+/// every mutation publishes an event when the ACTIVE city actually changes, so
+/// a scoped screen can reload regardless of who changed the city.
+class CityService extends ChangeNotifier {
   CityService(this._client);
 
   final SupabaseClient _client;
@@ -38,6 +51,11 @@ class CityService {
   bool _travelMode = false;
   bool _loaded = false;
 
+  /// The active city as of the last notification. Used to publish an event
+  /// ONLY when the value the scoped screens query on actually changes — a
+  /// redundant notify would reload every feed for a no-op.
+  String? _lastNotifiedActive;
+
   /// The city the user signed up with (profiles.city). May be null until
   /// the profile loads.
   String? get savedCity => _savedCity;
@@ -54,6 +72,19 @@ class CityService {
   bool get isTravelMode => _travelMode;
   bool get isLoaded => _loaded;
 
+  /// Publish a change when [activeCity] differs from the last notified value.
+  ///
+  /// [_loaded] flipping true is also worth a publish the first time: before
+  /// the profile read finishes, [activeCity] is the fallback, and a screen
+  /// that scoped to the fallback must re-query once the real saved city
+  /// arrives.
+  void _notifyIfActiveChanged() {
+    final current = activeCity;
+    if (current == _lastNotifiedActive) return;
+    _lastNotifiedActive = current;
+    notifyListeners();
+  }
+
   /// Load the saved city from the signed-in user's profile row.
   Future<void> loadSavedCity() async {
     try {
@@ -61,6 +92,7 @@ class CityService {
       if (uid == null) {
         _savedCity = null;
         _loaded = true;
+        _notifyIfActiveChanged();
         return;
       }
       final row = await _client
@@ -76,6 +108,7 @@ class CityService {
       _savedCity = null;
       _loaded = true;
     }
+    _notifyIfActiveChanged();
   }
 
   /// Update the saved city (profile settings + signup). Writes profiles.city
@@ -87,7 +120,14 @@ class CityService {
     try {
       await _client.from('profiles').update({'city': city}).eq('id', uid);
       _savedCity = city;
-      if (_travelMode) setTravelMode(false);
+      if (_travelMode) {
+        _travelMode = false;
+        _travelCity = null;
+      }
+      // The screens scoped to the old city must reload: this is the path that
+      // previously changed nothing on the home feed, so it went on showing the
+      // products of the city the user had just left.
+      _notifyIfActiveChanged();
       return true;
     } catch (_) {
       return false;
@@ -99,17 +139,20 @@ class CityService {
   void seedSavedCity(String city) {
     _savedCity = city;
     _loaded = true;
+    _notifyIfActiveChanged();
   }
 
   /// Travel mode: browse [city] without changing the saved default.
   void setTravelCity(String city) {
     _travelCity = city;
     _travelMode = true;
+    _notifyIfActiveChanged();
   }
 
   /// Leave travel mode; browsing returns to the saved default city.
   void setTravelMode(bool on) {
     _travelMode = on;
     if (!on) _travelCity = null;
+    _notifyIfActiveChanged();
   }
 }

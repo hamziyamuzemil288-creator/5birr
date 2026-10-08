@@ -26,10 +26,29 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
   bool _loading = true;
   String? _error;
 
+  /// The browse city this screen's product list was fetched for. The list is
+  /// held in [_products], so a category page opened before the user changed
+  /// city would keep rendering the previous city's products until it was
+  /// reopened. Subscribing to [CityService] re-queries instead, which is what
+  /// "city-selected listing" is supposed to mean.
+  final CityService _cityService = CityService.instance;
+
   @override
   void initState() {
     super.initState();
+    _cityService.addListener(_onBrowseCityChanged);
     _load();
+  }
+
+  void _onBrowseCityChanged() {
+    if (!mounted) return;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _cityService.removeListener(_onBrowseCityChanged);
+    super.dispose();
   }
 
   Future<void> _load() async {

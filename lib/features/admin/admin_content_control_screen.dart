@@ -33,6 +33,38 @@ import 'widgets/public_image_gallery.dart';
 /// Every action carries a reason and lands in `moderation_actions`, which is
 /// append-only: no RLS policy lets anybody edit or delete it, an administrator
 /// included.
+
+/// The (bucket, path) pair a moderation delete must send, resolved from
+/// whichever row shape the caller is holding — or null when the row carries
+/// neither.
+///
+/// There are two callers here and they do NOT hold the same kind of row:
+///
+///   * the delete-only image strip (and `ImageDeleteSheet`) passes an
+///     `admin_public_image_gallery` row: `bucket`, `storage_path`;
+///   * the report card passes a `content_reports` row, which carries the very
+///     same two facts under the names `object_bucket` and `object_path` (see
+///     the table created in 20260927000122).
+///
+/// Reading only the gallery names is why "Delete image" on a report failed:
+/// both reads returned null, and the handler stopped at "That image has no
+/// usable path, so it cannot be deleted." before it ever reached the server,
+/// so re-tapping could never clear it. Both shapes are accepted now.
+///
+/// `file_content_report` is called from exactly one place
+/// (`user_provider_detail_screen`), and that call site sends `p_object_bucket`
+/// and `p_object_path` together — a null path means no photo was chosen, and
+/// the bucket is null with it. So a report row that offers a delete always
+/// has both, and this fallback cannot half-succeed.
+({String bucket, String path})? moderationDeleteTarget(Map<String, dynamic> row) {
+  final bucket = (row['bucket'] ?? row['object_bucket']) as String?;
+  final path = (row['storage_path'] ?? row['object_path']) as String?;
+  if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
+    return null;
+  }
+  return (bucket: bucket, path: path);
+}
+
 class AdminContentControlScreen extends StatefulWidget {
   const AdminContentControlScreen({super.key});
 
@@ -182,14 +214,24 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     if (mounted) await _load();
   }
 
-  /// Remove an image chosen from the delete-only gallery strip.
+  /// Remove an image chosen from the delete-only gallery strip OR from a
+  /// report card.
   ///
-  /// The server call needs the bucket and path, so this only snapshots the
-  /// values the server needs from the `admin_public_image_gallery` row.
+  /// The two callers do NOT hand over the same row shape, and reading only one
+  /// of them is why "Delete image" failed on the reports list: the strip passes
+  /// an `admin_public_image_gallery` row, which carries `bucket` and
+  /// `storage_path`, while `_reportCard` passes a `content_reports` row, which
+  /// carries the SAME two facts under the names `object_bucket` and
+  /// `object_path` (see the table in 20260927000122). The gallery keys are
+  /// absent there, so both reads returned null and the handler stopped at
+  /// "That image has no usable path, so it cannot be deleted." before it ever
+  /// reached the server — an error no amount of re-tapping could clear.
+  ///
+  /// Only the snapshot of the two values changes; the server call, the reason
+  /// prompt and the RPC's own rules are untouched.
   Future<void> _removeImageFromRow(Map<String, dynamic> image) async {
-    final bucket = image['bucket'] as String?;
-    final path = image['storage_path'] as String?;
-    if (bucket == null || bucket.isEmpty || path == null || path.isEmpty) {
+    final target = moderationDeleteTarget(image);
+    if (target == null) {
       _snack('That image has no usable path, so it cannot be deleted.',
           bad: true);
       return;
@@ -202,8 +244,8 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
 
     await _run('Image removal', () {
       return Supabase.instance.client.rpc('admin_moderate_image_with_reason', params: {
-        'p_bucket': bucket,
-        'p_path': path,
+        'p_bucket': target.bucket,
+        'p_path': target.path,
         'p_reason': reason,
         'p_severity': 'SERIOUS',
       });

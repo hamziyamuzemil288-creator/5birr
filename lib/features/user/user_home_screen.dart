@@ -8,6 +8,7 @@ import '../../core/models/product.dart';
 import '../../core/providers/auth_provider.dart' show cityProvider;
 import '../../core/resilience/app_failure.dart';
 import '../../core/resilience/safe_call.dart';
+import '../../core/services/city_service.dart';
 import '../../core/services/posting_gate.dart';
 import '../../core/services/ride_service.dart';
 import '../../core/services/product_like_service.dart';
@@ -91,10 +92,34 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   static DateTime? _categoriesFetchedAt;
   static const _categoryCacheTtl = Duration(minutes: 5);
 
+  /// The browse city is app-global state that this screen reads once and then
+  /// holds in [_products]. The city chip's own flow reloads the feed when it
+  /// changes, but two other paths change the active city without passing
+  /// through here — the profile screen's "My City" picker (updateSavedCity)
+  /// and "Back to my city" (setTravelMode) — and the feed used to keep
+  /// displaying the city the user had just left. Subscribing to the service
+  /// closes that gap for every entry point at once.
+  late final CityService _cityService = ref.read(cityProvider);
+
   @override
   void initState() {
     super.initState();
+    _cityService.addListener(_onBrowseCityChanged);
     _load();
+  }
+
+  /// Re-query for whichever city is active now. [CityService] only notifies
+  /// when the active city actually differs, so this does not fire for a
+  /// redundant set.
+  void _onBrowseCityChanged() {
+    if (!mounted) return;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _cityService.removeListener(_onBrowseCityChanged);
+    super.dispose();
   }
 
   Future<void> _load() async {
