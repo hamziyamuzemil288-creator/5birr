@@ -54,8 +54,16 @@ Deno.serve(async (req) => {
     if (isAdmin) {
       allowed = true;
     } else if (isOwner) {
-      // User can cancel before driver arrival, or after trip
-      if (new_status === "CANCELLED" && ["REQUESTED", "CLAIMED"].includes(ride.status)) {
+      // The rider may cancel any time before the trip starts. This list is
+      // deliberately the same one the rider's screen offers its CANCEL button
+      // from (REQUESTED / CLAIMED / DRIVER_ARRIVING): it used to stop at
+      // CLAIMED, so a rider who cancelled while the driver was on the way got
+      // 403 FORBIDDEN — "You do not have permission to do that" — for the one
+      // action the screen had just told them was available.
+      if (
+        new_status === "CANCELLED" &&
+        ["REQUESTED", "CLAIMED", "DRIVER_ARRIVING"].includes(ride.status)
+      ) {
         allowed = true;
       }
     } else if (isClaimedDriver) {

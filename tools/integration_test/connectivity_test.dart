@@ -228,6 +228,25 @@ void main() {
               'fails right after a deploy, migration '
               '20261006000005 did not run.');
     });
+    test('the ride request notifies through the queue, not the guard',
+        () async {
+      // Reported as "Could not request this ride. Something went wrong."
+      // (Ref AL-A65813). create_ride_request is called by a signed-in rider,
+      // so is_server_write() and is_admin() are both false; a direct
+      // insert_notification() there trips trg_notifications_security with
+      // NOTIFICATIONS_CANNOT_BE_CREATED_BY_CLIENTS and rolls the whole ride
+      // back — no row, nothing to claim, and a fallback sentence the mapper
+      // does not recognise. Migration 20261008000001 routes both call sites
+      // through notify_user(), which queues on a client path. This reads the
+      // LIVE bodies, so a restatement that goes back to a direct write fails
+      // here instead of on a rider's phone.
+      expect(await ok('assert_ride_create_notifies_through_the_queue'), isTrue,
+          reason: 'create_ride_request() or notify_best_effort() writes '
+              'notifications directly again: on a rider\'s own call the '
+              'notification guard raises and rolls the ride back, so no '
+              'request reaches the database. If this fails right after a '
+          'deploy, migration 20261008000001 did not run.');
+    });
     test('two drivers accepting at once: exactly one wins', () async {
       // Write test, rolled back by sentinel: a fulfilment-ready driver
       // claims a real REQUESTED row, a second driver claims the same row and

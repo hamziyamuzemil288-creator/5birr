@@ -27,6 +27,16 @@ class _State extends State<DriverRideRequestsScreen> {
   ResilientSubscription<List<Map<String, dynamic>>>? _rideSub;
   RealtimeConnState _rideConn = RealtimeConnState.connecting;
   List<Map<String, dynamic>> _requests = [];
+
+  /// Cards this driver has declined ("NOT NOW") and no longer wants to see.
+  ///
+  /// A decline is LOCAL on purpose: the backend's only ride action is
+  /// claim_ride, and requests are broadcast to every nearby driver, so there
+  /// is no per-driver state to decline into. Hiding the card here leaves the
+  /// request exactly as claimable as before — for another driver, and for
+  /// this one after a reload.
+  final Set<String> _dismissed = <String>{};
+
   bool _loading = true;
   bool _claiming = false;
   String? _error;
@@ -179,6 +189,12 @@ class _State extends State<DriverRideRequestsScreen> {
     }
   }
 
+  /// The requests still on screen: everything realtime delivered, less the
+  /// ones this driver declined this session.
+  List<Map<String, dynamic>> get _visibleRequests => List<Map<String, dynamic>>.of(
+        _requests.where((r) => !_dismissed.contains(r['id'])),
+      );
+
   /// Distance from my live GPS to this request's pickup (null without GPS).
   String? _distanceText(Map<String, dynamic> ride) {
     final pos = _myPos;
@@ -225,7 +241,7 @@ class _State extends State<DriverRideRequestsScreen> {
                   message: _error!,
                   icon: Icons.local_taxi_outlined,
                   onRetry: _init)
-              : _requests.isEmpty
+              : _visibleRequests.isEmpty
               ? const Center(
                   child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -245,9 +261,9 @@ class _State extends State<DriverRideRequestsScreen> {
                   onRefresh: () async {},
                   child: ListView.builder(
                     padding: const EdgeInsets.all(16),
-                    itemCount: _requests.length,
+                    itemCount: _visibleRequests.length,
                     itemBuilder: (_, i) {
-                      final r = _requests[i];
+                      final r = _visibleRequests[i];
                       final pickup = r['pickup_text'] ?? 'Pickup location';
                       final dest = r['destination_text'] ?? 'Destination';
                       final created = r['created_at'] != null
@@ -347,6 +363,21 @@ class _State extends State<DriverRideRequestsScreen> {
                                             color: AppTheme.primaryGreen),
                                   ),
                                 ],
+                              ),
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton(
+                                  onPressed: () =>
+                                      setState(() => _dismissed.add(r['id'])),
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                  ),
+                                  child: const Text('NOT NOW',
+                                      style: TextStyle(
+                                          color: AppTheme.textMuted)),
+                                ),
                               ),
                             ],
                           ),

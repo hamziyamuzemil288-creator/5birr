@@ -66,6 +66,12 @@ class _State extends State<UserActiveRideScreen> {
   bool _iCancelled = false;
   bool _retrying = false;
 
+  /// The assigned driver's public details — name/business and plate — filled
+  /// in once the ride is claimed. Null before that, and deliberately
+  /// non-fatal after: the map, the status and the countdown all stand without
+  /// it, so a profile row that cannot be read simply leaves the card out.
+  Map<String, dynamic>? _driver;
+
   // Real interactive map: controller lets us keep the camera glued to the
   // rider's live position; [_followUser] mirrors the dashboards' behavior.
   final MapController _mapController = MapController();
@@ -102,6 +108,7 @@ class _State extends State<UserActiveRideScreen> {
               // The claim may only become known now (the unclaimed case
               // starts no driver subscription).
               _watchDriverLocation(updated);
+              _loadDriver(updated);
               _syncSearchTimer();
             }
           },
@@ -122,6 +129,7 @@ class _State extends State<UserActiveRideScreen> {
       }
       _parseDriverLocation(ride);
       _watchDriverLocation(ride);
+      _loadDriver(ride);
       await _refreshMyLocation();
     } catch (e) {
       if (mounted) {
@@ -130,6 +138,33 @@ class _State extends State<UserActiveRideScreen> {
           _error = friendlyError(e, context: 'Could not load your ride');
         });
       }
+    }
+  }
+
+  /// Who is coming to the pickup: the assigned driver's name, business and
+  /// plate, fetched once the moment the claim lands. Realtime only carries
+  /// the ride row (watchRide has no embed), so this is a single read through
+  /// the public provider/vehicle policies — never on the status path.
+  Future<void> _loadDriver(Map<String, dynamic>? ride) async {
+    if (_driver != null || ride == null) return;
+    final providerId = ride['claimed_by_provider_id'];
+    if (providerId is! String || providerId.isEmpty) return;
+    try {
+      final profile =
+          await RideService.instance.getProviderProfile(providerId);
+      if (profile == null) return;
+      String? plate;
+      final vehicleId = ride['claimed_vehicle_id'];
+      if (vehicleId is String && vehicleId.isNotEmpty) {
+        plate = await RideService.instance.getVehiclePlate(vehicleId);
+      }
+      if (!mounted) return;
+      setState(() => _driver = <String, dynamic>{
+        ...profile,
+        if (plate != null && plate.isNotEmpty) 'plate_number': plate,
+      });
+    } catch (_) {
+      // Non-fatal by design — see the field's note.
     }
   }
 
@@ -606,6 +641,53 @@ class _State extends State<UserActiveRideScreen> {
             ],
           ),
           const SizedBox(height: 12),
+          // Who is coming: name, business and plate for the driver who
+          // claimed the ride. The live position is the pin above; this is
+          // what the rider matches it to at the kerb.
+          if (claimed && _driver != null && _driver!.isNotEmpty)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.cardBorder),
+              ),
+              child: Row(
+                children: [
+                  const CircleAvatar(
+                    radius: 18,
+                    backgroundColor: AppTheme.primaryGreen,
+                    child: Icon(Icons.person_outline,
+                        size: 20, color: Colors.white),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _driverName(),
+                          style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w700),
+                        ),
+                        if (_driverBusiness() != null)
+                          Text(_driverBusiness()!,
+                              style: const TextStyle(
+                                  fontSize: 12, color: AppTheme.textMuted)),
+                        if (_driverPlate() != null)
+                          Text('Plate ${_driverPlate()}',
+                              style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppTheme.primaryGreen,
+                                  fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Directions to the driver (ride claimed only — same reveal timing
           // as before: pickup details reach the driver at claim, and the
           // driver status row only becomes readable after it is assigned).
@@ -648,6 +730,36 @@ class _State extends State<UserActiveRideScreen> {
   /// "No driver yet — 2:41 left before we stop looking": the countdown to
   /// the server's 3-minute unclaimed timeout, computed from requested_at so
   /// it survives app close/reopen.
+  /// The rider-visible name for the assigned driver: the person's name when
+  /// the profile has one, else the business they drive under, never blank.
+  String _driverName() {
+    final d = _driver ?? const <String, dynamic>{};
+    final name = (d['full_name'] as String?)?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    final nested = d['profiles'] is Map
+        ? ((d['profiles'] as Map)['full_name'] as String?)?.trim()
+        : null;
+    if (nested != null && nested.isNotEmpty) return nested;
+    final shop = (d['business_name'] as String?)?.trim();
+    if (shop != null && shop.isNotEmpty) return shop;
+    return 'Your driver';
+  }
+
+  /// The business line under the name — only when it adds to it.
+  String? _driverBusiness() {
+    final d = _driver ?? const <String, dynamic>{};
+    final shop = (d['business_name'] as String?)?.trim();
+    final name = (d['full_name'] as String?)?.trim();
+    if (shop == null || shop.isEmpty) return null;
+    if (name != null && name.isNotEmpty && name == shop) return null;
+    return shop;
+  }
+
+  String? _driverPlate() {
+    final plate = (_driver?['plate_number'] as String?)?.trim();
+    return (plate == null || plate.isEmpty) ? null : plate;
+  }
+
   String _countdownText() {
     final at = _requestedAt();
     if (at == null) return 'Looking for a driver nearby…';

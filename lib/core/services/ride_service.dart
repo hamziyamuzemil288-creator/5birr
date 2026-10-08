@@ -221,4 +221,22 @@ class RideService {
         .maybeSingle();
     return data;
   }
+
+  /// The plate of the vehicle a ride was claimed with — the one thing a
+  /// rider waiting at the kerb actually needs. Read through PostgREST under
+  /// `vehicles_public_read` (APPROVED vehicles are publicly readable), so no
+  /// extra privilege is taken for it. Null when the row cannot be read.
+  Future<String?> getVehiclePlate(String vehicleId) async {
+    try {
+      final data = await _client
+          .from('vehicles')
+          .select('plate_number')
+          .eq('id', vehicleId)
+          .maybeSingle();
+      return data?['plate_number'] as String?;
+    } catch (_) {
+      // A missing plate is a cosmetic loss, never a reason to fail the trip.
+      return null;
+    }
+  }
 }
