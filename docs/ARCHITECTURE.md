@@ -848,6 +848,26 @@ RPC):
   stands — a check is only real once it has been seen to go red, and a
   reproduction has to be checked before it is believed.
 
+  Two more holes of the same shape were found in the release pass over 016 and
+  017, both of them in the *classifier* rather than in the SQL. `is_plpgsql_body`
+  tested `"LANGUAGE plpgsql" in prefix` — a case-sensitive substring, while
+  `SQL_BODY`, `DO_OPENER` and every other predicate in the file are
+  `re.IGNORECASE`. Every migration in this repo writes `language plpgsql` in
+  lower case, so a function body with no `LANGUAGE sql` anywhere near it was
+  classified as *not a body*: 016 (four raw bodies) and 017 (two) were dropped
+  whole, and the `found 0 bodies` guard is the only reason it surfaced. The
+  second is the order in which the block opener is removed: `BEGIN` and a
+  leading comment can each precede the other, and the one-shot
+  `LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", raw))` handled `BEGIN -- c`
+  but not `-- c BEGIN`, leaving `BEGIN insert into …` glued together. That is
+  not SQL, so it reported a syntax error in bodies the live database has been
+  running for weeks — 85 of the 99 findings across the history. Both are fixed
+  by making the predicate case-insensitive, by stripping both until neither
+  applies, and by counting the delimiters in `check_file` from the text itself
+  so a regression in `find_bodies` still trips the guard. `--all` now reports
+  269 files clean instead of 99 failures, and `--pending` reads the two
+  migrations it used to skip.
+
   ## Six checks that were wrong before they were ever run
 
   The rule above is only half of it. A check written to be correct is still
@@ -871,7 +891,14 @@ RPC):
     discarded it passed every assertion;
   * and the assertion-pinning check tested "does the guard name appear in the
     body", which stays true when the test that actually uses it is deleted —
-    because the same function counts occurrences for the *feed* half.
+    because the same function counts occurrences for the *feed* half;
+  * and the account-deletion page check required every split table to be
+    declared conditional, which `docs/delete-account.html` satisfied for six of
+    the eight the foreign keys actually split — `provider_payment_methods` and
+    `payment_approval_screenshots` were missing from a page Google Play reads
+    as policy, and `provider_payment_methods` was absent from it entirely while
+    the app reads it on every provider screen. The page now states both, and
+    says for each whether the account is the provider it hangs off.
 
   Each was found by planting the original defect, and each fix is now pinned
   by a case in `tools/harness/falsify_*.py`. The last one is the reason

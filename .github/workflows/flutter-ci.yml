@@ -85,6 +85,27 @@ jobs:
       - name: Run tests
         run: flutter test
 
+      # The repo's own static + migration harness (tools/harness/run_all.sh):
+      # 64 gates over the Dart, the SQL and the migrations a deploy would
+      # actually apply. It is the only thing here that reads the SQL *inside*
+      # plpgsql bodies, which `supabase db push` accepts until execution time.
+      #
+      # It had never been wired into CI, and that is exactly why the hole it
+      # now closes stayed open: the release pass found two pending migrations
+      # (016, 017) that the plpgsql gate had been silently skipping, because
+      # its body classifier tested `LANGUAGE plpgsql` case-sensitively while
+      # every sibling predicate in the file was case-insensitive, and every
+      # migration here writes it in lower case. A gate nobody runs is not a
+      # gate.
+      #
+      # pglast is what lets the plpgsql gate parse. Without it the gate reports
+      # a skip rather than a pass, so a wheel that cannot be installed degrades
+      # the check instead of failing the release over a PyPI hiccup.
+      - name: Static + migration harness
+        run: |
+          pip install --quiet pglast || echo "::warning::pglast unavailable; the plpgsql body gate will skip"
+          sh tools/harness/run_all.sh
+
       - name: Commit pubspec.lock if changed
         if: github.event_name == 'push'
         run: |

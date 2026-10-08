@@ -50,6 +50,15 @@ except ImportError:  # pragma: no cover
     sys.exit(0)
 
 
+#: A dollar-quote delimiter: `$$` or `$tag$`.
+#:
+#: Module level (rather than a local inside find_bodies) because check_file
+#: needs to count these on its own, WITHOUT the pairing step below. The guard
+#: has to survive a regression in `find_bodies` itself, and it can only do that
+#: if what it measures is not produced by the function it is guarding.
+DELIM = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
 def find_bodies(text: str):
     """Yield (start, body) for each dollar-quoted plpgsql body in `text`.
 
@@ -58,8 +67,7 @@ def find_bodies(text: str):
     tag is absent -- which is every `$$ ... $$` body in this repo -- and made
     the first version of this tool find zero bodies and report success.
     """
-    delim = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"
-    for m in re.finditer(delim + r"(.*?)" + delim, text, re.DOTALL):
+    for m in re.finditer(DELIM.pattern + r"(.*?)" + DELIM.pattern, text, re.DOTALL):
         yield m.start(), m.group(1)
 
 
@@ -171,13 +179,23 @@ DO_OPENER = re.compile(r"(?:^|[\s;)])DO\Z", re.IGNORECASE)
 #: assignment in plpgsql and a genuine syntax error in a sql body.
 SQL_BODY = re.compile(r"LANGUAGE\s+sql\b", re.IGNORECASE)
 
+#: `LANGUAGE plpgsql` bodies, the main half. Matched case-insensitively for
+#: exactly the reason SQL_BODY is: every migration in this repo writes
+#: `language plpgsql` in lower case. A case-sensitive substring test therefore
+#: classified those bodies as "not a function body at all", the file was
+#: dropped, and the `found 0 bodies` guard is what finally caught it -- after
+#: two pending migrations (016 and 017) had gone unread. Whitespace-tolerant
+#: too, so a declaration whose `language` and `plpgsql` sit on separate lines
+#: or behind a tab is still recognised.
+PLPGSQL_LANGUAGE = re.compile(r"LANGUAGE\s+plpgsql\b", re.IGNORECASE)
+
 
 def is_sql_body(prefix: str) -> bool:
     return SQL_BODY.search(prefix) is not None
 
 
 def is_plpgsql_body(prefix: str) -> bool:
-    if "LANGUAGE plpgsql" in prefix:
+    if PLPGSQL_LANGUAGE.search(prefix):
         return True
     # Trailing comments and whitespace are stripped first, so a
     # `-- add the column, guarded` comment between `DO` and `$$` is not what
@@ -276,6 +294,35 @@ def normalize_statement(stmt: str, sql_body: bool) -> str | None:
     return stmt
 
 
+def strip_block_opener(raw: str) -> str:
+    """Remove the leading `BEGIN` and any leading comments, in EITHER order.
+
+    The two can precede each other: `BEGIN\n-- why\nSELECT ...` and
+    `-- why\nBEGIN\nSELECT ...` are both ordinary plpgsql, and the second is
+    what this repo's bodies actually write -- a comment explaining the block,
+    sitting after the DECLARE section's final `;`.
+
+    Stripping them in one fixed order (the previous behaviour) handled the
+    first and left `BEGIN` glued to the first statement in the second, and
+    `BEGIN insert into ...` is not SQL, so the tool reported "syntax error at
+    or near insert" in bodies the live database has been running for weeks.
+    Iterating until neither rule applies handles both orders, and nested
+    blocks (`BEGIN ... BEGIN insert ...`), where the inner opener is the one
+    that precedes the statement.
+
+    Measured effect: 85 of the 99 findings across the already-applied history
+    were this shape. A gate that reports working SQL as broken is the failure
+    mode that gets a real finding ignored, so this is the cause, not noise to
+    suppress.
+    """
+    stmt = raw
+    while True:
+        nxt = LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", stmt))
+        if nxt == stmt:
+            return stmt
+        stmt = nxt
+
+
 def iter_statements(text: str):
     """Yield (line, body_start, sql_body, stmt, to_parse) per embedded statement.
 
@@ -290,11 +337,10 @@ def iter_statements(text: str):
     for start, _prefix, body, sql_body in iter_bodies(text):
         offset = 0
         for raw in split_statements(body):
-            # Order matters: `BEGIN` may be followed by a comment before the
-            # first real statement, so the block opener is removed first and
-            # the leading comments second. The other way round leaves the
-            # statement starting with `--` and it matches no command.
-            stmt = LEADING_COMMENTS.sub("", PLPGSQL_BEGIN.sub("", raw))
+            # Order cannot be fixed by choosing one: the block opener and a
+            # comment each precede the other in real bodies, so both are
+            # stripped until neither applies. See strip_block_opener.
+            stmt = strip_block_opener(raw)
             to_parse = normalize_statement(stmt, sql_body)
             if to_parse is None:
                 continue
@@ -318,15 +364,25 @@ def check_file(path: pathlib.Path) -> list[str]:
                 f"      statement: {' '.join(stmt.split())[:140]}"
             )
 
-    # The guard fires when the extractor found NO plpgsql body at all -- the
-    # bug that made the first version report success over 200 unexamined
-    # files. It must not fire merely because a body held no parseable SQL
-    # (a body that is entirely dynamic `EXECUTE`, say): that file was read,
-    # there was simply nothing in it this tool can judge.
-    if not any(True for _ in iter_bodies(text)):
+    # The guard fires when the file HAS dollar-quoted bodies and the extractor
+    # classified none of them -- the bug that made the first version report
+    # success over 200 unexamined files, and the one that silently skipped
+    # migrations 016 and 017 (four and two raw bodies, zero classified). It
+    # must not fire merely because a body held no parseable SQL (a body that is
+    # entirely dynamic `EXECUTE`, say): that file was read, there was simply
+    # nothing in it this tool can judge.
+    #
+    # It also must not fire on a file with no bodies at all. Two thirds of this
+    # repo's migrations are plain DDL, DML and seeds -- 14 of them contain no
+    # `$$`, no `DO` and no `CREATE FUNCTION` -- and reporting those as
+    # "NOT checked" made `--all` unable to pass, which is how a guard that is
+    # permanently red stops being read. The delimiter count is taken straight
+    # from the text, so a regression in find_bodies still trips this.
+    if DELIM.search(text) and not any(True for _ in iter_bodies(text)):
         problems.append(
-            f"{path.name}: found 0 plpgsql bodies -- the body extractor "
-            f"matched nothing, so this file was NOT checked"
+            f"{path.name}: found 0 plpgsql bodies in "
+            f"{len(DELIM.findall(text)) // 2} dollar-quoted block(s) -- the "
+            f"body extractor matched nothing, so this file was NOT checked"
         )
     return problems
 

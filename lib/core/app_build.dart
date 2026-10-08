@@ -9,8 +9,10 @@
 /// a new dependency and a platform path this project cannot verify without an
 /// Android toolchain.
 ///
-/// So the number is a constant, and `test/app_build_matches_pubspec_test.dart`
-/// asserts it equals the `+N` in `pubspec.yaml`. They cannot drift: a version
+/// So the number is a constant, and the "build constant matches pubspec.yaml"
+/// test in `test/forced_update_gate_test.dart` asserts it equals the `+N` in
+/// `pubspec.yaml` (this comment named a file that does not exist until the
+/// release pass; the assertion had simply moved). They cannot drift: a version
 /// bump that forgets to update this file fails the test, and a build number
 /// the app believes is wrong would gate the wrong users or gate nobody.
 ///
@@ -25,9 +27,9 @@ library;
 /// own `package:flutter/services.dart` exports `appBuildNumber`, `appVersion`
 /// and friends, and a bare `appBuildNumber` here would collide at every import
 /// site that pulls in both.
-const String kAppVersionName = '1.7.2';
+const String kAppVersionName = '1.7.3';
 
 /// The build number from `pubspec.yaml`'s `version:` line (`1.6.4+106`), i.e.
 /// the part after the `+`. Sent to the server as the `x-client-build` header
 /// and compared against `app_release_config.min_required_build`.
-const int kAppBuildNumber = 109;
+const int kAppBuildNumber = 110;

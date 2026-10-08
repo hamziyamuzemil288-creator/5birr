@@ -584,7 +584,7 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
         ),
         const SizedBox(height: 6),
         Text(
-          'Answer in $_countdown',
+          'Answer in ${_countdown()}',
           textAlign: TextAlign.center,
           style: const TextStyle(
               fontSize: 24,
