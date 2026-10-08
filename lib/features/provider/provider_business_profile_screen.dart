@@ -471,7 +471,7 @@ class _State extends State<ProviderBusinessProfileScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Payment accounts',
+                                    'Payment account number',
                                     style: TextStyle(
                                       fontSize: 14,
                                       fontWeight: FontWeight.w700,
@@ -480,7 +480,7 @@ class _State extends State<ProviderBusinessProfileScreen> {
                                   ),
                                   SizedBox(height: 2),
                                   Text(
-                                    'Bank, Telebirr or CBE Birr — what buyers '
+                                    'Your bank account number — what buyers '
                                     'see to pay you directly',
                                     style: TextStyle(
                                       fontSize: 12,

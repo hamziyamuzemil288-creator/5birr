@@ -114,7 +114,7 @@ class _ProviderPaymentMethodsScreenState
         setState(() {
           _loading = false;
           _loadError =
-              friendlyError(e, context: 'Could not load payment methods');
+              friendlyError(e, context: 'Could not load payment accounts');
         });
       }
     }
@@ -138,7 +138,7 @@ class _ProviderPaymentMethodsScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                friendlyError(e, context: 'Could not save method')),
+                friendlyError(e, context: 'Could not save account')),
             backgroundColor: Colors.red,
           ),
         );
@@ -257,7 +257,7 @@ class _ProviderPaymentMethodsScreenState
         _accountNumberController.clear();
         _instructionsController.clear();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Payment method updated')),
+          const SnackBar(content: Text('Payment account updated')),
         );
       }
     } catch (e) {
@@ -265,7 +265,7 @@ class _ProviderPaymentMethodsScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                friendlyError(e, context: 'Could not update method')),
+                friendlyError(e, context: 'Could not update account')),
             backgroundColor: Colors.red,
           ),
         );
@@ -297,14 +297,14 @@ class _ProviderPaymentMethodsScreenState
       if (context.mounted) {
         _load();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Payment method removed')),
+          const SnackBar(content: Text('Payment account removed')),
         );
       }
     } catch (e) {
       if (context.mounted) {
         setState(() {
           _error =
-              friendlyError(e, context: 'Could not remove method');
+              friendlyError(e, context: 'Could not remove account');
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -356,7 +356,7 @@ class _ProviderPaymentMethodsScreenState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Add funds from a payment method',
+                  'Add funds from a payment account',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 4),
@@ -373,7 +373,7 @@ class _ProviderPaymentMethodsScreenState
                   value: selectedMethodId,
                   isExpanded: true,
                   decoration: const InputDecoration(
-                    labelText: 'From (your payment method)',
+                    labelText: 'From (your payment account)',
                     isDense: true,
                   ),
                   items: _methods
@@ -483,7 +483,7 @@ class _ProviderPaymentMethodsScreenState
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Choose a payment method'),
+            content: Text('Choose a payment account'),
             backgroundColor: Colors.orange,
           ),
         );
@@ -617,7 +617,7 @@ class _ProviderPaymentMethodsScreenState
             SizedBox(
               width: double.infinity,
               child: PrimaryButton(
-                label: 'Add funds from a payment method',
+                label: 'Add funds from a payment account',
                 icon: Icons.add,
                 onPressed: _showAddFundsSheet,
               ),
@@ -632,7 +632,7 @@ class _ProviderPaymentMethodsScreenState
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Text(
-                'No wallet yet. Contact support to set one up so you can fund it from your payment methods.',
+                'No wallet yet. Contact support to set one up so you can fund it from your payment accounts.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12.5,
@@ -768,7 +768,7 @@ class _ProviderPaymentMethodsScreenState
                             child: Text(
                               (r['payment_methods'] as Map<String, dynamic>?)
                                       ?['name'] as String?
-                                  ?? 'Payment method',
+                                  ?? 'Payment account',
                               style: const TextStyle(
                                 fontSize: 12,
                                 color: AppTheme.textSecondary,
@@ -832,7 +832,7 @@ class _ProviderPaymentMethodsScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Payment Methods'),
+        title: const Text('Payment account number'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
@@ -968,7 +968,7 @@ class _ProviderPaymentMethodsScreenState
                   children: [
                     Expanded(
                       child: Text(
-                        method['name'] ?? 'Untitled method',
+                        method['name'] ?? 'Untitled account',
                         style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600),
@@ -1042,7 +1042,7 @@ class _ProviderPaymentMethodsScreenState
                   ),
                 ),
                 ListTile(
-                  title: const Text('Account / card number'),
+                  title: const Text('Account number'),
                   subtitle: Text(
                     method['account_number'] as String? ?? '—',
                     style: TextStyle(
@@ -1252,8 +1252,8 @@ class _ProviderPaymentMethodsScreenState
           builder: (dialogCtx) => AlertDialog(
             title: const Text('Remove payment account'),
             content: const Text(
-                'This will remove the method for this account. Buyers will '
-                'no longer see it.'),
+                'This will remove this account. Buyers will no longer see '
+                'it.'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dialogCtx).pop(),

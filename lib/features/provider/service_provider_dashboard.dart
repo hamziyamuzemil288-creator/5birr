@@ -594,7 +594,9 @@ class _ServiceProviderDashboardState
                                       '/provider/gallery/${_providerProfile!['id']}')),
                             _action(Icons.card_membership, 'Subscription',
                                 () => context.push('/provider/subscription')),
-                            _action(Icons.payment_outlined, 'Payment Methods',
+                            _action(
+                                Icons.payment_outlined,
+                                'Payment account number',
                                 () => context.push('/provider/payment-methods')),
                           ]),
                         ),
