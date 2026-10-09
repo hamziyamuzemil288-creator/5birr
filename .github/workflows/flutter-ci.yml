@@ -15,6 +15,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Reclaim the runner's disk before anything else is downloaded onto it.
+      #
+      # Run 37900731154 died here, and nothing in the app was wrong:
+      #
+      #   ERROR: build/app/outputs/mapping/release/seeds.txt: R8:
+      #          java.io.IOException: No space left on device
+      #   Execution failed for task ':app:mergeReleaseNativeLibs'
+      #   > A failure occurred while executing ...MergeNativeLibsTask
+      #   > No space left on device
+      #
+      # A hosted runner leaves ~14 GB free on /, and this job is the one job
+      # that spends it twice: it builds a debug APK and then a release
+      # appbundle, two full Gradle builds of the same project, where the
+      # dedicated Build Release AAB / Build Debug APK workflows each pay for
+      # only one (those pass, in ~10 min, on a fresh runner). The release
+      # build runs last, so it is the one that pays the shortfall — and R8 is
+      # the hungriest step in it, which is why the failure lands there.
+      #
+      # The image ships toolchains a Flutter Android build never reaches: the
+      # .NET SDK, the Haskell toolchain (ghcup), Swift, CodeQL's bundle, Boost,
+      # and the Android emulator with its system images. That is the cheapest
+      # space on the runner to give up. `du` reports each one before it is
+      # removed, so the log carries measured numbers instead of assumptions
+      # about what this image happens to ship this month.
+      #
+      # The Android SDK and its NDK are deliberately NOT in the list. The
+      # release build names the NDK through `ndkVersion = flutter.ndkVersion`
+      # (android/app/build.gradle.kts), and AGP answers a missing NDK by
+      # downloading that exact version mid-build — ~660 MB compressed, 2-3 GB
+      # extracted. Freeing space by forcing a download is not freeing space.
+      - name: Reclaim runner disk space
+        run: |
+          echo "::group::disk before reclaim"
+          df -h /
+          echo "::endgroup::"
+          for d in \
+            /usr/share/dotnet \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/lib/android/sdk/system-images \
+            /usr/local/lib/android/sdk/emulator
+          do
+            if [ -e "$d" ]; then
+              sudo du -sh "$d" || true
+              sudo rm -rf "$d"
+            else
+              echo "not present on this image: $d"
+            fi
+          done
+          # Package lists and downloaded .deb files the image will never need.
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          echo "::group::disk after reclaim"
+          df -h /
+          echo "::endgroup::"
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -161,6 +219,37 @@ jobs:
           # Build Release AAB / Build Debug APK workflows and filled Actions
           # storage at the 90-day default. See docs/SIGNING.md history.
           retention-days: 14
+
+      # The debug APK is built and uploaded above; the release bundle is built
+      # below. Keeping both Gradle builds' outputs on disk at once is what ran
+      # the runner out of space at R8, so the release build starts from the
+      # debug build's remains instead of from their sum. The debug APK is
+      # already uploaded, and the dedicated workflows keep the artifacts —
+      # nothing here is lost but the time of the rebuild.
+      #
+      # `flutter clean` rather than a targeted `rm -rf build/app/intermediates`,
+      # for two reasons that both bite the same way. A deleted byte is only
+      # reclaimed when the last handle to it closes, and the Gradle daemons
+      # hold handles into build/ — so the daemons are stopped first. And
+      # Gradle's up-to-date snapshots live OUTSIDE build/ (android/.gradle,
+      # ~/.gradle), so deleting the outputs they describe leaves an
+      # incremental state that points at files which no longer exist. A clean
+      # release build cannot be wrong that way, and it costs about two
+      # minutes on a ten-minute job.
+      #
+      # The slow parts of a build survive the clean: ~/.gradle and
+      # ~/.pub-cache are untouched, so the dependency downloads and the Gradle
+      # distribution are not paid for twice. `pub get` is re-run explicitly so
+      # the release build never has to wonder about `.dart_tool`.
+      - name: Free the debug build before the release bundle
+        run: |
+          bash android/gradlew --stop \
+            || echo "::warning::could not stop the Gradle daemons; the clean still runs"
+          flutter clean
+          flutter pub get
+          echo "::group::disk before the release bundle"
+          df -h /
+          echo "::endgroup::"
 
       # === Release Bundle Build ===
       # Keystore is stored base64-encoded in the KEYSTORE_BASE64 Actions secret

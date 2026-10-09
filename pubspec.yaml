@@ -9,6 +9,14 @@ dependencies:
   http: ^1.2.0
   flutter:
     sdk: flutter
+  # The one dependency `flutter create` adds that this manifest had dropped.
+  # Material reaches for Cupertino's glyphs on iOS-style widgets, so the
+  # release build's icon tree-shaker finds the family referenced and no font
+  # to draw it, and says so on every release build:
+  #   Expected to find fonts for (MaterialIcons,
+  #   packages/cupertino_icons/CupertinoIcons), but found (MaterialIcons)
+  # Font and IconData constants only: no code, no plugin, no native side.
+  cupertino_icons: ^1.0.8
   supabase_flutter: ^2.5.6
   # Direct, not transitive: the staff workspace subscribes to postgres_changes
   # so the task feed updates the moment work arrives, and naming the
