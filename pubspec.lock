@@ -820,10 +820,10 @@ packages:
     dependency: "direct main"
     description:
       name: realtime_client
-      sha256: ff731ce21fd775e0d7accfb1eaccdcf47b687610720822ba8b9fd8f5bccb2bd9
+      sha256: "847211b3b6b24b4c2b2e6e8bb8ea0f1e1568e76684196a3e4ab2759025c622a1"
       url: "https://pub.dev"
     source: hosted
-    version: "2.13.0"
+    version: "2.13.1"
   record_use:
     dependency: transitive
     description:
@@ -1017,10 +1017,10 @@ packages:
     dependency: "direct dev"
     description:
       name: supabase
-      sha256: "3662449640972335e50d075a1fceb000b9217e403564305d129a4d287ff4b4c9"
+      sha256: b58eb429089e04df91889bd2087473e585d41a6bc8ce6e469adff06c08ca3357
       url: "https://pub.dev"
     source: hosted
-    version: "2.16.2"
+    version: "2.16.3"
   supabase_common:
     dependency: transitive
     description:
@@ -1033,10 +1033,10 @@ packages:
     dependency: "direct main"
     description:
       name: supabase_flutter
-      sha256: "9698f61e83907b939fd6ee6bbf833d8456541e29cb38e9c08e52ebf88fa9faf4"
+      sha256: "59412ae6051c7ef1732c86f93898213dac41dda4a98c0adc10e6e7c943dda70d"
       url: "https://pub.dev"
     source: hosted
-    version: "2.18.0"
+    version: "2.18.1"
   synchronized:
     dependency: transitive
     description:
