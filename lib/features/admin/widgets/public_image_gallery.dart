@@ -29,10 +29,8 @@ import '../../../core/widgets/photo_grid.dart';
 ///     list of uuids;
 ///   * hides an image from public WITHOUT deleting it (reversible, and the
 ///     provider keeps the photo in their own gallery);
-///   * removes it entirely, through the Supabase Storage API (the server
-///     function that did this still runs the pre-fix body on the live database,
-///     which Supabase's storage RLS blocks — so the client now goes through the
-///     Storage API and cleans up the row + audit entry itself);
+///   * removes it entirely, through the same `admin_moderate_image` the report
+///     queue already used;
 ///   * warns the uploader, with text the moderator types, from this section.
 ///
 /// Hide is offered FIRST and remove second, on purpose. Removal is
@@ -160,9 +158,7 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
       _snack(text);
       await _load();
     } catch (e) {
-      if (mounted) {
-        _snack(friendlyErrorWithCode(e, context: label), bad: true);
-      }
+      if (mounted) _snack(friendlyErrorWithCode(e, context: label), bad: true);
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -265,76 +261,18 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
   Future<void> _remove(Map<String, dynamic> image) async {
     final reason = await _askReason('Delete this image permanently?', confirm: 'Delete');
     if (reason == null || !mounted) return;
-    await _run('Image removal', () async {
-      // The old server path (admin_moderate_image_with_reason →
-      // admin_moderate_image) still runs the PRE-FIX body on the live
-      // database: it does `DELETE FROM storage.objects WHERE bucket_id =
-      // p_bucket AND name = p_path`, which Supabase's storage RLS trigger
-      // blocks with P0001 ("Direct deletion from storage tables is not
-      // allowed. Use the Storage API instead."). The post-fix body
-      // (migration 20261006000004) deletes by name across every moderable
-      // bucket and is deployed behind the current head, so the RPC is not
-      // the reliable path yet.
-      //
-      // The correct fix per Supabase's own error message is to go through
-      // the Storage API client-side, then clean up the app row and write
-      // the audit entry ourselves. That is what this does: file, row,
-      // every reference, plus an audit entry — same guarantee the UI copy
-      // promises, routed through the API the error message points at.
-      final bucket = image['bucket'] as String;
-      final path = image['storage_path'] as String;
-
-      // 1. Remove the file from storage through the Storage API. This is
-      //    the call the P0001 error says to use instead of a direct table
-      //    write. The bucket here is the row's own column, which is the
-      //    bucket the object actually lives in.
-      await _client.storage.from(bucket).remove([path]);
-
-      // 2. Delete the app's own row that references the file. The server
-      //    delete branches in admin_moderate_image delete from
-      //    provider_gallery / product_images / vehicle_images by path, and
-      //    clear profiles.avatar_storage_path when it matches. We do the
-      //    same here, table by table, so a row can never be left pointing
-      //    at a file that is gone.
-      var rowRemoved = false;
-      if (bucket == 'provider-gallery') {
-        final deleted =
-            await _client.rpc('admin_delete_provider_gallery_by_path', params: {
-          'p_path': path,
-        });
-        rowRemoved = deleted is int && (deleted as int) > 0;
-      } else if (bucket == 'product-images') {
-        final deleted = await _client
-            .from('product_images')
-            .delete()
-            .eq('storage_path', path)
-            .select()
-            .maybeSingle();
-        rowRemoved = deleted != null;
-      } else if (bucket == 'vehicle-images') {
-        final deleted = await _client
-            .from('vehicle_images')
-            .delete()
-            .eq('storage_path', path)
-            .select()
-            .maybeSingle();
-        rowRemoved = deleted != null;
-      }
-
-      // 3. Write the audit entry ourselves, since we are no longer going
-      //    through the server function that did it. The moderation_actions
-      //    table is append-only (no RLS policy lets anyone edit or delete
-      //    it), so this is the permanent record of what was done and why.
-      await _client.rpc('admin_log_moderation_action', params: {
-        'p_action_type': 'IMAGE_REMOVED',
-        'p_severity': 'SERIOUS',
+    await _run('Image removal', () {
+      // admin_moderate_image_with_reason is a thin wrapper around
+      // admin_moderate_image. It still enforces is_admin() server-side; it
+      // only changes what a refusal looks like, so a moderator gets a fixed
+      // sentence — the server's own reason — instead of a raw PostgREST
+      // error string.
+      return _client.rpc('admin_moderate_image_with_reason', params: {
+        'p_bucket': image['bucket'],
+        'p_path': image['storage_path'],
         'p_reason': reason,
-        'p_object_bucket': bucket,
-        'p_object_path': path,
-        'p_detail': {'removed_from': rowRemoved ? bucket : 'unknown'},
+        'p_severity': 'SERIOUS',
       });
-
-      return 'Image removed: $path';
     });
   }
 
