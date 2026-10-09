@@ -135,7 +135,7 @@ class _ImageDeleteSheetState extends State<ImageDeleteSheet> {
     );
     if (reason == null || !mounted) return;
 
-    await _run('Image removal', () {
+    await _run('Image removal', () async {
       // Same fix as PublicImageGallery._remove: the live server still runs
       // the pre-fix admin_moderate_image body (migration 20261006000004 is
       // behind the deployed head), which writes directly to storage.objects

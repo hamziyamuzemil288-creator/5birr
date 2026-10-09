@@ -265,7 +265,7 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
   Future<void> _remove(Map<String, dynamic> image) async {
     final reason = await _askReason('Delete this image permanently?', confirm: 'Delete');
     if (reason == null || !mounted) return;
-    await _run('Image removal', () {
+    await _run('Image removal', () async {
       // The old server path (admin_moderate_image_with_reason →
       // admin_moderate_image) still runs the PRE-FIX body on the live
       // database: it does `DELETE FROM storage.objects WHERE bucket_id =

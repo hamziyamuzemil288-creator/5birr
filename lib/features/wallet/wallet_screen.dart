@@ -4,7 +4,6 @@ import '../../core/theme/app_theme.dart';
 import '../../core/services/wallet_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/primary_button.dart';
-import '../../core/widgets/shimmer_effect.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -64,117 +63,40 @@ class _WalletScreenState extends State<WalletScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Wallet')),
       body: _loading
-          ? _walletSkeleton()
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : _error != null
-              ? _walletError(_error!, onRetry: _load)
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView(
-                    padding: const EdgeInsets.all(20),
-                    children: [
-                      // Balance card
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(colors: [
-                            AppTheme.primaryGreen,
-                            AppTheme.primaryGreenDark
-                          ]),
-                          borderRadius: BorderRadius.circular(16),
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.cloud_off_outlined,
+                            size: 44, color: AppTheme.textMuted),
+                        const SizedBox(height: 12),
+                        Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 14, color: AppTheme.textSecondary),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Current Balance',
-                                style:
-                                    TextStyle(fontSize: 14, color: Colors.white70)),
-                            const SizedBox(height: 8),
-                            Text('${balance.toStringAsFixed(2)} ETB',
-                                style: const TextStyle(
-                                    fontSize: 32,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white)),
-                            if (isLow) ...[
-                              const SizedBox(height: 12),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: AppTheme.warning.withValues(alpha: 0.3),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: const Text(
-                                    '⚠ Your balance is low. Please recharge.',
-                                    style: TextStyle(
-                                        fontSize: 12, color: Colors.white)),
-                              ),
-                            ],
-                          ],
+                        const SizedBox(height: 16),
+                        PrimaryButton(
+                          label: 'Retry',
+                          icon: Icons.refresh,
+                          onPressed: () {
+                            setState(() {
+                              _loading = true;
+                              _error = null;
+                            });
+                            _load();
+                          },
                         ),
-                      ),
-                      const SizedBox(height: 20),
-                      // Recharge button
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () => context.push('/wallet/recharge'),
-                          icon: const Icon(Icons.add),
-                          label: const Text('RECHARGE WALLET'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppTheme.teal,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Points live next to the wallet because that is what they
-                      // convert into. The conversion rate is a server setting and
-                      // the screen reads it live.
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () => context.push('/points'),
-                          icon: const Icon(Icons.stars_rounded),
-                          label: const Text('POINTS & RANK'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppTheme.primaryGreen,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      // My recharge requests
-                      const Text('My Recharge Requests',
-                          style:
-                              TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 12),
-                      if (_rechargeRequests.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 8),
-                          child: Text('No recharge requests yet',
-                              style: TextStyle(color: AppTheme.textMuted)),
-                        )
-                      else
-                        ..._rechargeRequests.map(_rechargeTile),
-                      const SizedBox(height: 24),
-                      // Recent transactions
-                      const Text('Recent Transactions',
-                          style:
-                              TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 12),
-                      if (_transactions.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(30),
-                          child: Center(
-                              child: Text('No transactions yet',
-                                  style: TextStyle(color: AppTheme.textMuted))),
-                        )
-                      else
-                        ..._transactions.map((t) => _txnTile(t)),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
+                )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
@@ -296,94 +218,6 @@ class _WalletScreenState extends State<WalletScreen> {
       default:
         return AppTheme.warning; // PENDING
     }
-  }
-
-  Widget _walletSkeleton() {
-    return SingleChildScrollView(
-      physics: const NeverScrollableScrollPhysics(),
-      child: Column(
-        children: [
-          // Balance card skeleton
-          ShimmerEffect(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: AppTheme.creamDark,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  SkeletonBox(
-                      width: 120, height: 14, borderRadius: 6),
-                  SizedBox(height: 16),
-                  SkeletonBox(
-                      width: 200, height: 34, borderRadius: 8),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ShimmerEffect(
-            child: SkeletonBox(
-                width: double.infinity, height: 52, borderRadius: 12),
-          ),
-          const SizedBox(height: 12),
-          ShimmerEffect(
-            child: SkeletonBox(
-                width: double.infinity, height: 52, borderRadius: 12),
-          ),
-          const SizedBox(height: 24),
-          // Recharge requests label + skeleton row
-          const SkeletonBox(
-              width: 160, height: 18, borderRadius: 6),
-          const SizedBox(height: 12),
-          ShimmerEffect(
-            child: SkeletonBox(
-                width: double.infinity, height: 68, borderRadius: 10),
-          ),
-          const SizedBox(height: 24),
-          // Transactions label + skeleton row
-          const SkeletonBox(
-              width: 160, height: 18, borderRadius: 6),
-          const SizedBox(height: 12),
-          ShimmerEffect(
-            child: SkeletonBox(
-                width: double.infinity, height: 68, borderRadius: 10),
-          ),
-          const SizedBox(height: 68),
-        ],
-      ),
-    );
-  }
-
-  Widget _walletError(String message, {required VoidCallback onRetry}) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.cloud_off_outlined,
-                size: 44, color: AppTheme.textMuted),
-            const SizedBox(height: 12),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 14, color: AppTheme.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            PrimaryButton(
-              label: 'Retry',
-              icon: Icons.refresh,
-              onPressed: onRetry,
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Widget _rechargeTile(Map<String, dynamic> r) {

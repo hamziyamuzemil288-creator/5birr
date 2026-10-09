@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
-import '../../core/widgets/shimmer_effect.dart';
 import '../../core/utils/order_number_format.dart';
 import '../user/user_order_detail_screen.dart' show orderStatusColor;
 
@@ -142,7 +141,8 @@ class _ProviderOrdersScreenState extends ConsumerState<ProviderOrdersScreen> {
       body: _error != null
           ? LoadErrorView(message: _error!, onRetry: _load)
           : _loading
-          ? _ordersSkeleton()
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : _orders.isEmpty
               ? const Center(
                   child: Column(
