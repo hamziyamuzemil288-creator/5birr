@@ -397,6 +397,54 @@ FIXES: list[tuple[str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ..
             "as x(part)",
         ),
     ),
+    (
+        # 20261008000001 routed the rider's own notice and the driver fan-out
+        # through the queue-aware helpers, and the assertion it added scanned
+        # the RAW `prosrc` for the literal `insert_notification` -- which
+        # `prosrc` also contains, because the body's own comment says the direct
+        # call was removed. The check raised on its own explanation and turned
+        # the fix it shipped into a red build (Connectivity CI #213,
+        # `the ride path bypasses the notification queue`, P0001).
+        #
+        # 20261009000001 reads both bodies with their comments removed first.
+        # This entry pins that repair: the comment-stripping and the three
+        # forbidden spellings are present, the raw `SELECT prosrc` read is gone,
+        # and no other line moved -- so a restatement that drops the stripping
+        # step and goes back to scanning prose is red here, before a deploy.
+        "assert_ride_create_notifies_through_the_queue",
+        "20261008000001",
+        "20261009000001",
+        # The vocabulary the repair is allowed to touch. `prosrc` is the value
+        # whose meaning changed (raw -> comment-free); the rest name the two
+        # reads and the two checks built around it.
+        (
+            "v_ride",
+            "v_fan",
+            "prosrc",
+            "regexp_replace",
+            "insert_notification",
+            "notifications",
+            "notify_user",
+            "notify_best_effort",
+            "guard",
+            "untold",
+            "\\*",
+            "[:space:]",
+        ),
+        (
+            # comments stripped before the match, for BOTH bodies
+            "regexp_replace(p.prosrc, E'--[^\\n]*', ' ', 'g')",
+            "'/\\*.*?\\*/'",
+            # and the forbidden shapes still checked afterwards
+            "v_ride ILIKE '%insert_notification%'",
+            "insert into public.notifications",
+            "NOT ILIKE '%notify_user%'",
+        ),
+        (
+            # the raw, comment-included read that matched its own prose
+            "SELECT prosrc INTO",
+        ),
+    ),
 ]
 
 
