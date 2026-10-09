@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
-import '../../core/widgets/shimmer_effect.dart';
 import 'widgets/public_image_gallery.dart';
 
 /// Content control: the queue of reports, the record of what has been taken
@@ -344,7 +343,8 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
         ],
       ),
       body: _loading
-          ? const _ContentControlSkeleton()
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primaryGreen))
           : _error != null
               ? LoadErrorView(message: _error!, onRetry: _load)
               : RefreshIndicator(
@@ -418,8 +418,6 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                       ),
                       const SizedBox(height: 14),
                       _filterChips(),
-                      const SizedBox(height: 8),
-                      const _SkeletonLabel('Reported content'),
                       const SizedBox(height: 14),
                       if (_reports.isEmpty)
                         const _Empty(
@@ -432,18 +430,7 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                           const SizedBox(height: 10),
                         ],
                       const SizedBox(height: 24),
-                      const _SkeletonLabel('What has been done',
-                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.primaryGreenDark)),
-                      const SizedBox(height: 10),
-                      if (_actions.isEmpty)
-                        const _Empty(
-                          icon: Icons.history,
-                          text: 'No moderation action has been taken yet.',
-                        )
-                      else
-                        for (final a in _actions) _actionRow(a),
-                      const SizedBox(height: 24),
-                      const _SkeletonLabel('Old text remnant', style: TextStyle(height: 0)),,
+                      Text('What has been done',
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,
@@ -460,13 +447,6 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
                     ],
                   ),
                 ),
-    );
-  }
-
-  Widget _SkeletonLabel(String text, {TextStyle? style}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(text, style: style ?? const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
     );
   }
 
