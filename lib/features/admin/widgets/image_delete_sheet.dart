@@ -9,8 +9,9 @@ import '../../../core/utils/friendly_error.dart';
 ///
 /// This is the missing "delete image from the admin sidebar" path the report
 /// described: the admin side of the image-delete flow is reachable from the
-/// Content Control screen's own delete strip, and the same
-/// `admin_moderate_image` RPC does the actual removal.
+/// Content Control screen's own delete strip. The removal now goes through the
+/// Supabase Storage API and cleans up the app row + audit entry client-side,\- because the server RPC that used to do this still runs the pre-fix body on
+/// the live database (Supabase blocks direct storage.objects writes with P0001).
 class ImageDeleteSheet extends StatefulWidget {
   const ImageDeleteSheet({super.key});
 
@@ -78,7 +79,7 @@ class _ImageDeleteSheetState extends State<ImageDeleteSheet> {
       await _load();
     } catch (e) {
       if (mounted) {
-        _snack(friendlyError(e, context: label), bad: true);
+        _snack(friendlyErrorWithCode(e, context: label), bad: true);
       }
     } finally {
       if (mounted) setState(() => _working = false);
@@ -135,12 +136,59 @@ class _ImageDeleteSheetState extends State<ImageDeleteSheet> {
     if (reason == null || !mounted) return;
 
     await _run('Image removal', () {
-      return _client.rpc('admin_moderate_image', params: {
-        'p_bucket': bucket,
-        'p_path': path,
-        'p_reason': reason,
+      // Same fix as PublicImageGallery._remove: the live server still runs
+      // the pre-fix admin_moderate_image body (migration 20261006000004 is
+      // behind the deployed head), which writes directly to storage.objects
+      // and hits the RLS trigger's P0001 block. Go through the Storage API
+      // instead, then clean up the app row and audit entry ourselves.
+      final b = bucket;
+      final p = path;
+
+      // 1. Remove the file from storage through the Storage API.
+      _client.storage.from(b).remove([p]);
+
+      // 2. Delete the app row that references it. For provider-gallery we
+      //    call a server RPC (the table is RLS-protected and the caller is
+      //    an admin; the RPC enforces that). For product-images and
+      //    vehicle-images the client can delete directly through the public
+      //    table API because RLS allows admins to write there.
+      var rowRemoved = false;
+      if (b == 'provider-gallery') {
+        final deleted =
+            await _client.rpc('admin_delete_provider_gallery_by_path', params: {
+          'p_path': p,
+        });
+        rowRemoved = deleted is int && (deleted as int) > 0;
+      } else if (b == 'product-images') {
+        final deleted = await _client
+            .from('product_images')
+            .delete()
+            .eq('storage_path', p)
+            .select()
+            .maybeSingle();
+        rowRemoved = deleted != null;
+      } else if (b == 'vehicle-images') {
+        final deleted = await _client
+            .from('vehicle_images')
+            .delete()
+            .eq('storage_path', p)
+            .select()
+            .maybeSingle();
+        rowRemoved = deleted != null;
+      }
+
+      // 3. Write the audit entry. moderation_actions is append-only and
+      //    admin-only, so we go through a server RPC that enforces both.
+      _client.rpc('admin_log_moderation_action', params: {
+        'p_action_type': 'IMAGE_REMOVED',
         'p_severity': 'SERIOUS',
+        'p_reason': reason,
+        'p_object_bucket': b,
+        'p_object_path': p,
+        'p_detail': {'removed_from': rowRemoved ? b : 'unknown'},
       });
+
+      return 'Image removed: $p';
     });
   }
 

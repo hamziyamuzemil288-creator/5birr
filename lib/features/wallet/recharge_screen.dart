@@ -10,6 +10,7 @@ import '../../core/services/wallet_service.dart';
 import '../../core/services/payment_methods_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/shimmer_effect.dart';
 
 class RechargeScreen extends StatefulWidget {
   const RechargeScreen({super.key});
@@ -22,6 +23,7 @@ class _RechargeScreenState extends State<RechargeScreen> {
   Map<String, dynamic>? _selectedMethod;
   final _amountCtrl = TextEditingController();
   final _refCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController();
 
   @override
   void dispose() {
@@ -45,6 +47,8 @@ class _RechargeScreenState extends State<RechargeScreen> {
   // the registration fee), providers see what the fee is before paying.
   bool _registrationFeePaid = true;
   double _registrationFee = 100;
+  String? _selectedName;
+  String? _selectedAccountNumber;
 
   @override
   void initState() {
@@ -226,8 +230,12 @@ class _RechargeScreenState extends State<RechargeScreen> {
         amount: amount,
         paymentReference:
             _refCtrl.text.isNotEmpty ? _refCtrl.text.trim() : null,
+        senderName: _selectedName,
         screenshotPath: screenshotPath,
       );
+
+    // Dispose the helper field; it is only used to keep the screen usable when
+    // the form grows beyond a single text field.
 
       if (mounted) {
         setState(() {
@@ -407,6 +415,12 @@ class _RechargeScreenState extends State<RechargeScreen> {
                     label: 'Payment Reference (optional)',
                     controller: _refCtrl,
                     hint: 'Transaction ID or reference number',
+                  ),
+                  const SizedBox(height: 16),
+                  BirrTextField(
+                    label: 'Sender name (optional)',
+                    controller: _nameCtrl,
+                    hint: 'Your name on the account',
                   ),
                   const SizedBox(height: 16),
                   // Screenshot
