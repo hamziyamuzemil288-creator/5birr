@@ -130,6 +130,57 @@ class _State extends State<AdminProviderManagementScreen> {
     }
   }
 
+  /// Suspend a live business.
+  ///
+  /// The `provider-approval` Edge Function has always supported the SUSPEND
+  /// action (it routes to `suspend_provider`, which marks the business's
+  /// vehicles unavailable and notifies the owner), and the admin dashboard's
+  /// own copy says "provider management suspends businesses" — but no button
+  /// ever sent it. An administrator could approve a business and then had no
+  /// way to take it down, or to put a suspended one back.
+  Future<void> _suspend(String providerId) async {
+    final reason = await _showReasonDialog('Reason for suspension');
+    final trimmed = reason?.trim() ?? '';
+    if (trimmed.isEmpty) return;
+    try {
+      await Supabase.instance.client.functions.invoke('provider-approval',
+          body: {
+            'provider_id': providerId,
+            'action': 'SUSPEND',
+            'reason': trimmed,
+          });
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(friendlyError(e,
+                context: 'Could not suspend this provider'))));
+      }
+    }
+  }
+
+  /// Put a suspended business back.
+  ///
+  /// No reason is collected: the suspension already carries its reason in the
+  /// permanent record, and reinstating restores the status the business had
+  /// before it was taken down.
+  Future<void> _unsuspend(String providerId) async {
+    try {
+      await Supabase.instance.client.functions.invoke('provider-approval',
+          body: {
+            'provider_id': providerId,
+            'action': 'UNSUSPEND',
+          });
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(friendlyError(e,
+                context: 'Could not reinstate this provider'))));
+      }
+    }
+  }
+
   Future<String?> _showReasonDialog(String title) async {
     final ctrl = TextEditingController();
     return showDialog<String>(
@@ -368,6 +419,57 @@ class _State extends State<AdminProviderManagementScreen> {
                                               'Wallet & earnings',
                                               style: TextStyle(
                                                   fontSize: 13)),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      // Take a live business out of the
+                                      // marketplace without erasing it. The
+                                      // Edge Function's SUSPEND action is the
+                                      // only path for this and was previously
+                                      // unreachable from the UI.
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: OutlinedButton.icon(
+                                          onPressed: () => _suspend(
+                                              p['id'] as String),
+                                          icon: const Icon(
+                                              Icons.block_outlined,
+                                              size: 16),
+                                          label: const Text(
+                                              'Suspend business',
+                                              style: TextStyle(
+                                                  fontSize: 13)),
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: AppTheme.error,
+                                            side: const BorderSide(
+                                                color: AppTheme.error),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                    // Put it back. Shown on the Suspended
+                                    // filter, because a suspended business is
+                                    // the only one that can be reinstated.
+                                    if (p['status'] == 'SUSPENDED') ...[
+                                      const SizedBox(height: 8),
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: OutlinedButton.icon(
+                                          onPressed: () => _unsuspend(
+                                              p['id'] as String),
+                                          icon: const Icon(
+                                              Icons.restart_alt_outlined,
+                                              size: 16),
+                                          label: const Text(
+                                              'Reinstate business',
+                                              style: TextStyle(
+                                                  fontSize: 13)),
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor:
+                                                AppTheme.primaryGreen,
+                                            side: const BorderSide(
+                                                color: AppTheme.primaryGreen),
+                                          ),
                                         ),
                                       ),
                                     ],
