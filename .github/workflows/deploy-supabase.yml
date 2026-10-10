@@ -235,6 +235,18 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: supabase functions deploy document-verify
 
+      # Administrator image takedown. The row and the audit record go through
+      # admin_moderate_image (called here with the caller's own JWT), but the
+      # FILE cannot: Supabase refuses a direct DELETE on storage.objects for
+      # every role, and the image buckets' delete policies are owner-scoped, so
+      # an admin cannot remove another account's object from the client.
+      # This function holds the service-role key and removes the object through
+      # the Storage API — the only path Supabase allows. JWT verification stays
+      # ON; it re-checks is_admin() server-side from the caller's own JWT.
+      - name: Deploy function admin-image-delete
+        if: ${{ !inputs.dry_run }}
+        run: supabase functions deploy admin-image-delete
+
       # Permanent user removal from the admin Staff Assignment screen
       # (admin_staff_assignment_screen.dart invokes 'user-admin' with
       # action=delete_user). Added in f5d4574 alongside document-verify but

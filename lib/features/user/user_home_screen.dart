@@ -83,6 +83,14 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// error, because the feed is still fully usable without it.
   List<Map<String, dynamic>> _galleryProviders = const [];
 
+  /// Published provider-gallery photos for the feed (visible_gallery_for_city),
+  /// mixed into Fresh Finds. A photo a provider uploads used to surface only as
+  /// one trending tile's image — and only for the providers the rail happened
+  /// to carry — so a provider outside the rail could add a photo that appeared
+  /// nowhere a buyer browses. The list is city-scoped exactly as the product
+  /// rail is: the browse city, or every city when it is empty.
+  List<Map<String, dynamic>> _galleryImages = const [];
+
   bool _loading = true;
   String? _error;
 
@@ -141,6 +149,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         _products = data['products'] as List<Product>;
         _activeRide = data['activeRide'] as Map<String, dynamic>?;
         _galleryProviders = data['providers'] as List<Map<String, dynamic>>;
+        _galleryImages = data['gallery'] as List<Map<String, dynamic>>;
         _providerImages =
             Map<String, String>.from(data['providerImages'] as Map);
         _verifiedProviders =
@@ -213,15 +222,34 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       _categoriesFetchedAt = DateTime.now();
     }
 
-    // 2. The ranked city-scoped product rail.
-    final prodData = await client
+    // 2. The ranked product rail. Scoped to the browse city — EXCEPT when the
+    //    browse city is empty, which is the city switcher's "All cities"
+    //    option and means "do not filter". 
+    final productsQuery = client
         .from('products')
         .select('*, product_images(*)')
-        .eq('is_active', true)
-        .or('city.eq.$city,city.is.null')
+        .eq('is_active', true);
+    final scopedProducts = city.isEmpty
+        ? productsQuery
+        : productsQuery.or('city.eq.$city,city.is.null');
+    final prodData = await scopedProducts
         .order('sales_count', ascending: false, nullsFirst: false)
         .order('created_at', ascending: false)
         .limit(20);
+
+    // 2b. Published gallery photos, for the mixed Fresh Finds feed. Best-effort:
+    //     a failed gallery read must not take the feed down, and an empty list
+    //     simply renders the products alone — what the feed shipped with.
+    List<Map<String, dynamic>> gallery = const [];
+    try {
+      final rows = await client.rpc('visible_gallery_for_city', params: {
+        'p_city': city,
+        'p_limit': 60,
+      });
+      gallery = List<Map<String, dynamic>>.from(rows as List);
+    } catch (_) {
+      gallery = const [];
+    }
 
     // 3. Active ride, best-effort. A failed lookup here must not take the
     //    whole feed down — the feed is still useful without the banner.
@@ -262,6 +290,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       'providers': providers,
       'providerImages': imageMaps,
       'verified': verified,
+      'gallery': gallery,
     };
   }
 
@@ -1059,8 +1088,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// scoping. The tabs are gone, and with them the rule that used to hide
   /// half the feed behind a chip nobody knew to tap.
   List<Widget> _productRail() {
-    final scoped = _products;
-    if (scoped.isEmpty) return const [];
+    final tiles = _freshFindTiles();
+    if (tiles.isEmpty) return const [];
     const title = 'Fresh Finds';
     return [
       SliverToBoxAdapter(
@@ -1109,16 +1138,123 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
             // cannot overflow.
             childAspectRatio: 0.66,
           ),
-          delegate: SliverChildBuilderDelegate(
-            (_, i) => ProductCard(
-              product: scoped[i],
-              onTap: () => context.push('/user/product/${scoped[i].id}'),
-            ),
-            childCount: scoped.length,
-          ),
+          delegate: SliverChildListDelegate(tiles),
         ),
       ),
     ];
+  }
+
+  /// Fresh Finds, with the published gallery photos mixed in.
+  ///
+  /// One gallery tile is interleaved after every three products, and the
+  /// remainder trails the grid, so the gallery reads as part of the same feed
+  /// rather than a second, separate list. The tiles are built as a list and
+  /// handed to `SliverChildListDelegate`, because the two card types do not
+  /// share a builder.
+  List<Widget> _freshFindTiles() {
+    final gallery = _galleryImages;
+    final tiles = <Widget>[];
+    var gi = 0;
+    for (var i = 0; i < _products.length; i++) {
+      final p = _products[i];
+      tiles.add(ProductCard(
+        product: p,
+        onTap: () => context.push('/user/product/${p.id}'),
+      ));
+      if ((i + 1) % 3 == 0 && gi < gallery.length) {
+        tiles.add(_galleryCard(gallery[gi]));
+        gi++;
+      }
+    }
+    while (gi < gallery.length) {
+      tiles.add(_galleryCard(gallery[gi]));
+      gi++;
+    }
+    return tiles;
+  }
+
+  /// One published gallery photo in the Fresh Finds grid. Taps through to the
+  /// provider it belongs to, which is where the rest of their gallery is.
+  Widget _galleryCard(Map<String, dynamic> row) {
+    final providerId = (row['provider_id'] ?? '').toString();
+    final path = (row['storage_path'] as String?)?.trim() ?? '';
+    final name = (row['business_name'] as String?)?.trim() ?? '';
+    final city = (row['city'] as String?)?.trim() ?? '';
+    final caption = (row['caption'] as String?)?.trim() ?? '';
+    final url = path.isEmpty
+        ? null
+        : Supabase.instance.client.storage
+            .from('provider-gallery')
+            .getPublicUrl(path);
+    return Material(
+      color: AppTheme.surface,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: providerId.isEmpty
+            ? null
+            : () => context.push('/user/provider/$providerId'),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: url == null
+                  ? _galleryImageFallback()
+                  : Image.network(
+                      url,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, __, ___) => _galleryImageFallback(),
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name.isEmpty ? 'Gallery' : name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  if (city.isNotEmpty)
+                    Text(
+                      city,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11, color: AppTheme.textMuted),
+                    ),
+                  if (caption.isNotEmpty)
+                    Text(
+                      caption,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 10.5, color: AppTheme.textSecondary),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _galleryImageFallback() {
+    return Container(
+      color: AppTheme.primaryGreenLight.withOpacity(0.18),
+      child: const Center(
+        child: Icon(Icons.image_outlined, size: 28, color: AppTheme.textMuted),
+      ),
+    );
   }
 
   // ------------------------------------------------------------ ride card
@@ -1609,7 +1745,11 @@ class _CityChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final city = ref.watch(cityProvider);
-    final label = city.isTravelMode ? '\u2708 ${city.activeCity}' : city.activeCity;
+    final label = city.isAllCities
+        ? 'All cities'
+        : (city.isTravelMode
+            ? '\u2708 ${city.activeCity}'
+            : city.activeCity);
     return Material(
       color: Colors.white.withOpacity(0.16),
       borderRadius: BorderRadius.circular(18),

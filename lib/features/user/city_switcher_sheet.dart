@@ -39,9 +39,13 @@ class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
     }
     _debounce = Timer(const Duration(milliseconds: 500), () async {
       setState(() => _searching = true);
-      final active = ref.read(cityProvider).activeCity;
+      final service = ref.read(cityProvider);
+      final active = service.activeCity;
+      // "All cities" has no place to bias a search toward, so the saved city
+      // stands in — the query is still free text, this only nudges the ranking.
+      final bias = active.isNotEmpty ? active : (service.savedCity ?? '');
       final places = await GeocodingService.instance
-          .searchPlaces(v.trim(), biasCity: active, limit: 5);
+          .searchPlaces(v.trim(), biasCity: bias, limit: 5);
       if (mounted) {
         setState(() {
           _suggestions = places;
@@ -116,6 +120,27 @@ class _CitySwitcherSheetState extends ConsumerState<CitySwitcherSheet> {
               child: ListView(
                 shrinkWrap: true,
                 children: [
+                  // Every city together. Placed first because it is the whole
+                  // point of the sheet's "browse" promise, and because it is
+                  // the one option that is not a city name.
+                  ListTile(
+                    leading: Icon(
+                      cityService.isAllCities
+                          ? Icons.check_circle
+                          : Icons.public,
+                      color: cityService.isAllCities
+                          ? AppTheme.primaryGreen
+                          : null,
+                    ),
+                    title: const Text('All cities'),
+                    subtitle: const Text('See everything, from every city'),
+                    onTap: _busy
+                        ? null
+                        : () {
+                            cityService.setAllCities(true);
+                            Navigator.of(context).pop(true);
+                          },
+                  ),
                   if (_searching)
                     const Padding(
                       padding: EdgeInsets.all(8),

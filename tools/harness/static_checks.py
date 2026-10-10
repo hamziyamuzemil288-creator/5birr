@@ -3762,43 +3762,35 @@ def check_content_control_is_wired() -> list[str]:
             if "'%s'" % rpc not in s:
                 problems.append(
                     "admin_content_control_screen.dart never calls %s()" % rpc)
-        # The delete path calls the clear-reason WRAPPER (0141), which
-        # delegates to admin_moderate_image — accepted only while that
-        # delegation is verifiable in the migration that defines the
-        # wrapper. A wrapper that stops delegating would otherwise pass
-        # this check while the client's only delete call reaches nothing.
-        if ("'admin_moderate_image'" not in s
-                and "'admin_moderate_image_with_reason'" not in s):
+        # The delete path goes through the admin-image-delete Edge Function:
+        # the row + audit through admin_moderate_image, the FILE through the
+        # Storage API, because a direct DELETE on storage.objects is refused
+        # for every role. A screen that lost the call would leave the delete
+        # button with nothing behind it — and a screen that fell back to the
+        # RPC would look like it deleted the image while the file stayed.
+        if ("AdminImageDeleteService" not in s
+                and "'admin-image-delete'" not in s):
             problems.append(
-                "admin_content_control_screen.dart never calls "
-                "admin_moderate_image() — neither directly nor via the "
-                "admin_moderate_image_with_reason wrapper, so the delete "
-                "button has no RPC behind it")
+                "admin_content_control_screen.dart never reaches the "
+                "admin-image-delete Edge Function, so the delete button has "
+                "nothing behind it (or removes the row while the file stays)")
         else:
-            # Scan every migration that DEFINES the wrapper for the
-            # delegation. last_migration_defining() can name a file that
-            # merely GRANTs the wrapper (a restatement), whose body is not
-            # the wrapper at all — so the definition itself is what is
-            # searched.
-            defined = False
-            delegated = False
-            for mig in migration_files():
-                mbody = function_body(_read(mig),
-                                      "admin_moderate_image_with_reason")
-                if not mbody:
-                    continue
-                defined = True
-                if "admin_moderate_image(" in mbody:
-                    delegated = True
-            if not defined:
+            # The function the screen reaches must itself delete the row and
+            # the audit record; a file removed around a surviving row is a
+            # broken image.
+            edge = (ROOT / "supabase" / "functions" / "admin-image-delete"
+                    / "index.ts")
+            if not edge.is_file():
                 problems.append(
-                    "no migration defines admin_moderate_image_with_reason() "
-                    "— the client's delete call has nothing to reach")
-            elif not delegated:
+                    "admin_content_control_screen.dart calls the "
+                    "admin-image-delete function, but "
+                    "supabase/functions/admin-image-delete/index.ts does not "
+                    "exist — the call reaches nothing")
+            elif "admin_moderate_image" not in edge.read_text(
+                    encoding="utf-8", errors="replace"):
                 problems.append(
-                    "the admin_moderate_image_with_reason wrapper no longer "
-                    "delegates to admin_moderate_image(), so the client's "
-                    "only delete call reaches nothing")
+                    "admin-image-delete never calls admin_moderate_image(), "
+                    "so a takedown writes no row and no audit record")
 
     router = _read(LIB / "routing" / "app_router.dart")
     if "'/admin/content'" not in router:
@@ -7648,16 +7640,26 @@ def check_account_deletion_removes_the_files() -> list[str]:
 def check_admin_image_delete_is_complete() -> list[str]:
     """The admin image delete must remove the FILE, not just the row.
 
-    Reproduced root cause: admin_moderate_image() deleted storage.objects
-    with `bucket_id = p_bucket`, and the client's `_bucketFor()` guessed that
-    bucket from path SUBSTRINGS (`/product` → product-images) that real
-    upload paths — `uid/<productId>/<file>` — never contain. Every product
-    and vehicle image was therefore sent as 'provider-gallery', the storage
-    delete matched zero rows, and the FILE stayed in the bucket while the DB
-    row went and the UI reported success. Migration 20261006000004 deletes
-    the object from ALL moderable buckets by name; friendly_error must show
-    the server's real refusal instead of the generic fallback; and the
-    guessing helper must not come back.
+    Reproduced root cause, in two layers:
+
+      * admin_moderate_image() deleted storage.objects with
+        `bucket_id = p_bucket`, and the client's `_bucketFor()` guessed that
+        bucket from path SUBSTRINGS (`/product` → product-images) that real
+        upload paths — `uid/<productId>/<file>` — never contain, so the
+        storage delete matched zero rows while the DB row went;
+      * and even the corrected `bucket_id = ANY` statement can never run:
+        Supabase's guard on storage.objects refuses a direct DELETE for EVERY
+        role, a SECURITY DEFINER function included, with
+        "Direct deletion from storage tables is not allowed. Use the Storage
+        API instead." So the takedown abort it aborts the whole transaction.
+
+    The FILE is therefore removed through the Storage API by the
+    `admin-image-delete` Edge Function, which alone holds the service-role key
+    needed to delete an object in an owner-scoped bucket. This check pins the
+    split: no direct storage.objects delete in the RPC, a real Edge Function
+    that verifies the admin and calls both the Storage API and
+    admin_moderate_image, friendly_error showing the server's real refusal,
+    and the guessing helper gone.
     """
     problems: list[str] = []
 
@@ -7666,19 +7668,56 @@ def check_admin_image_delete_is_complete() -> list[str]:
         problems.append("no migration defines admin_moderate_image()")
     else:
         body = function_body(_read(target), "admin_moderate_image")
-        if "storage.objects" not in body:
+        # The direct storage write has to be GONE, not merely widened.
+        # Supabase's guard refuses it for every role (it is a statement-level
+        # trigger, not a privilege check), so a statement here can only abort
+        # the whole takedown — and, where forced through, it removes the
+        # metadata row and leaves the file orphaned in the bucket.
+        if re.search(r"DELETE\s+FROM\s+storage\.objects", body, re.IGNORECASE):
             problems.append(
-                "%s: admin_moderate_image() no longer touches "
-                "storage.objects at all, so deleted images live forever in "
-                "the bucket" % target.name)
-        if not re.search(r"bucket_id\s*=\s*ANY", body):
+                "%s: admin_moderate_image() deletes storage.objects "
+                "directly. Supabase refuses that for every role, so handing "
+                "the file to SQL aborts the takedown (the file is never "
+                "removed) — the object must be removed through the Storage "
+                "API by the admin-image-delete Edge Function" % target.name)
+
+    # The file half: a real Edge Function, admin-gated, using the service role
+    # to call the Storage API and admin_moderate_image for the row + audit.
+    edge = (ROOT / "supabase" / "functions" / "admin-image-delete"
+            / "index.ts")
+    if not edge.is_file():
+        problems.append(
+            "supabase/functions/admin-image-delete/index.ts is missing — the "
+            "FILE half of the admin image delete has no implementation, so a "
+            "deleted image lives in the bucket forever")
+    else:
+        ecode = edge.read_text(encoding="utf-8", errors="replace")
+        for needle, why in (
+            ("is_admin",
+             "it never verifies the caller is an administrator"),
+            ("SERVICE_ROLE_KEY",
+             "it has no service-role client, so it cannot remove another "
+             "account's object from an owner-scoped bucket"),
+            (".remove(",
+             "it never removes the object through the Storage API"),
+            ("admin_moderate_image",
+             "it never deletes the row and the audit record, so a takedown "
+             "would leave the image referenced after the file is gone"),
+        ):
+            if needle not in ecode:
+                problems.append("admin-image-delete/index.ts: %s" % why)
+
+    # Every client call site must reach that function, not the RPC — the RPC
+    # cannot remove the file.
+    for rel in ("features/admin/widgets/image_delete_sheet.dart",
+                "features/admin/widgets/public_image_gallery.dart",
+                "features/admin/admin_content_control_screen.dart"):
+        dart = _dart_without_comments(_read(LIB / rel))
+        if "AdminImageDeleteService" not in dart and \
+                "'admin-image-delete'" not in dart:
             problems.append(
-                "%s: admin_moderate_image() deletes the storage object "
-                "with the caller's single p_bucket only. The client's "
-                "bucket guess (path substrings that real upload paths never "
-                "contain) stranded product/vehicle files in the bucket "
-                "while the row was deleted — the object must be deleted "
-                "from ALL moderable buckets by name" % target.name)
+                "%s never reaches the admin-image-delete Edge Function, so "
+                "its delete leaves the file in the bucket" % rel)
 
     err = _read(LIB / "core" / "utils" / "friendly_error.dart")
     code = _dart_without_comments(err) if err else ""

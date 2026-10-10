@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/services/admin_image_delete_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/ethiopia_cities.dart' as cities;
 import '../../../core/utils/friendly_error.dart';
@@ -29,8 +30,9 @@ import '../../../core/widgets/photo_grid.dart';
 ///     list of uuids;
 ///   * hides an image from public WITHOUT deleting it (reversible, and the
 ///     provider keeps the photo in their own gallery);
-///   * removes it entirely, through the same `admin_moderate_image` the report
-///     queue already used;
+///   * removes it entirely, through the `admin-image-delete` Edge Function —
+///     which deletes the row and its audit record and then removes the FILE
+///     through the Storage API, the only path Supabase allows;
 ///   * warns the uploader, with text the moderator types, from this section.
 ///
 /// Hide is offered FIRST and remove second, on purpose. Removal is
@@ -262,17 +264,18 @@ class _PublicImageGalleryState extends State<PublicImageGallery> {
     final reason = await _askReason('Delete this image permanently?', confirm: 'Delete');
     if (reason == null || !mounted) return;
     await _run('Image removal', () {
-      // admin_moderate_image_with_reason is a thin wrapper around
-      // admin_moderate_image. It still enforces is_admin() server-side; it
-      // only changes what a refusal looks like, so a moderator gets a fixed
-      // sentence — the server's own reason — instead of a raw PostgREST
-      // error string.
-      return _client.rpc('admin_moderate_image_with_reason', params: {
-        'p_bucket': image['bucket'],
-        'p_path': image['storage_path'],
-        'p_reason': reason,
-        'p_severity': 'SERIOUS',
-      });
+      // The Edge Function owns the whole removal: it calls
+      // admin_moderate_image with the moderator's own JWT (which enforces
+      // is_admin() and writes the audit record) and then removes the object
+      // through the Storage API, since a direct DELETE on storage.objects is
+      // refused for every role.
+      final bucket = (image['bucket'] as String?) ?? '';
+      final path = (image['storage_path'] as String?) ?? '';
+      return AdminImageDeleteService.delete(
+        bucket: bucket,
+        path: path,
+        reason: reason,
+      );
     });
   }
 

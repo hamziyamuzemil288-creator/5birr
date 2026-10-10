@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/services/admin_image_delete_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/friendly_error.dart';
 
@@ -9,8 +10,10 @@ import '../../../core/utils/friendly_error.dart';
 ///
 /// This is the missing "delete image from the admin sidebar" path the report
 /// described: the admin side of the image-delete flow is reachable from the
-/// Content Control screen's own delete strip, and the same
-/// `admin_moderate_image` RPC does the actual removal.
+/// Content Control screen's own delete strip. The removal goes through the
+/// `admin-image-delete` Edge Function, which deletes the row and the audit
+/// record through `admin_moderate_image` and then removes the FILE through the
+/// Storage API — the only path Supabase allows.
 class ImageDeleteSheet extends StatefulWidget {
   const ImageDeleteSheet({super.key});
 
@@ -135,12 +138,11 @@ class _ImageDeleteSheetState extends State<ImageDeleteSheet> {
     if (reason == null || !mounted) return;
 
     await _run('Image removal', () {
-      return _client.rpc('admin_moderate_image', params: {
-        'p_bucket': bucket,
-        'p_path': path,
-        'p_reason': reason,
-        'p_severity': 'SERIOUS',
-      });
+      return AdminImageDeleteService.delete(
+        bucket: bucket,
+        path: path,
+        reason: reason,
+      );
     });
   }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/services/admin_image_delete_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -23,8 +24,10 @@ import 'widgets/public_image_gallery.dart';
 ///
 /// THE TWO THINGS IT DOES
 /// ----------------------
-///   * removes one image: the referencing row AND the storage object, in one
-///     server call, so a row can never be left pointing at a file that is gone;
+///   * removes one image: the referencing row and its audit record through
+///     `admin_moderate_image`, then the FILE through the `admin-image-delete`
+///     Edge Function's Storage API call (a direct DELETE on `storage.objects`
+///     is refused for every role, so the file cannot be removed in SQL);
 ///   * suspends or reinstates an account, writing `profiles` and
 ///     `provider_profiles` together, because the router gates on `profiles`
 ///     and the admin panel reads `provider_profiles`, and a half-written
@@ -227,8 +230,10 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
   /// "That image has no usable path, so it cannot be deleted." before it ever
   /// reached the server — an error no amount of re-tapping could clear.
   ///
-  /// Only the snapshot of the two values changes; the server call, the reason
-  /// prompt and the RPC's own rules are untouched.
+  /// The server call is the `admin-image-delete` Edge Function (see
+  /// [AdminImageDeleteService]); it runs `admin_moderate_image` with this
+  /// administrator's own JWT for the row and the audit record and then removes
+  /// the FILE through the Storage API.
   Future<void> _removeImageFromRow(Map<String, dynamic> image) async {
     final target = moderationDeleteTarget(image);
     if (target == null) {
@@ -243,12 +248,11 @@ class _AdminContentControlScreenState extends State<AdminContentControlScreen> {
     if (reason == null || !mounted) return;
 
     await _run('Image removal', () {
-      return Supabase.instance.client.rpc('admin_moderate_image_with_reason', params: {
-        'p_bucket': target.bucket,
-        'p_path': target.path,
-        'p_reason': reason,
-        'p_severity': 'SERIOUS',
-      });
+      return AdminImageDeleteService.delete(
+        bucket: target.bucket,
+        path: target.path,
+        reason: reason,
+      );
     });
   }
 

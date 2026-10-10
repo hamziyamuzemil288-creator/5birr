@@ -104,12 +104,17 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
       final pos = _myPos;
       // Phase 1: scope search to the active city (travel city in travel
       // mode). City-less listings stay visible everywhere.
+      //
+      // An empty browse city is the "All cities" mode and is sent as NULL:
+      // search_products treats a NULL city as "do not filter", where an empty
+      // string would have matched only city-less rows.
+      final browseCity = CityService.instance.activeCity;
       final data =
           await Supabase.instance.client.rpc('search_products', params: {
         'p_query': q.trim(),
         'p_limit': 30,
         'p_offset': 0,
-        'p_city': CityService.instance.activeCity,
+        'p_city': browseCity.isEmpty ? null : browseCity,
         // "Global" (city-less) listings are an explicit FALLBACK, not the
         // default. With a position in hand the user asked for what is near
         // them; admitting every city-less listing unconditionally ranks a

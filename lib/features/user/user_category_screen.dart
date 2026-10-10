@@ -66,8 +66,13 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
       // User-visible image column. A provider sets it on the business profile
       // edit sheet; when it is missing the listing still loads, but the tile
       // renders a green placeholder so the panel never shows a broken image.
-      final prods = await client.rpc('visible_products_for_city',
-          params: {'p_city': city, 'p_category_id': widget.categoryId});
+      //
+      // An empty browse city is "All cities" and is sent as NULL; the function
+      // treats an empty/NULL city as "do not filter" (20261010000002).
+      final prods = await client.rpc('visible_products_for_city', params: {
+        'p_city': city.isEmpty ? null : city,
+        'p_category_id': widget.categoryId,
+      });
       final prodsRaw = List<Map<String, dynamic>>.from(prods as List);
       final providers = await client.rpc('ranked_providers', params: {
         'p_category_id': widget.categoryId,

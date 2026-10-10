@@ -49,7 +49,13 @@ class CityService extends ChangeNotifier {
   String? _savedCity;
   String? _travelCity;
   bool _travelMode = false;
+  bool _allCities = false;
   bool _loaded = false;
+
+  /// The browse city that means "every city together". [activeCity] returns
+  /// this, and every city-scoped read treats an empty value as "do not filter"
+  /// (see migration 20261010000002).
+  static const String allCitiesSentinel = '';
 
   /// The active city as of the last notification. Used to publish an event
   /// ONLY when the value the scoped screens query on actually changes — a
@@ -63,6 +69,7 @@ class CityService extends ChangeNotifier {
   /// The city currently browsed: travel city in travel mode, saved city
   /// otherwise, default fallback when nothing is known yet.
   String get activeCity {
+    if (_allCities) return allCitiesSentinel;
     if (_travelMode && (_travelCity?.trim().isNotEmpty ?? false)) {
       return _travelCity!;
     }
@@ -71,6 +78,9 @@ class CityService extends ChangeNotifier {
 
   bool get isTravelMode => _travelMode;
   bool get isLoaded => _loaded;
+
+  /// True while the feed is browsing every city at once rather than one.
+  bool get isAllCities => _allCities;
 
   /// Publish a change when [activeCity] differs from the last notified value.
   ///
@@ -120,6 +130,7 @@ class CityService extends ChangeNotifier {
     try {
       await _client.from('profiles').update({'city': city}).eq('id', uid);
       _savedCity = city;
+      _allCities = false;
       if (_travelMode) {
         _travelMode = false;
         _travelCity = null;
@@ -144,6 +155,7 @@ class CityService extends ChangeNotifier {
 
   /// Travel mode: browse [city] without changing the saved default.
   void setTravelCity(String city) {
+    _allCities = false;
     _travelCity = city;
     _travelMode = true;
     _notifyIfActiveChanged();
@@ -151,8 +163,21 @@ class CityService extends ChangeNotifier {
 
   /// Leave travel mode; browsing returns to the saved default city.
   void setTravelMode(bool on) {
+    _allCities = false;
     _travelMode = on;
     if (!on) _travelCity = null;
+    _notifyIfActiveChanged();
+  }
+
+  /// Browse every city together. Leaves travel mode, because "all cities" is
+  /// the opposite of a single travel city; the saved city is untouched, so
+  /// "Back to my city" still returns to it.
+  void setAllCities(bool on) {
+    _allCities = on;
+    if (on) {
+      _travelMode = false;
+      _travelCity = null;
+    }
     _notifyIfActiveChanged();
   }
 }
