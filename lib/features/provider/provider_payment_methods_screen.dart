@@ -41,6 +41,21 @@ class _ProviderPaymentMethodsScreenState
   String? _loadError;
   bool _refreshing = false;
 
+  /// `provider_profiles.id` — NOT the auth user id. Resolved by [_load].
+  String? _providerId;
+
+  @override
+  void initState() {
+    super.initState();
+    // Nothing used to start this screen. `_loading` begins true, only
+    // `_load()` ever clears it, and no path called `_load()` until a save had
+    // already happened — so the screen sat on its spinner forever. A provider
+    // could reach "Payment account number" from the dashboard, from the
+    // posting checklist and from the readiness banner, and never once see the
+    // form or the Add button behind it.
+    _load();
+  }
+
   @override
   void dispose() {
     _accountNameController.dispose();
@@ -56,14 +71,35 @@ class _ProviderPaymentMethodsScreenState
       _loadError = null;
     });
     try {
+      // WHICH provider this screen belongs to, resolved before anything is
+      // read or written. `provider_payment_methods.provider_id` is a foreign
+      // key onto `provider_profiles(id)` (20260927000142) and every policy on
+      // the table is `owns_provider_profile(provider_id)`, which matches on
+      // `user_id = auth.uid()` — so the auth uid is not a provider id. Sending
+      // it selected no rows (the screen read as empty however many accounts the
+      // business had) and inserted a `provider_id` naming no profile at all, so
+      // Add failed on the foreign key.
+      final providerId = await _resolveProviderId();
+      if (!mounted) return;
+      if (providerId == null) {
+        setState(() {
+          _loading = false;
+          _loadError = 'No business profile is linked to this account yet. '
+              'Finish your provider registration, then come back to add your '
+              'account number.';
+        });
+        return;
+      }
+      _providerId = providerId;
+
       // Every read is bounded (PaymentMethodsService.kTimeout, and the
       // .timeout below for the wallet reads): the endless spinner this
       // screen used to show was an un-awaited read that never returned —
       // no deadline meant no error state, no code and no retry.
       final methods =
-          await PaymentMethodsService.instance.getProviderMethods(_providerId);
+          await PaymentMethodsService.instance.getProviderMethods(providerId);
       final banks = await PaymentMethodsService.instance.getBanks();
-      final wallet = await WalletService.instance.getWallet(_providerId)
+      final wallet = await WalletService.instance.getWallet(providerId)
           .timeout(PaymentMethodsService.kTimeout);
       final requests =
           await WalletService.instance.getMyWalletFundingSummary()
@@ -92,7 +128,7 @@ class _ProviderPaymentMethodsScreenState
           final prov = await client
               .from('provider_profiles')
               .select('business_name')
-              .eq('id', _providerId)
+              .eq('id', providerId)
               .maybeSingle()
               .timeout(PaymentMethodsService.kTimeout);
           name = prov?['business_name'] as String?;
@@ -120,8 +156,30 @@ class _ProviderPaymentMethodsScreenState
     }
   }
 
-  String get _providerId =>
-      Supabase.instance.client.auth.currentUser?.id ?? '';
+  /// `provider_profiles.id` for the signed-in account, or null when the
+  /// account has no business profile (a buyer, or a provider whose signup row
+  /// has gone).
+  ///
+  /// Read as a list rather than `.maybeSingle()`: one person can hold more
+  /// than one provider profile (a business and a driver), and `maybeSingle()`
+  /// throws on two rows. A service business is preferred, because this screen
+  /// is opened from the service-provider dashboard; failing that, whichever
+  /// profile the account has.
+  Future<String?> _resolveProviderId() async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return null;
+    final rows = await Supabase.instance.client
+        .from('provider_profiles')
+        .select('id, provider_type')
+        .eq('user_id', userId)
+        .timeout(PaymentMethodsService.kTimeout);
+    final mine = List<Map<String, dynamic>>.from(rows as List);
+    if (mine.isEmpty) return null;
+    for (final r in mine) {
+      if (r['provider_type'] == 'SERVICE_PROVIDER') return r['id'] as String;
+    }
+    return mine.first['id'] as String;
+  }
 
   Future<void> _save() async {
     if (!context.mounted) return;
@@ -198,6 +256,12 @@ class _ProviderPaymentMethodsScreenState
   }
 
   Future<void> _createMethod() async {
+    final providerId = _providerId;
+    if (providerId == null) {
+      // No resolved business profile: refusing with a sentence beats inserting
+      // a row whose provider_id names nobody.
+      throw Exception('NO_PROVIDER_PROFILE');
+    }
     final bank = _selectedBank();
     final data = await PaymentMethodsService.instance.createProviderMethod(
       name: bank?['name'] as String? ?? 'Bank account',
@@ -211,7 +275,7 @@ class _ProviderPaymentMethodsScreenState
       instructions: _instructionsController.text.trim().isEmpty
           ? null
           : _instructionsController.text.trim(),
-      providerId: _providerId,
+      providerId: providerId,
     );
 
     if (context.mounted) {
@@ -478,6 +542,19 @@ class _ProviderPaymentMethodsScreenState
     required TextEditingController refCtrl,
     required File? screenshot,
   }) async {
+    final providerId = _providerId;
+    if (providerId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No business profile is linked to this account yet, '
+                'so there is no wallet to fund.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
     final amount = double.tryParse(amountCtrl.text);
     if (selectedMethodId == null || selectedMethodId.isEmpty) {
       if (mounted) {
@@ -511,7 +588,7 @@ class _ProviderPaymentMethodsScreenState
       try {
         screenshotPath = await WalletService.instance.uploadScreenshot(
           screenshot.path,
-          _providerId,
+          providerId,
         );
       } on Exception catch (e) {
         if (mounted) {
@@ -526,7 +603,7 @@ class _ProviderPaymentMethodsScreenState
 
     try {
       await WalletService.instance.submitProviderWalletFundingRequest(
-        providerId: _providerId,
+        providerId: providerId,
         walletId: (_wallet?['id'] as String?) ?? '',
         paymentMethodId: selectedMethodId,
         amount: amount,
@@ -927,6 +1004,15 @@ class _ProviderPaymentMethodsScreenState
 
   Widget _listBody(BuildContext context) {
     return ListView.builder(
+      // shrinkWrap + no inner scrolling: this list is rendered INSIDE the
+      // screen's own ListView (the wallet card and the pending-requests card
+      // sit above it). A plain nested ListView has no bounded height to lay
+      // out against and threw "Vertical viewport was given unbounded height"
+      // the moment a provider had one account — which is exactly when this
+      // list first rendered, so the empty state looked fine and the first
+      // saved account broke the screen.
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16),
       // One extra row: the "add account" action, always reachable and
       // always honest about the 3-account cap.

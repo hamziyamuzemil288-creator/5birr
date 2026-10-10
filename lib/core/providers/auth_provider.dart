@@ -30,6 +30,26 @@ class AuthState {
   final bool isLoading;
   final String? error;
 
+  /// `public.is_ceo_authority()` — is_ceo() OR is_super_admin() — as the
+  /// SERVER answers it, resolved once per session.
+  ///
+  /// [isCeo] models only one of the two shapes `is_ceo()` accepts. It reads
+  /// "holds ADMIN and has no staff gateway row", while the database also accepts
+  /// **a staff row flagged `staff.is_ceo`** (the shape 20260922000012 creates).
+  /// For an owner whose authority comes from that staff row the client said
+  /// "not the CEO" while every server gate — the CEO workspace,
+  /// `ceo_account_directory()` and `ceo_delete_user_account()` — said
+  /// otherwise: the CEO-only door was missing from the sidebar, the workspace
+  /// answered "for the CEO account only", and the account directory (the one
+  /// place a full user or provider profile can be deleted outright) was
+  /// unreachable. That is the same class of defect as a delete button that
+  /// does nothing: the client refusing a door the server opens.
+  ///
+  /// Asked of the database rather than re-derived, so there is one definition
+  /// of "the CEO" instead of two that can drift. False when the call fails:
+  /// a failed check must never widen authority.
+  final bool isCeoAuthority;
+
   /// True while the session came from a password-recovery link — the
   /// router must send the user to /update-password before anything else.
   final bool isRecoverySession;
@@ -53,6 +73,7 @@ class AuthState {
     this.isStaffGateway = false,
     this.isLoading = true,
     this.error,
+    this.isCeoAuthority = false,
     this.isRecoverySession = false,
   });
 
@@ -64,6 +85,7 @@ class AuthState {
     bool? isStaffGateway,
     bool? isLoading,
     String? error,
+    bool? isCeoAuthority,
     bool? isRecoverySession,
     bool clearError = false,
   }) {
@@ -75,6 +97,7 @@ class AuthState {
       isStaffGateway: isStaffGateway ?? this.isStaffGateway,
       isLoading: isLoading ?? this.isLoading,
       error: clearError ? null : (error ?? this.error),
+      isCeoAuthority: isCeoAuthority ?? this.isCeoAuthority,
       isRecoverySession: isRecoverySession ?? this.isRecoverySession,
     );
   }
@@ -98,6 +121,18 @@ class AuthState {
   /// refused, it does not protect one.
   bool get isCeo => isAdmin && !isStaffMember;
   bool get isStaffMember => isStaffGateway && isAdmin;
+
+  /// The CEO-only surfaces — the CEO workspace and the account directory —
+  /// open for EITHER answer.
+  ///
+  /// [isCeo] is the local heuristic; [isCeoAuthority] is what the database says
+  /// and is the predicate the two RPCs behind those screens actually check
+  /// (`is_ceo_authority()`). Requiring both would hide the door from a real CEO
+  /// whose authority comes from a staff row flagged `is_ceo`; requiring only
+  /// the heuristic is what left that CEO with a workspace that answered "for
+  /// the CEO account only". Neither half grants anything: every screen behind
+  /// the door re-checks server-side.
+  bool get canOpenCeoOnly => isCeo || isCeoAuthority;
   bool get isVehicleProvider => roles.contains(AppUserRole.vehicleProvider);
   bool get isServiceProvider => roles.contains(AppUserRole.serviceProvider);
   bool get isUser => roles.contains(AppUserRole.user);
@@ -231,12 +266,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
         orElse: () => AppUserRole.user,
       );
 
+      // The CEO authority, asked of the server. [isCeo] above is a heuristic
+      // that misses the "staff row flagged is_ceo" shape of the same role; the
+      // two CEO-only RPCs behind the account directory gate on
+      // is_ceo_authority(), so the doors that lead to them must read the same
+      // answer. Best-effort: a failure leaves the local rule as the only
+      // authority rather than granting anything.
+      var isCeoAuthority = false;
+      try {
+        isCeoAuthority = await _svc.client.rpc('is_ceo_authority') == true;
+      } catch (_) {}
+
       state = state.copyWith(
         user: user,
         profile: profile,
         roles: roles,
         primaryRole: primaryRole,
         isStaffGateway: isStaffGateway,
+        isCeoAuthority: isCeoAuthority,
         isLoading: false,
         error: null,
         // Keeps the recovery flag across later token refreshes, and only

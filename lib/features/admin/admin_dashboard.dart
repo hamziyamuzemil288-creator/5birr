@@ -254,7 +254,11 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
           // because for anyone else the destination explains it is CEO-only
           // and offering it would be a dead end. The real check is server-side
           // in is_ceo(); this only decides whether to show the door.
-          if (ref.watch(authProvider).isCeo)
+          // `canOpenCeoOnly`, not `isCeo`: the workspace is still reachable
+          // for a CEO whose authority the database grants through a staff row
+          // flagged is_ceo, which the local heuristic misses. The screen
+          // behind it re-checks (is_ceo_authority) before rendering anything.
+          if (ref.watch(authProvider).canOpenCeoOnly)
             IconButton(
               tooltip: 'CEO workspace',
               icon: const Icon(Icons.workspace_premium),
@@ -732,7 +736,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard> {
                           // "All Providers" cards above cover reads for the
                           // staff who work queues; this one exists because
                           // nobody below the CEO may end an account.
-                          if (ref.watch(authProvider).isCeo)
+                          if (ref.watch(authProvider).canOpenCeoOnly)
                             _menuCard(Icons.people_alt_outlined, 'All Users & Providers',
                                 'Every account · CEO delete', () => context.push('/admin/accounts')),
                           if (_can('*') || _can('admin_history'))

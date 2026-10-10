@@ -265,9 +265,36 @@ class _AdminAccountDirectoryScreenState
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
 
-    // Fast path for a non-CEO: no workspace at all, and no wasted RPC. The
-    // server-side check in _load() remains the real gate for everybody else.
-    if (!auth.isCeo && !_isCeoAuthority) {
+    // `canOpenCeoOnly` folds together the local heuristic AND the server's own
+    // answer (`is_ceo_authority`, the predicate both RPCs below check, which
+    // _load() also asks), and the pending state is respected: until an answer
+    // exists the honest screen is the workspace with a spinner, not a refusal
+    // nobody made.
+    //
+    // The previous shape — `!auth.isCeo && !_isCeoAuthority` before anything
+    // had been asked — rendered "This directory is for the CEO account only."
+    // for a CEO whose authority the database grants through a staff row flagged
+    // `is_ceo` (a shape the client heuristic misses), and it rendered the SAME
+    // refusal when the check failed, with no error and no retry. From outside
+    // that is indistinguishable from a delete button that does not work, which
+    // is how it was reported.
+    if (!auth.canOpenCeoOnly && !_isCeoAuthority) {
+      if (_loading) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('All Users & Providers')),
+          body: const Center(
+            child: CircularProgressIndicator(color: AppTheme.primaryGreen),
+          ),
+        );
+      }
+      // A check that failed is shown as the failure it is: the server never
+      // said this person is not the CEO — we could not ask it.
+      if (_error != null) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('All Users & Providers')),
+          body: _ErrorState(message: _error!, onRetry: _load),
+        );
+      }
       return Scaffold(
         appBar: AppBar(title: const Text('All Users & Providers')),
         body: const Center(

@@ -128,8 +128,12 @@ class _CeoDashboardState extends ConsumerState<CeoDashboard>
     final auth = ref.watch(authProvider);
 
     // Server-side is the real gate; this only avoids rendering a workspace that
-    // would come back empty or refused.
-    if (!auth.isCeo) {
+    // would come back empty or refused. `canOpenCeoOnly` accepts the server's
+    // own answer as well as the local heuristic, so a CEO whose authority the
+    // database grants through a staff row flagged is_ceo is not told here that
+    // the workspace is not theirs — which is what made the danger-zone
+    // "Delete an account" card a dead end.
+    if (!auth.canOpenCeoOnly) {
       return Scaffold(
         appBar: AppBar(title: const Text('CEO')),
         body: const Center(
