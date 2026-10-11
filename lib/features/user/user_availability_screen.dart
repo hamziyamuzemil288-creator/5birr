@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/services/cart_service.dart';
+import '../../core/services/error_logger.dart';
 import '../../core/services/resilient_subscription.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/friendly_error.dart';
@@ -131,7 +132,23 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
       if (mounted) setState(() => _loading = false);
       _subscribe();
       _startTicker();
-    } catch (e) {
+    } catch (e, stack) {
+      // The screen shows a sentence; the log gets the exception.
+      //
+      // This is the fix for "the availability check screen just says something
+      // went wrong": the real failure was a type-cast thrown out of
+      // `CartService.getCart()` (a cart line whose `products` embed the
+      // products policy nulls out), and because every catch on this path only
+      // kept the mapped sentence, the raw text existed nowhere a developer or a
+      // support agent could read it. `ErrorLogger` already stores the message,
+      // the stack and a reference code the user can quote, so the next failure
+      // of this shape is diagnosable instead of guessable.
+      ErrorLogger.instance.logError(
+        e,
+        stack,
+        source: 'availability-gate',
+        context: 'UserAvailabilityScreen._load',
+      );
       if (mounted) {
         setState(() {
           _loading = false;
@@ -158,10 +175,22 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
       if (!mounted) return;
       setState(() => _rows = List<Map<String, dynamic>>.from(data as List));
       _evaluate();
-    } catch (_) {
+    } catch (e) {
       // A database that has not run 20261006000006 has no such table. The
       // ask panel (and its own, explicit fallback) handles that case; this
       // read must not turn a missing table into a red error screen.
+      //
+      // Logged rather than swallowed: a read that fails for any OTHER reason
+      // (a policy that stopped matching this buyer, a column that moved) leaves
+      // the screen showing "ask the provider" for a request the buyer already
+      // made, and without the row the only way to tell those two apart was to
+      // reproduce it by hand.
+      ErrorLogger.instance.logError(
+        e,
+        null,
+        source: 'availability-gate',
+        context: 'UserAvailabilityScreen._refreshRows',
+      );
     }
   }
 
@@ -375,7 +404,13 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
         _wasWaiting = false;
       });
       _evaluate();
-    } catch (e) {
+    } catch (e, stack) {
+      ErrorLogger.instance.logError(
+        e,
+        stack,
+        source: 'availability-gate',
+        context: 'UserAvailabilityScreen._ask',
+      );
       if (!mounted) return;
       final raw = e.toString();
       // The server predates 20261006000006: no RPC, no table — and no

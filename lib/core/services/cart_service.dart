@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'error_logger.dart';
+
 /// A single cart line: one product + quantity, joined with product data.
 class CartItem {
   final String id; // cart_items.id
@@ -89,21 +91,72 @@ class CartService {
 
     final items = <CartItem>[];
     for (final row in data as List) {
-      final product = (row['products'] as Map<String, dynamic>?) ?? const {};
-      final provider =
-          (product['provider_profiles'] as Map<String, dynamic>?) ?? const {};
+      // ── A listing this buyer may not see comes back as a NULL embed ──
+      //
+      // PostgREST reports a to-one embed it cannot read as `null`, not as an
+      // absent parent row. Since 20261006000008 that is a real state: the
+      // `products_public_read` policy hides every listing of a provider who has
+      // no active payment account, so a buyer who added an item before the
+      // provider's account was closed has a cart line whose `products` is null.
+      //
+      // `product['id'] as String` on that empty map threw
+      //
+      //   type 'Null' is not a subtype of type 'String' in type cast
+      //
+      // out of this method — and every screen that starts by reading the cart
+      // reported it as its own generic failure. The availability gate was the
+      // one users hit, because Buy/Book goes there first, so "the availability
+      // check screen is broken" and "the cart is broken" were the same
+      // exception wearing two sentences.
+      //
+      // A line the policy hides from this buyer is not one they can buy, so it
+      // is DROPPED rather than routed: inventing a provider id for it would
+      // send the availability request to a provider about an item the buyer is
+      // not allowed to see. It is reported to the error log the way every other
+      // swallowed failure in this app is, so it is diagnosable rather than
+      // invisible.
+      final rawProduct = (row is Map) ? row['products'] : null;
+      if (rawProduct is! Map) {
+        ErrorLogger.instance.logError(
+          'cart_items row ${row is Map ? row['id'] : '?'} has no readable '
+          'listing (products embed is null — the products policy hides it from '
+          'this buyer); the line is skipped',
+          null,
+          source: 'cart',
+          context: 'getCart',
+        );
+        continue;
+      }
+      final product = Map<String, dynamic>.from(rawProduct);
+      final productId = product['id'];
+      final providerId = product['provider_id'];
+      final addedAt = DateTime.tryParse('${row['added_at']}');
+      if (productId is! String || providerId is! String || addedAt == null) {
+        // Same class of defect (a shape this read assumed), same handling: the
+        // line is unusable, the rest of the cart still loads.
+        ErrorLogger.instance.logError(
+          'cart_items row ${row['id']} is missing id/provider_id/added_at; the '
+          'line is skipped',
+          null,
+          source: 'cart',
+          context: 'getCart',
+        );
+        continue;
+      }
+      final provider = product['provider_profiles'];
       items.add(CartItem(
-        id: row['id'] as String,
-        productId: product['id'] as String,
-        providerId: product['provider_id'] as String,
-        providerName: provider['business_name'] as String?,
-        name: product['name'] as String? ?? '',
+        id: '${row['id']}',
+        productId: productId,
+        providerId: providerId,
+        providerName:
+            provider is Map ? provider['business_name'] as String? : null,
+        name: (product['name'] as String?) ?? '',
         price: (product['price'] as num?)?.toDouble() ?? 0,
-        currency: product['currency'] as String? ?? 'ETB',
+        currency: (product['currency'] as String?) ?? 'ETB',
         quantity: (row['quantity'] as num?)?.toDouble() ?? 1,
         unit: product['unit'] as String?,
         imagePath: _primaryImagePath(product),
-        addedAt: DateTime.parse(row['added_at'] as String),
+        addedAt: addedAt,
       ));
     }
     return items;

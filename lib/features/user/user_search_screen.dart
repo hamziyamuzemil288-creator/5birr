@@ -10,6 +10,7 @@ import '../../core/services/location_service.dart';
 import '../../core/services/city_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/product_card.dart';
 
 /// Push listings with no known location to the end, preserving the server's
 /// order within each group.
@@ -147,16 +148,17 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
     }
   }
 
-  /// Live-GPS distance badge, e.g. " · 2.4 km" (null until GPS granted
-  /// and the listing has a known location).
-  String _distanceSuffix(Map<String, dynamic> p) {
+  /// Live-GPS distance as a plain label ("2.4 km away"), for the shared
+  /// card's one-line caption. Empty until GPS is granted and the listing has
+  /// a known location.
+  String _distanceLabel(Map<String, dynamic> p) {
     if (_myPos == null) return '';
     final d = p['distance_km'];
     if (d == null) return '';
     final km = (d as num).toDouble();
     return km < 1
-        ? ' · ${(km * 1000).round()} m'
-        : ' · ${km.toStringAsFixed(1)} km';
+        ? '${(km * 1000).round()} m away'
+        : '${km.toStringAsFixed(1)} km away';
   }
 
   @override
@@ -210,37 +212,51 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                       ? const Center(
                           child: Text('No results found',
                               style: TextStyle(color: AppTheme.textMuted)))
-                      : ListView.builder(
+                      : GridView.builder(
                           padding: const EdgeInsets.all(16),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                            // The same ratio as the home feed and the category
+                            // pages, so a result is the same card they met on
+                            // the way here.
+                            childAspectRatio: 0.66,
+                          ),
                           itemCount: _results.length,
                           itemBuilder: (_, i) {
                             final p = _results[i];
-                            return ListTile(
+                            // A result used to be a text row with a grey
+                            // placeholder where the photo goes and no action on
+                            // it at all. It is the shared card now: the
+                            // listing's own photo (search_products returns its
+                            // cover path), the price, and the same BUY button
+                            // every other surface carries.
+                            final path =
+                                (p['image_path'] as String?)?.trim() ?? '';
+                            final caption = _distanceLabel(p);
+                            return ProductCard.listing(
+                              productId: (p['id'] ?? '') as String,
+                              providerId: (p['provider_id'] ?? '') as String,
+                              title: (p['name'] ?? '') as String,
+                              priceLabel: listingPriceLabel(p),
+                              imageUrl: path.isEmpty
+                                  ? null
+                                  : Supabase.instance.client.storage
+                                      .from('product-images')
+                                      .getPublicUrl(path),
+                              // The distance when GPS has one, otherwise who is
+                              // selling it — the card's provider tag carries
+                              // the name, so the row never reads the same word
+                              // twice.
+                              caption: caption.isNotEmpty
+                                  ? caption
+                                  : (p['provider_name'] ?? '') as String,
+                              rating: (p['rating'] as num?)?.toDouble() ?? 0,
+                              isAvailable: p['is_available'] != false,
                               onTap: () =>
                                   context.push('/user/product/${p['id']}'),
-                              leading: Container(
-                                width: 48,
-                                height: 48,
-                                decoration: BoxDecoration(
-                                  color: AppTheme.creamDark,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: const Icon(Icons.inventory_2_outlined,
-                                    color: AppTheme.textMuted),
-                              ),
-                              title: Text(p['name'] ?? '',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 14)),
-                              subtitle: Text(
-                                  '${p['provider_name'] ?? ''} · '
-                                  '${p['price']} ${p['currency'] ?? 'ETB'}'
-                                  '${p['unit'] == 'KG' ? '/kg' : p['unit'] == 'LTR' ? '/liter' : ''}'
-                                  '${_distanceSuffix(p)}',
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      color: AppTheme.primaryGreen,
-                                      fontWeight: FontWeight.w600)),
                             );
                           },
                         ),

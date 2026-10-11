@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -8,6 +7,7 @@ import '../../core/services/city_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/product_card.dart';
 import '../../core/widgets/subcategory_chip.dart';
 
 class UserCategoryScreen extends StatefulWidget {
@@ -201,7 +201,16 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
                         }),
                         const SizedBox(height: 20),
                       ],
-                      // Products
+                      // Products — the SAME card the home feed uses.
+                      //
+                      // This screen used to hand-roll its own listing tile: a
+                      // photo, a name and a price with no way to act on any of
+                      // it, so a listing a buyer could buy in two taps from the
+                      // home rail was a dead end on its own category page. The
+                      // shared card carries the photo, the price AND the
+                      // BUY button together, which is what makes that class of
+                      // inconsistency impossible to reintroduce one screen at a
+                      // time.
                       Text('Products (${_products.length})',
                           style: const TextStyle(
                               fontSize: 15, fontWeight: FontWeight.w600)),
@@ -214,148 +223,51 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
                                   style: TextStyle(
                                       color: AppTheme.textMuted))))
                       else
-                        ..._products.map((p) {
-                          // User-visible image column. A provider sets it on the
-                          // product form and the listing embeds `product_images(*)`,
-                          // so this tile always renders a photo, its caption, and
-                          // the price tag.
-                          final img = (p['image'] as List?)
-                                  ?.cast<Map<String, dynamic>>() ??
-                              const <Map<String, dynamic>>[];
-                          final storagePath = img.isNotEmpty
-                              ? (img.first['storage_path'] as String?)?.trim() ??
-                                  ''
-                              : '';
-                          final photoPath = storagePath.isEmpty
-                              ? ''
-                              : Supabase.instance.client.storage
-                                  .from('product-images')
-                                  .getPublicUrl(storagePath);
-                          final caption = img.isNotEmpty
-                              ? (img.first['caption'] as String?)?.trim() ?? ''
-                              : '';
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 10),
-                            child: InkWell(
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          padding: EdgeInsets.zero,
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                            // The home feed's own ratio, so one listing is the
+                            // same size wherever a buyer meets it.
+                            childAspectRatio: 0.66,
+                          ),
+                          itemCount: _products.length,
+                          itemBuilder: (_, i) {
+                            final p = _products[i];
+                            // User-visible image column. A provider sets it on
+                            // the product form and this screen hydrates it from
+                            // `product_images`, so the card always leads with
+                            // the photo the provider picked; `listingCoverUrl`
+                            // reads the same row the feed's card does.
+                            final unitPrice =
+                                (p['price_per_unit'] as num?)?.toDouble() ?? 0;
+                            return ProductCard.listing(
+                              productId: (p['id'] ?? '') as String,
+                              providerId: (p['provider_id'] ?? '') as String,
+                              title: (p['name'] ?? '') as String,
+                              priceLabel: listingPriceLabel(p),
+                              imageUrl: listingCoverUrl(
+                                  (p['image'] as List?) ?? const []),
+                              // The per-unit price leads when there is one (the
+                              // number a buyer weighs against a fixed price),
+                              // otherwise the listing's own words.
+                              caption: unitPrice > 0
+                                  ? '${p['price_per_unit']} ${p['unit'] ?? 'kg'} each'
+                                  : ((p['description'] ?? '') as String),
+                              rating: (p['rating'] as num?)?.toDouble() ?? 0,
+                              likeCount:
+                                  (p['like_count'] as num?)?.toInt() ?? 0,
+                              isAvailable: p['is_available'] != false,
                               onTap: () =>
                                   context.push('/user/product/${p['id']}'),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  // Image: show the photo, fall back to a green
-                                  // placeholder. A location-less listing still
-                                  // keeps its photo.
-                                  Container(
-                                    width: double.infinity,
-                                    height: 110,
-                                    decoration: BoxDecoration(
-                                      borderRadius:
-                                          const BorderRadius.vertical(
-                                              top: Radius.circular(12)),
-                                      color: AppTheme.creamDark,
-                                    ),
-                                    child: photoPath.isNotEmpty
-                                        ? CachedNetworkImage(
-                                            imageUrl: photoPath,
-                                            fit: BoxFit.cover,
-                                            placeholder: (_, __) =>
-                                                const Center(
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                            strokeWidth: 2)),
-                                            errorWidget: (_, __, ___) =>
-                                                const Center(
-                                                    child: Icon(
-                                                        Icons.image_outlined,
-                                                        color:
-                                                            AppTheme.textMuted,
-                                                    )),
-                                          )
-                                        : const Center(
-                                            child: Icon(
-                                                Icons.image_outlined,
-                                                color: AppTheme.textMuted,
-                                                size: 32)),
-                                  ),
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        12, 10, 12, 8),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          p['name'] ?? '',
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                              fontSize: 13.5,
-                                              fontWeight: FontWeight.w600,
-                                              color: AppTheme.textPrimary),
-                                        ),
-                                        const SizedBox(height: 3),
-                                        Text(
-                                          p['description'] ?? '',
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                              fontSize: 11.5,
-                                              height: 1.3,
-                                              color: AppTheme.textSecondary),
-                                        ),
-                                        const SizedBox(height: 5),
-                                        Row(
-                                          children: [
-                                            if (p['price'] != null ||
-                                                p['price_per_unit'] != null)
-                                              Expanded(
-                                                child: Text(
-                                                  p['price'] != null
-                                                      ? '${p['price']} ${p['currency'] ?? 'ETB'}'
-                                                      : '',
-                                                  style: const TextStyle(
-                                                      fontSize: 12.5,
-                                                      fontWeight:
-                                                          FontWeight.w700,
-                                                      color:
-                                                          AppTheme.primaryGreen),
-                                                ),
-                                              ),
-                                            if (p['price_per_unit'] != null)
-                                              Padding(
-                                                padding:
-                                                    const EdgeInsets.only(
-                                                        left: 6),
-                                                child: Text(
-                                                  '${p['price_per_unit'].toDouble()} ${p['unit'] ?? 'kg'}',
-                                                  style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: AppTheme
-                                                          .textSecondary),
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                        if (caption.isNotEmpty) ...[
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            caption,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              fontSize: 10.5,
-                                              color: AppTheme.textSecondary,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
+                            );
+                          },
+                        ),
                     ],
                   ),
                 ),

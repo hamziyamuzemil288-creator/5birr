@@ -14,6 +14,7 @@ import '../../core/services/ride_service.dart';
 import '../../core/services/product_like_service.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/cart_icon_button.dart';
+import '../../core/widgets/product_buy_button.dart';
 import '../../core/widgets/product_card.dart';
 import '../../core/widgets/shimmer_effect.dart';
 import 'city_switcher_sheet.dart';
@@ -91,6 +92,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
   /// rail is: the browse city, or every city when it is empty.
   List<Map<String, dynamic>> _galleryImages = const [];
 
+  /// The published price range of each gallery photo's provider, by provider
+  /// id. A gallery photo is not a listing and carries no price of its own, so
+  /// this is what the shared card's price line reads for one — falling back to
+  /// the rail's own rows for the providers it carries.
+  Map<String, String> _galleryPrices = const {};
+
   bool _loading = true;
   String? _error;
 
@@ -150,6 +157,8 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         _activeRide = data['activeRide'] as Map<String, dynamic>?;
         _galleryProviders = data['providers'] as List<Map<String, dynamic>>;
         _galleryImages = data['gallery'] as List<Map<String, dynamic>>;
+        _galleryPrices =
+            Map<String, String>.from(data['galleryPrices'] as Map);
         _providerImages =
             Map<String, String>.from(data['providerImages'] as Map);
         _verifiedProviders =
@@ -251,6 +260,16 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       gallery = const [];
     }
 
+    // 2c. The price range each gallery photo's provider publishes.
+    //
+    // The shared card always carries a price, and a provider photo has no
+    // listing price of its own — `visible_gallery_for_city` returns none — so
+    // the price line reads the provider's headline range, the same number the
+    // trending rail already shows for them. One batched read for the whole
+    // mixed-in set, best-effort: a card with no range still says "See prices"
+    // rather than inventing a number.
+    final galleryPrices = await _resolveGalleryPriceRanges(gallery);
+
     // 3. Active ride, best-effort. A failed lookup here must not take the
     //    whole feed down — the feed is still useful without the banner.
     Map<String, dynamic>? activeRide;
@@ -291,7 +310,53 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
       'providerImages': imageMaps,
       'verified': verified,
       'gallery': gallery,
+      'galleryPrices': galleryPrices,
     };
+  }
+
+  /// The published price range of every provider behind the mixed-in gallery
+  /// photos, keyed by provider id.
+  ///
+  /// `public_provider_profiles` is the view the app already reads provider
+  /// pages from (APPROVED providers, buyer-visible columns only), so this adds
+  /// no policy and no migration. Batched, never per tile, and best-effort: an
+  /// unreadable answer is an empty map, and the card has a fallback for that.
+  Future<Map<String, String>> _resolveGalleryPriceRanges(
+      List<Map<String, dynamic>> gallery) async {
+    final out = <String, String>{};
+    final ids = gallery
+        .map((g) => (g['provider_id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    if (ids.isEmpty) return out;
+    try {
+      final rows = await Supabase.instance.client
+          .from('public_provider_profiles')
+          .select('id, price_range')
+          .inFilter('id', ids);
+      for (final raw in rows as List) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final id = (row['id'] ?? '').toString();
+        final range = ((row['price_range'] as String?) ?? '').trim();
+        if (id.isNotEmpty && range.isNotEmpty) out[id] = range;
+      }
+    } catch (_) {
+      // The trending rail's own rows still cover the providers it carries.
+    }
+    return out;
+  }
+
+  /// The trending rail's price ranges by provider id, used when the batched
+  /// read above could not answer (or when the provider is not in the view).
+  Map<String, String> get _priceRangeByProvider {
+    final out = <String, String>{};
+    for (final p in _galleryProviders) {
+      final id = (p['id'] ?? '').toString();
+      final range = ((p['price_range'] as String?) ?? '').trim();
+      if (id.isNotEmpty && range.isNotEmpty) out[id] = range;
+    }
+    return out;
   }
 
   /// One image per provider, in the priority the spec asks for:
@@ -669,9 +734,12 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
           ),
         ),
         SizedBox(
-          // Short again: the card is image-first, half the old height, with
-          // the name (and its verified badge) underneath rather than on it.
-          height: 170,
+          // Image-first, with the name (and its verified badge) underneath
+          // rather than on it — plus the BOOK row every other card carries. The
+          // height is the tile's own height: image 104 + name + one wrapped
+          // subtitle line + the compact button, with slack for a larger font
+          // scale rather than a BOTTOM OVERFLOWED stripe.
+          height: 200,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -808,6 +876,17 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
               fontSize: 10,
               color: AppTheme.textMuted,
             ),
+          ),
+          const SizedBox(height: 6),
+          // The same purchase entry point every other card carries: a provider
+          // photo's buyer action is to see and book their work, so this goes
+          // through the shared button rather than a second hand-rolled tap
+          // target. It is what stops this rail being the one surface where a
+          // card shows a price with nothing to do about it.
+          ProductBuyButton(
+            providerId: id,
+            label: 'Book',
+            compact: true,
           ),
         ],
       ),
@@ -1173,10 +1252,20 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     return tiles;
   }
 
-  /// One published gallery photo in the Fresh Finds grid. Taps through to the
-  /// provider it belongs to, which is where the rest of their gallery is.
+  /// One published gallery photo in the Fresh Finds grid, as the SAME card the
+  /// products around it use.
+  ///
+  /// It used to be a bespoke tile: a photo, a provider name and a caption with
+  /// no price and nothing to tap but the photo. So a provider who uploaded a
+  /// photo into the feed had the one surface in the app where a buyer could
+  /// look but not act, while the product two tiles away could be bought. The
+  /// shared card carries the image, a price (their published range) and BOOK,
+  /// which opens their page — where their listings and their price are.
   Widget _galleryCard(Map<String, dynamic> row) {
     final providerId = (row['provider_id'] ?? '').toString();
+    // A photo with no provider behind it cannot be booked or opened, so it is
+    // dropped rather than rendered as a card whose button goes nowhere.
+    if (providerId.isEmpty) return const SizedBox.shrink();
     final path = (row['storage_path'] as String?)?.trim() ?? '';
     final name = (row['business_name'] as String?)?.trim() ?? '';
     final city = (row['city'] as String?)?.trim() ?? '';
@@ -1186,74 +1275,15 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         : Supabase.instance.client.storage
             .from('provider-gallery')
             .getPublicUrl(path);
-    return Material(
-      color: AppTheme.surface,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: providerId.isEmpty
-            ? null
-            : () => context.push('/user/provider/$providerId'),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: url == null
-                  ? _galleryImageFallback()
-                  : Image.network(
-                      url,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      gaplessPlayback: true,
-                      errorBuilder: (_, __, ___) => _galleryImageFallback(),
-                    ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    name.isEmpty ? 'Gallery' : name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textPrimary,
-                    ),
-                  ),
-                  if (city.isNotEmpty)
-                    Text(
-                      city,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppTheme.textMuted),
-                    ),
-                  if (caption.isNotEmpty)
-                    Text(
-                      caption,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 10.5, color: AppTheme.textSecondary),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _galleryImageFallback() {
-    return Container(
-      color: AppTheme.primaryGreenLight.withOpacity(0.18),
-      child: const Center(
-        child: Icon(Icons.image_outlined, size: 28, color: AppTheme.textMuted),
-      ),
+    return ProductCard.provider(
+      providerId: providerId,
+      title: name.isEmpty ? 'Gallery' : name,
+      priceLabel: _galleryPrices[providerId] ??
+          _priceRangeByProvider[providerId] ??
+          '',
+      imageUrl: url,
+      caption: caption.isNotEmpty ? caption : city,
+      onTap: () => context.push('/user/provider/$providerId'),
     );
   }
 

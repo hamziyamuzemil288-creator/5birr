@@ -11,9 +11,25 @@ name: Connectivity CI
 # Supabase — so a push can transiently fail until the next deploy. This
 # workflow_run trigger re-verifies the moment the DB catches up.
 on:
-  push:
-    branches: [main, 'feat/**', 'fix/**']
-  pull_request:
+  # === push / pull_request: TEMPORARILY OFF (Actions minutes) ===
+  #
+  # This suite sets up a Flutter SDK, resolves pub packages and runs the live
+  # integration file on every push — a second, metered verification run on top
+  # of Flutter CI's own test step, and the reason a single commit could spend
+  # two runner slots. Actions minutes were above 90% when this was switched
+  # off, and the request for that run was "one build, nothing else".
+  #
+  # It is not unguarded while off: the `workflow_run` trigger below still runs
+  # it the moment a Deploy Supabase finishes, which is what the suite's
+  # assertion RPCs depend on, and it can be run by hand any time
+  # (Actions -> Connectivity CI -> Run workflow).
+  #
+  # RESTORE by uncommenting these two lines once the minutes meter is healthy:
+  #
+  # push:
+  #   branches: [main, 'feat/**', 'fix/**']
+  # pull_request:
+  workflow_dispatch:
   workflow_run:
     workflows: ["Deploy Supabase"]
     types: [completed]
@@ -39,9 +55,15 @@ jobs:
           git fetch origin ${{ github.event.workflow_run.head_sha }}
           git checkout ${{ github.event.workflow_run.head_sha }}
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        # cache/pub-cache are OFF by default in flutter-action v2: without them
+        # every run re-downloads the Flutter SDK and every pub package. See the
+        # same note in flutter-ci.yml — Actions minutes are metered.
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+          pub-cache: true
 
       - name: Install dependencies
         run: flutter pub get

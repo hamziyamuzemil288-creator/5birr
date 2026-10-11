@@ -10,6 +10,7 @@ import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/photo_grid.dart';
 import '../../core/widgets/product_buy_button.dart';
+import '../../core/widgets/product_card.dart';
 import '../../core/widgets/product_engagement.dart';
 import '../../core/widgets/provider_trust_section.dart';
 import '../../core/widgets/rank_badge.dart';
@@ -404,12 +405,15 @@ class _State extends State<UserProviderDetailScreen> {
     // discarded; these are the tiles for the gallery grid. Resolved once here
     // rather than per-widget: `_firstImagePath` sorts, and the grid, the header
     // and every list row all need the same answer.
-    final photoProducts = <({String id, String url})>[];
+    // Each entry keeps the whole listing row, not just its id: the shared card
+    // renders the price and the BUY button from that row, so a photo tile and
+    // the list row below it cannot quote two different numbers.
+    final photoProducts = <({Map<String, dynamic> row, String url})>[];
     for (final prod in _products) {
       final path = _firstImagePath(prod);
       if (path == null) continue;
       photoProducts.add((
-        id: prod['id'] as String,
+        row: prod,
         url: Supabase.instance.client.storage
             .from('product-images')
             .getPublicUrl(path),
@@ -693,9 +697,15 @@ class _State extends State<UserProviderDetailScreen> {
                 ),
               ),
             ],
-            // Gallery grid — one tile per product photo, read-only, tapping a
-            // tile opens that product. Uses product_images, which the products
-            // query already fetched, so this costs no extra round trip.
+            // The provider's listings, as photos. One shared [ProductCard] per
+            // listing: the photo, its price and its BUY button together.
+            //
+            // This grid used to be a bare photo wall — a price was nowhere on
+            // the tile and the only action was "open the product", so the one
+            // screen a buyer opens to choose a seller was the one screen whose
+            // pictures could not be bought. It uses product_images, which the
+            // products query already fetched, so the cards cost no extra round
+            // trip.
             if (photoProducts.isNotEmpty) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
@@ -705,19 +715,37 @@ class _State extends State<UserProviderDetailScreen> {
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: PhotoGrid(
-                  // PhotoGridItem.url, not stored(path, bucket:): `product-images`
-                  // is public, and `stored` without a publicUrl falls back to
-                  // createSignedUrl -- a round trip and a spinner per tile for
-                  // a URL the bucket serves unsigned. This is what
-                  // product_card.dart does.
-                  items: [
-                    for (final prod in photoProducts)
-                      PhotoGridItem.url(
-                        prod.url,
-                        onTap: () => context.push('/user/product/${prod.id}'),
-                      ),
-                  ],
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    // The feed's ratio, so a listing is the same card here as
+                    // it is on the home rail and the category pages.
+                    childAspectRatio: 0.66,
+                  ),
+                  itemCount: photoProducts.length,
+                  itemBuilder: (_, i) {
+                    final prod = photoProducts[i].row;
+                    return ProductCard.listing(
+                      productId: (prod['id'] ?? '') as String,
+                      providerId: ((prod['provider_id'] as String?) ??
+                              widget.providerId)
+                          .toString(),
+                      title: (prod['name'] ?? '') as String,
+                      priceLabel: listingPriceLabel(prod),
+                      imageUrl: photoProducts[i].url,
+                      rating: (prod['rating'] as num?)?.toDouble() ?? 0,
+                      likeCount: (prod['like_count'] as num?)?.toInt() ?? 0,
+                      isAvailable: prod['is_available'] != false,
+                      onTap: () =>
+                          context.push('/user/product/${prod['id']}'),
+                    );
+                  },
                 ),
               ),
             ],

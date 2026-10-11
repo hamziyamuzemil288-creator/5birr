@@ -57,9 +57,14 @@ jobs:
           java-version: 17
 
       - name: Setup Flutter
+        # cache/pub-cache are OFF by default in flutter-action v2: without them
+        # every run re-downloads the Flutter SDK and every pub package. See the
+        # same note in flutter-ci.yml — Actions minutes are metered.
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+          pub-cache: true
 
       - name: Flutter info
         run: flutter doctor -v
