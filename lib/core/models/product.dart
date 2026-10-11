@@ -99,6 +99,42 @@ class Product {
 
   String get formattedPrice => '$price $currency';
 
+  /// True when this listing is BOOKED rather than bought.
+  ///
+  /// The schema has carried the answer since the first migration:
+  /// `products.listing_type` is the enum `listing_type`
+  /// ('PRODUCT','FOOD','SERVICE','ROOM','OTHER', 0022a, line 17). A physical
+  /// good (PRODUCT, FOOD, OTHER) is BOUGHT; a bookable thing (SERVICE, ROOM) is
+  /// BOOKED. Nothing in the app re-derives that list: [actionLabel] and the
+  /// shared card's `listingActionLabel()` both read it, so one screen cannot
+  /// call a service BUY while the next calls it BOOK.
+  bool get isBookable => listingType == 'SERVICE' || listingType == 'ROOM';
+
+  /// What the action button on this listing says. `'Book'` or `'Buy'` — never
+  /// both, never neither.
+  String get actionLabel => isBookable ? 'Book' : 'Buy';
+
+  /// The storage path of this listing's cover photo, or null when it has none.
+  ///
+  /// The cover is the row with the lowest `sort_order`, which is what the
+  /// upload path writes first — `product_images` has no `is_primary` column,
+  /// so sort order is the only truth there is. The shared helpers in
+  /// `core/widgets/product_card.dart` apply the same rule to a raw
+  /// `product_images` result, and `hasPhoto` is what a public discovery read
+  /// uses to keep a photo-less listing out of the feed (it belongs on its own
+  /// provider's page, where it renders as a text-only card).
+  String? get coverStoragePath {
+    final sorted = [...images]..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    for (final image in sorted) {
+      final path = image.storagePath.trim();
+      if (path.isNotEmpty) return path;
+    }
+    return null;
+  }
+
+  /// True when this listing has a photo a card can show.
+  bool get hasPhoto => coverStoragePath != null;
+
   /// True when the listing is sold by unit (kg / liter).
   bool get isUnitPriced => unit == 'KG' || unit == 'LTR';
 

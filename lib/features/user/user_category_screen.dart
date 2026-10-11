@@ -251,6 +251,13 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
                               providerId: (p['provider_id'] ?? '') as String,
                               title: (p['name'] ?? '') as String,
                               priceLabel: listingPriceLabel(p),
+                              // BUY for a good, BOOK for a service or a room:
+                              // the row's own listing_type, so this page cannot
+                              // call a bookable thing a purchase. Nothing to
+                              // pass for the photo — `visible_products_for_city`
+                              // excludes photo-less listings server-side
+                              // (20261011000001).
+                              listingType: p['listing_type'] as String?,
                               imageUrl: listingCoverUrl(
                                   (p['image'] as List?) ?? const []),
                               // The per-unit price leads when there is one (the

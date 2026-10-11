@@ -527,6 +527,23 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
     );
   }
 
+  /// The feed's listings as models: parsed, typed, and with the photo-less ones
+  /// dropped.
+  ///
+  /// `listing_type` is what decides whether a card says BUY or BOOK, and this
+  /// mapping used to omit it entirely — so every card in the feed was a
+  /// PRODUCT, and a service in the rail read BUY like a tin of paint. It is
+  /// read here now, once for the whole rail.
+  ///
+  /// A listing with no photo never reaches the grid: it is dropped here, in the
+  /// read that feeds the feed, because a text-only listing belongs on its own
+  /// provider's page (where the shared card renders it with no image box) and
+  /// never in general discovery. This is the one discovery read the client
+  /// owns, so the rule sits here for it; the category screen's
+  /// `visible_products_for_city` and the search screen's `search_products`
+  /// carry the same exclusion server-side (migration 20261011000001).
+  /// `products_public_read` deliberately does not: that same policy also
+  /// answers the provider page, which must keep showing the listing.
   static List<Product> _toProducts(List rows) {
     return rows.map((j) {
       final imgs = (j['product_images'] as List?)
@@ -541,6 +558,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         description: j['description'],
         price: (j['price'] as num).toDouble(),
         currency: j['currency'] ?? 'ETB',
+        listingType: (j['listing_type'] as String?) ?? 'PRODUCT',
         quantity: j['quantity'],
         isAvailable: j['is_available'] ?? true,
         isActive: j['is_active'] ?? true,
@@ -557,7 +575,7 @@ class _UserHomeScreenState extends ConsumerState<UserHomeScreen> {
         updatedAt: DateTime.parse(j['updated_at']),
         images: imgs,
       );
-    }).toList();
+    }).where((p) => p.hasPhoto).toList();
   }
 
   @override

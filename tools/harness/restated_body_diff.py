@@ -211,6 +211,42 @@ CASES: list[tuple[str, str, str, tuple[str, ...]]] = [
             "coalesce(o.city, pp.city), v_staff.user_id))",
         ),
     ),
+    # The two public discovery reads, which gained ONE predicate each: a
+    # listing with no row in `product_images` is a text-only listing, and a
+    # browse grid or a search result has nowhere to put one — the card would
+    # be an empty frame that reads as a broken photo. Both restatements are
+    # pure additions, so the approved block is the whole predicate.
+    #
+    # `visible_products_for_city` was already restated once (20261010000002,
+    # for the "all cities" rule); this entry judges the 20261011000001 change
+    # against THAT body, which is the live one, so dropping the earlier city
+    # rule while adding the photo rule goes red here.
+    (
+        "visible_products_for_city",
+        "20261010000002",
+        "20261011000001",
+        (
+            "and exists ( select 1 from public.product_images pi "
+            "where pi.product_id = p.id )",
+        ),
+    ),
+    # `search_products` gained three things and changed nothing: the exclusion
+    # above, the RETURNS TABLE column and the SELECT projection that carry the
+    # listing's own `listing_type` (the shared card's BUY / BOOK rule reads
+    # it). A changed return type cannot be applied by CREATE OR REPLACE, so the
+    # file DROPs the signature first — that statement sits before the header
+    # and is not part of the body judged here.
+    (
+        "search_products",
+        "20261006000008",
+        "20261011000001",
+        (
+            "listing_type listing_type,",
+            "p.listing_type,",
+            "AND EXISTS ( SELECT 1 FROM public.product_images pi "
+            "WHERE pi.product_id = p.id)",
+        ),
+    ),
     # The fulfilment gate. `claim_ride`'s only definition is the pre-baseline
     # 0021 snapshot, whose body is a single line, so the restatement reformats
     # it -- which is why this case proves the value of the tool rather than
@@ -395,6 +431,48 @@ FIXES: list[tuple[str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ..
             "from ( select 1 from unnest",
             # and the alias-list answer that did not work either
             "as x(part)",
+        ),
+    ),
+    (
+        # `ranked_providers` ranked by CAREER totals, so the trending rail was
+        # the same names in the same order forever: `completed_transactions`
+        # moves by one and only after months, and with `created_at ASC` behind
+        # it every provider at zero collapsed to "oldest signup first".
+        # 20261011000001 puts completed work in the LAST 7 DAYS in front of it,
+        # which means the one ordering line inside the window has to change.
+        #
+        # This is the mirror case rather than a superset case (the whole point
+        # is to REPLACE the first sort key), so the vocabulary below names what
+        # a legitimate change is allowed to mention. Every changed line must
+        # contain one of those tokens, the recency key must be present, and the
+        # all-time-only key must be gone.
+        "ranked_providers",
+        "20260927000128",
+        "20261011000001",
+        (
+            "completed_transactions",
+            "ORDER BY",
+            "DESC",
+            "orders",
+            "ride_requests",
+            "updated_at",
+            "provider_id",
+            "COMPLETED",
+            "interval",
+            "v_window",
+            "count(*)",
+            "now()",
+        ),
+        (
+            # the window itself, and the recency key built on it
+            "v_window interval := interval '7 days';",
+            "AND o.updated_at >= now() - v_window)",
+            "AND r.updated_at >= now() - v_window)",
+            "FROM public.ride_requests r",
+        ),
+        (
+            # the all-time-first key the change exists to remove
+            "ORDER BY s.completed_transactions DESC,",
         ),
     ),
     (

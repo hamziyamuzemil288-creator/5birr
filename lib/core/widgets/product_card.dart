@@ -28,24 +28,42 @@ String listingPriceLabel(Map<String, dynamic> row) {
   return '$number $currency';
 }
 
-/// The public URL of a listing row's cover photo, from its `product_images`
-/// rows: the one with the lowest `sort_order`, which is what the upload path
-/// writes first. `product_images` has no `is_primary` column, so sort order is
-/// the only truth there is — the same rule [ProductCard] applies to a
-/// [Product]'s images.
-String? listingCoverUrl(List<dynamic> images) {
+/// The cover photo path of a raw `product_images` result: the row with the
+/// lowest `sort_order`, which is what the upload path writes first
+/// (`product_images` has no `is_primary` column, so sort order is the only
+/// truth there is). Null when the listing has no usable photo — [Product]'s
+/// `coverStoragePath` is the same rule for a parsed model, so "does this
+/// listing have a photo?" has exactly one answer per shape.
+String? listingCoverPathFromRows(List<dynamic> images) {
   final rows = images.whereType<Map>().toList()
     ..sort((a, b) => ((a['sort_order'] as num?)?.toInt() ?? 0)
         .compareTo((b['sort_order'] as num?)?.toInt() ?? 0));
   for (final row in rows) {
     final path = (row['storage_path'] as String?)?.trim();
-    if (path != null && path.isNotEmpty) {
-      return Supabase.instance.client.storage
-          .from('product-images')
-          .getPublicUrl(path);
-    }
+    if (path != null && path.isNotEmpty) return path;
   }
   return null;
+}
+
+/// The public URL of a listing row's cover photo, or null when it has none.
+String? listingCoverUrl(List<dynamic> images) {
+  final path = listingCoverPathFromRows(images);
+  if (path == null) return null;
+  return Supabase.instance.client.storage
+      .from('product-images')
+      .getPublicUrl(path);
+}
+
+/// What the ONE action button says for a listing of [listingType].
+///
+/// A SERVICE or a ROOM is BOOKED (a beauty appointment, a hotel room, a tow
+/// truck); a PRODUCT, FOOD or OTHER is BOUGHT. This is the only definition of
+/// that rule in the app — [ProductCard] and the product detail screen's primary
+/// button both read it (through `Product.actionLabel`) — which is what stops the
+/// same service from reading BUY on one surface and BOOK on the next.
+String listingActionLabel(String? listingType) {
+  final type = (listingType ?? '').trim().toUpperCase();
+  return (type == 'SERVICE' || type == 'ROOM') ? 'Book' : 'Buy';
 }
 
 /// One product, service or provider photo, always as the same card: **image,
@@ -92,22 +110,30 @@ class ProductCard extends StatelessWidget {
           rating: product.rating,
           likeCount: product.likeCount,
           available: product.isAvailable,
-          actionLabel: 'Buy',
+          // Bought or booked, from the listing's own `listing_type` — a service
+          // on the home rail says BOOK, exactly as it does everywhere else.
+          actionLabel: product.actionLabel,
         );
 
   /// A listing the caller has as a raw row: an RPC result, or a photo of one.
+  ///
+  /// [listingType] is the row's own `listing_type` and decides the button:
+  /// BOOK for a SERVICE or a ROOM, BUY otherwise (see
+  /// [listingActionLabel]). It is optional only so an older caller still
+  /// compiles — a caller that has the column must pass it, or a bookable
+  /// service renders the wrong verb.
   ProductCard.listing({
     super.key,
     required String productId,
     required String providerId,
     required String title,
     required String priceLabel,
+    String? listingType,
     String? imageUrl,
     String? caption,
     double rating = 0,
     int likeCount = 0,
     bool isAvailable = true,
-    String actionLabel = 'Buy',
     this.onTap,
   }) : _data = _CardData(
           id: productId,
@@ -119,7 +145,7 @@ class ProductCard extends StatelessWidget {
           rating: rating,
           likeCount: likeCount,
           available: isAvailable,
-          actionLabel: actionLabel,
+          actionLabel: listingActionLabel(listingType),
         );
 
   /// A provider's own photo — their gallery, or the feed's mixed-in gallery
@@ -151,11 +177,8 @@ class ProductCard extends StatelessWidget {
   /// order, so a card could show a secondary screenshot, or a thin band of
   /// one, instead of the photo the provider actually picked.
   static String? _productCoverUrl(Product product) {
-    final images = product.images;
-    if (images.isEmpty) return null;
-    final sorted = [...images]..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    final path = sorted.first.storagePath.trim();
-    if (path.isEmpty) return null;
+    final path = product.coverStoragePath;
+    if (path == null) return null;
     return Supabase.instance.client.storage
         .from('product-images')
         .getPublicUrl(path);
@@ -164,6 +187,13 @@ class ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final img = _data.imageUrl;
+    // A card with no photo is the TEXT-ONLY card: name, price and the same
+    // action, with no image area at all. That is what a photo-less listing
+    // renders as on its own provider's page — the one surface allowed to show
+    // it. Every public discovery read keeps those rows out (see
+    // `Product.hasPhoto` and migration 20261011000001), so an empty frame here
+    // would only ever be a broken image read as a broken listing.
+    final hasImage = img != null && img.isNotEmpty;
     // Engagement widgets address a listing row by id. A provider photo has no
     // listing behind it, so the reactions, the popularity mark and the provider
     // tag are all omitted for it rather than pointed at an id that does not
@@ -196,44 +226,41 @@ class ProductCard extends StatelessWidget {
             // image + fixed text scaled as width + ~80dp while the slot scaled
             // as width / childAspectRatio, which overflowed by a few pixels on
             // some device widths (BOTTOM OVERFLOWED BY 4.1 PIXELS).
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppTheme.creamDark,
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(12)),
-                ),
-                child: img != null && img.isNotEmpty
-                    ? ClipRRect(
-                        borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(12)),
-                        // Full-bleed cover: the frame is the whole image
-                        // area of the card, so a portrait photo is centred
-                        // and cropped by the frame rather than floating at
-                        // its intrinsic size inside it.
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: double.infinity,
-                          child: CachedNetworkImage(
-                            imageUrl: img,
-                            fit: BoxFit.cover,
-                            alignment: Alignment.center,
-                            filterQuality: FilterQuality.medium,
-                            placeholder: (_, __) => const Center(
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2)),
-                            errorWidget: (_, __, ___) => const Center(
-                              child: Icon(Icons.image_outlined,
-                                  color: AppTheme.textMuted, size: 40),
-                            ),
-                          ),
+            if (hasImage)
+              Expanded(
+                child: Container(
+                  decoration: const BoxDecoration(
+                    color: AppTheme.creamDark,
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(12)),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(12)),
+                    // Full-bleed cover: the frame is the whole image
+                    // area of the card, so a portrait photo is centred
+                    // and cropped by the frame rather than floating at
+                    // its intrinsic size inside it.
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: double.infinity,
+                      child: CachedNetworkImage(
+                        imageUrl: img!,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                        filterQuality: FilterQuality.medium,
+                        placeholder: (_, __) => const Center(
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2)),
+                        errorWidget: (_, __, ___) => const Center(
+                          child: Icon(Icons.image_outlined,
+                              color: AppTheme.textMuted, size: 40),
                         ),
-                      )
-                    : const Center(
-                        child: Icon(Icons.inventory_2_outlined,
-                            color: AppTheme.textMuted, size: 40)),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
             // Info
             Padding(
               padding: const EdgeInsets.all(10),

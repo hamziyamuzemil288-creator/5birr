@@ -241,6 +241,12 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
                               providerId: (p['provider_id'] ?? '') as String,
                               title: (p['name'] ?? '') as String,
                               priceLabel: listingPriceLabel(p),
+                              // BUY for a good, BOOK for a service or a room.
+                              // `search_products` carries the listing's own type
+                              // since 20261011000001 for exactly this, so the
+                              // card asks the same question every other surface
+                              // asks and gets the same verb.
+                              listingType: p['listing_type'] as String?,
                               imageUrl: path.isEmpty
                                   ? null
                                   : Supabase.instance.client.storage

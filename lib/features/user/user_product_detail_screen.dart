@@ -11,6 +11,7 @@ import '../../core/services/review_service.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
+import '../../core/widgets/product_card.dart';
 import '../../core/widgets/product_engagement.dart';
 
 class UserProductDetailScreen extends ConsumerStatefulWidget {
@@ -121,6 +122,11 @@ class _State extends ConsumerState<UserProductDetailScreen> {
     final unit = p['unit'] as String?;
     final isUnitPriced = unit == 'KG' || unit == 'LTR';
     final unitWord = unit == 'KG' ? 'kg' : 'liter';
+    // BUY for a good, BOOK for a service or a room. The verb comes from the
+    // listing's own `listing_type` through the ONE shared rule
+    // (`listingActionLabel`, in core/widgets/product_card.dart) that the card
+    // uses too, so the card and the page it opens can never disagree.
+    final actionVerb = listingActionLabel(p['listing_type'] as String?);
 
     return Scaffold(
       appBar: AppBar(
@@ -331,7 +337,8 @@ class _State extends ConsumerState<UserProductDetailScreen> {
               Expanded(
                 child: ElevatedButton(
                   onPressed: _adding ? null : _buyNow,
-                  child: Text(_adding ? 'PLEASE WAIT…' : 'BUY NOW'),
+                  child: Text(
+                      _adding ? 'PLEASE WAIT…' : '${actionVerb.toUpperCase()} NOW'),
                 ),
               ),
             ],

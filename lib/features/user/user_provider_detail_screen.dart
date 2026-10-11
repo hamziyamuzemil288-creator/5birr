@@ -350,7 +350,8 @@ class _State extends State<UserProviderDetailScreen> {
       ));
     }
     for (final prod in _products) {
-      final path = _firstImagePath(prod);
+      final path = listingCoverPathFromRows(
+          (prod['product_images'] as List?) ?? const []);
       if (path == null) continue;
       out.add((
         bucket: 'product-images',
@@ -403,14 +404,18 @@ class _State extends State<UserProviderDetailScreen> {
             .getPublicUrl(photoPath);
     // product_images comes back with the products query above and was being
     // discarded; these are the tiles for the gallery grid. Resolved once here
-    // rather than per-widget: `_firstImagePath` sorts, and the grid, the header
-    // and every list row all need the same answer.
+    // rather than per-widget: `listingCoverPathFromRows` sorts, and the grid,
+    // the header and every list row all need the same answer. It is the shared
+    // rule from the card module, not a private copy — a second copy of "which
+    // photo is the cover" is how the same listing came out looking different on
+    // two screens.
     // Each entry keeps the whole listing row, not just its id: the shared card
     // renders the price and the BUY button from that row, so a photo tile and
     // the list row below it cannot quote two different numbers.
     final photoProducts = <({Map<String, dynamic> row, String url})>[];
     for (final prod in _products) {
-      final path = _firstImagePath(prod);
+      final path = listingCoverPathFromRows(
+          (prod['product_images'] as List?) ?? const []);
       if (path == null) continue;
       photoProducts.add((
         row: prod,
@@ -738,6 +743,9 @@ class _State extends State<UserProviderDetailScreen> {
                           .toString(),
                       title: (prod['name'] ?? '') as String,
                       priceLabel: listingPriceLabel(prod),
+                      // BUY for goods, BOOK for a service or a room — the
+                      // row's own listing_type, through the shared rule.
+                      listingType: prod['listing_type'] as String?,
                       imageUrl: photoProducts[i].url,
                       rating: (prod['rating'] as num?)?.toDouble() ?? 0,
                       likeCount: (prod['like_count'] as num?)?.toInt() ?? 0,
@@ -771,6 +779,34 @@ class _State extends State<UserProviderDetailScreen> {
                 itemCount: _products.length,
                 itemBuilder: (_, i) {
                   final prod = _products[i];
+                  // A listing with no photo is the TEXT-ONLY card, and this
+                  // page is the only surface it appears on: name, price and the
+                  // same BUY/BOOK action, with no image box — an empty frame
+                  // reads as a broken photo rather than as a listing that never
+                  // had one. Discovery keeps these rows out entirely
+                  // (`Product.hasPhoto`, and the two RPCs 20261011000001
+                  // filters), which is why the card here is the only way this
+                  // provider's text-only listing can be bought at all.
+                  if (listingCoverPathFromRows(
+                          (prod['product_images'] as List?) ?? const []) ==
+                      null) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: ProductCard.listing(
+                        productId: (prod['id'] ?? '') as String,
+                        providerId: ((prod['provider_id'] as String?) ??
+                                widget.providerId)
+                            .toString(),
+                        title: (prod['name'] ?? '') as String,
+                        priceLabel: listingPriceLabel(prod),
+                        listingType: prod['listing_type'] as String?,
+                        caption: (prod['description'] ?? '') as String,
+                        isAvailable: prod['is_available'] != false,
+                        onTap: () =>
+                            context.push('/user/product/${prod['id']}'),
+                      ),
+                    );
+                  }
                   return ListTile(
                     onTap: () =>
                         context.push('/user/product/${prod['id']}'),
@@ -810,6 +846,11 @@ class _State extends State<UserProviderDetailScreen> {
                         ProductBuyButton(
                           productId: prod['id'] as String,
                           providerId: widget.providerId,
+                          // BUY for a good, BOOK for a service — the row's own
+                          // listing_type, through the same shared rule the card
+                          // uses.
+                          label: listingActionLabel(
+                              prod['listing_type'] as String?),
                           compact: true,
                         ),
                       ],
@@ -831,7 +872,8 @@ class _State extends State<UserProviderDetailScreen> {
   Widget _thumbnailFor(Map<String, dynamic> product) {
     const fallback = Icon(Icons.inventory_2_outlined,
         color: AppTheme.textMuted);
-    final path = _firstImagePath(product);
+    final path = listingCoverPathFromRows(
+        (product['product_images'] as List?) ?? const []);
     if (path == null) return fallback;
     return Image.network(
       Supabase.instance.client.storage
@@ -914,19 +956,6 @@ class _State extends State<UserProviderDetailScreen> {
         ),
       ),
     );
-  }
-
-  String? _firstImagePath(Map<String, dynamic> product) {
-    final raw = product['product_images'];
-    if (raw is! List || raw.isEmpty) return null;
-    final images = raw
-        .whereType<Map<String, dynamic>>()
-        .toList(growable: false)
-      ..sort((a, b) =>
-          ((a['sort_order'] as num?)?.toInt() ?? 0)
-              .compareTo((b['sort_order'] as num?)?.toInt() ?? 0));
-    final path = images.first['storage_path'] as String?;
-    return (path == null || path.isEmpty) ? null : path;
   }
 
   Widget _reviewsSection() {

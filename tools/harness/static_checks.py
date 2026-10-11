@@ -8756,10 +8756,17 @@ def check_no_contact_before_payment() -> list[str]:
             "reveal RPC again — since 20261006000009 it returns NOTHING "
             "until the availability gate says YES, so BUY NOW would "
             "disappear for every buyer")
-    if "'BUY NOW'" not in detail:
+    # The button used to be the literal `'BUY NOW'`. It is the same button with
+    # a type-derived verb now (`'${actionVerb.toUpperCase()} NOW'`): BUY for a
+    # good, BOOK for a service or a room — the report this round is about. The
+    # assertion is the same one, on the form the button actually takes, and it
+    # still fails if the button or the shared rule behind its verb disappears.
+    if "'${actionVerb.toUpperCase()} NOW'" not in detail or \
+            "listingActionLabel(p['listing_type'] as String?)" not in detail:
         problems.append(
             "user_product_detail_screen.dart: the product page has no "
-            "BUY NOW button, so no buyer can reach the availability gate")
+            "type-derived BUY/BOOK NOW button, so no buyer can reach the "
+            "availability gate")
 
     # The tap-to-call provider screen must stay off the buyer path: nothing
     # under lib/features/user or lib/core may push its route.
@@ -8779,6 +8786,232 @@ def check_no_contact_before_payment() -> list[str]:
         problems.append(
             "connectivity_test.dart does not run "
             "assert_no_contact_before_payment()")
+
+    return problems
+
+
+def check_one_action_per_listing_and_no_provider_control_where_buyers_browse() -> list[str]:
+    """The report's four halves, each with its own quiet failure mode.
+
+      1. ONE action per listing, and the verb comes from the listing's own
+         type. `products.listing_type` has existed since 0022a
+         ('PRODUCT','FOOD','SERVICE','ROOM','OTHER'); a SERVICE or a ROOM is
+         BOOKED, everything else is BOUGHT. Four surfaces render a listing —
+         the shared card (product, raw row and provider photo), the product
+         detail screen and the provider page's list rows — and the rule has to
+         live in ONE function, or the same service reads BUY on one screen and
+         BOOK on the next. The screens also have to PASS the type: the feed's
+         mapping omitted `listing_type` entirely, so every card in it was a
+         PRODUCT.
+
+      2. No provider-only management control on a buyer surface. Editing a
+         listing is the OWNER's action: it belongs on the provider's own
+         management screens, never in a surface a customer browses. The one
+         provider-intent control a buyer may see is the add-listing entry, and
+         it must go through the posting gate (verification, wallet, payment
+         account) rather than opening the form directly.
+
+      3. A listing with no photo is private to its provider's page. The browse
+         and search reads exclude it (migration 20261011000001), the feed's own
+         mapping drops it, and its own provider's page renders it as a
+         text-only card — name, price, action, and NO image box, because an
+         empty frame reads as a broken photo. Note that `products_public_read`
+         must NOT carry the exclusion: that policy also answers the provider
+         page, which has to keep showing the listing.
+
+      4. The trending rail ranks by the last 7 days, not by career totals. A
+         revert to `completed_transactions DESC` alone still returns rows and
+         still looks ranked — it just never changes, which is exactly how the
+         "static trending list" was reported.
+    """
+    problems: list[str] = []
+
+    card_path = LIB / "core" / "widgets" / "product_card.dart"
+    card = _dart_without_comments(_read(card_path))
+    if card_path.is_file():
+        # 1a. the single definition of the verb
+        for needle, why in (
+            ("String listingActionLabel(String? listingType)",
+             "the shared BUY/BOOK rule is gone from the card module"),
+            ("type == 'SERVICE' || type == 'ROOM'",
+             "BOOK is no longer keyed on the two bookable listing types"),
+            ("? 'Book' : 'Buy'",
+             "the rule no longer names both verbs"),
+            # 1b. every constructor takes its verb from that rule
+            ("actionLabel: product.actionLabel",
+             "a Product card no longer reads the listing's own type" ),
+            ("actionLabel: listingActionLabel(listingType)",
+             "a raw listing row's card no longer derives its verb from "
+             "listing_type"),
+            ("actionLabel: 'Book'",
+             "a provider photo lost its BOOK action"),
+            # 1c. the card still carries the one action itself
+            ("ProductBuyButton(",
+             "the card no longer renders the shared purchase button"),
+            # 3a. the shared "has a photo" rule, and the text-only branch
+            ("String? listingCoverPathFromRows(List<dynamic> images)",
+             "the shared cover-path rule is gone"),
+            ("final hasImage = img != null && img.isNotEmpty;",
+             "the card does not distinguish a photo-less listing"),
+        ):
+            if needle not in card:
+                problems.append("product_card.dart: %s" % why)
+        if "inventory_2_outlined" in card:
+            problems.append(
+                "product_card.dart draws the box placeholder again — a "
+                "listing with no photo must render as a text-only card, not "
+                "as an empty frame that reads as a broken image")
+    else:
+        problems.append("product_card.dart is missing")
+
+    model = _dart_without_comments(
+        _read(LIB / "core" / "models" / "product.dart"))
+    for needle, why in (
+        ("bool get isBookable",
+         "Product cannot say whether it is booked or bought"),
+        ("String get actionLabel",
+         "Product no longer derives its own verb"),
+        ("bool get hasPhoto",
+         "Product cannot say whether it has a photo a card can show"),
+    ):
+        if needle not in model:
+            problems.append("product.dart: %s" % why)
+
+    # 1d. every surface that renders a listing passes its type.
+    user = LIB / "features" / "user"
+    for name, why in (
+        ("user_search_screen.dart",
+         "search results render a card without the listing's type, so every "
+         "service found by searching reads BUY"),
+        ("user_category_screen.dart",
+         "category results render a card without the listing's type"),
+        ("user_provider_detail_screen.dart",
+         "the provider page's tiles render a card without the listing's type"),
+    ):
+        code = _dart_without_comments(_read(user / name))
+        if "listingType:" not in code:
+            problems.append("%s: %s" % (name, why))
+
+    detail_path = user / "user_product_detail_screen.dart"
+    detail = _dart_without_comments(_read(detail_path))
+    if "listingActionLabel(p['listing_type'] as String?)" not in detail:
+        problems.append(
+            "user_product_detail_screen.dart: the product page's primary "
+            "button does not read the shared BUY/BOOK rule, so a service's "
+            "own page can still say BUY")
+    if "'BUY NOW'" in detail:
+        problems.append(
+            "user_product_detail_screen.dart: the primary button is hardcoded "
+            "to 'BUY NOW' again — a bookable service reads BUY on its own page")
+
+    # 2. no provider-only management control anywhere a buyer browses, and the
+    #    one provider-intent entry goes through the posting gate.
+    for path in dart_sources():
+        rel = str(path.relative_to(LIB))
+        if not (rel.startswith("features/user") or rel.startswith("core/")):
+            continue
+        code = _dart_without_comments(_read(path))
+        for needle, why in (
+            ("'Edit Product'",
+             "the provider's Edit Product action is rendered on a buyer "
+             "surface"),
+            ("'/provider/products/'",
+             "a buyer surface pushes the edit-a-listing route — a buyer can "
+             "land on the provider's form"),
+            ("delete_product", "a buyer surface can delete a listing"),
+            ("archive_product", "a buyer surface can archive a listing"),
+            ("provider_product_list_screen",
+             "a buyer surface imports the provider's product management "
+             "screen"),
+        ):
+            if needle in code:
+                problems.append("%s: %s" % (rel, why))
+    home = _dart_without_comments(_read(user / "user_home_screen.dart"))
+    if "'/provider/products/new'" in home and "postingGateHook" not in home:
+        problems.append(
+            "user_home_screen.dart opens the add-product form without the "
+            "posting gate — an unverified, unfunded provider reaches the form")
+
+    # 3. the discovery reads exclude photo-less listings; the provider page
+    #    keeps them and renders the card without an image box.
+    visible_target, visible_src = last_migration_defining(
+        "visible_products_for_city")
+    if visible_target is None:
+        problems.append("no migration defines public.visible_products_for_city()")
+    elif ("select 1 from public.product_images pi" not in
+          function_body(visible_src, "visible_products_for_city")):
+        problems.append(
+            "%s: visible_products_for_city no longer excludes photo-less "
+            "listings — the category grid fills with empty frames again"
+            % visible_target.name)
+
+    search_target, search_src = last_migration_defining("search_products")
+    if search_target is None:
+        problems.append("no migration defines public.search_products()")
+    else:
+        sbody = function_body(search_src, "search_products")
+        for needle, why in (
+            ("SELECT 1 FROM public.product_images pi",
+             "search_products no longer excludes photo-less listings (the "
+             "cover-path subquery alone is not an exclusion)"),
+            ("p.listing_type",
+             "search_products no longer projects listing_type, so every "
+             "service it returns reads BUY"),
+        ):
+            if needle not in sbody:
+                problems.append("%s: %s" % (search_target.name, why))
+
+    if ".where((p) => p.hasPhoto)" not in home:
+        problems.append(
+            "user_home_screen.dart does not drop photo-less listings from the "
+            "feed — the home rail is a discovery surface")
+    if "listingType: (j['listing_type'] as String?) ?? 'PRODUCT'," not in home:
+        problems.append(
+            "user_home_screen.dart: the feed's mapping dropped listing_type "
+            "again — every card in the rail becomes a PRODUCT, so every "
+            "service in it reads BUY (this is the exact omission the round is "
+            "about)")
+    provider_page = _dart_without_comments(
+        _read(user / "user_provider_detail_screen.dart"))
+    if "listingCoverPathFromRows(" not in provider_page:
+        problems.append(
+            "user_provider_detail_screen.dart does not render a photo-less "
+            "listing as the text-only card — it either shows nothing or an "
+            "empty image box")
+    if "String? _firstImagePath(" in provider_page:
+        problems.append(
+            "user_provider_detail_screen.dart grew a private copy of the "
+            "cover-path rule again — the card module has the one definition")
+    for name in ("user_home_screen.dart", "user_search_screen.dart",
+                 "user_category_screen.dart"):
+        code = _dart_without_comments(_read(user / name))
+        if "Icons.edit" in code or "'Edit Product'" in code:
+            problems.append(
+                "%s: renders an Edit control — editing a listing is the "
+                "owning provider's action, never a buyer's" % name)
+
+    # 4. the trending rail ranks by the last 7 days.
+    ranked_target, ranked_src = last_migration_defining("ranked_providers")
+    if ranked_target is None:
+        problems.append("no migration defines public.ranked_providers()")
+    else:
+        rbody = function_body(ranked_src, "ranked_providers")
+        for needle, why in (
+            ("v_window",
+             "ranked_providers has no trending window — it ranks by career "
+             "totals, which for most providers is the same order forever"),
+            ("interval '7 days'",
+             "the trending window is no longer a week, so the rail is back to "
+             "career totals in all but name"),
+            ("updated_at >= now() - v_window",
+             "the recency key reads no completion time"),
+        ):
+            if needle not in rbody:
+                problems.append("%s: %s" % (ranked_target.name, why))
+        if "created_at ASC" not in rbody:
+            problems.append(
+                "%s: ranked_providers lost its stable tiebreak — an ordering "
+                "the client cannot re-derive must keep one" % ranked_target.name)
 
     return problems
 
@@ -8921,6 +9154,10 @@ CHECKS = [
     ("a filed appeal reaches the dashboard, the badge, and the people who can "
      "act on it",
      check_appeal_notifications_reach_reviewers),
+    ("one BUY/BOOK per listing from its own type, no provider control where "
+     "buyers browse, photo-less listings private, and trending ranked by the "
+     "last 7 days",
+     check_one_action_per_listing_and_no_provider_control_where_buyers_browse),
 ]
 
 
