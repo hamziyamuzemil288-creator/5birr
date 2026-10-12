@@ -35,7 +35,24 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
   // Phase 4: shared selection flow — Delivery or Self-pickup. Self-pickup
   // pays the product price only (no delivery), delivery shows the address
   // step. Both paths share the same payment step below.
+  //
+  // A BOOKING starts on the other option (see [_isBookingCart]): a service or
+  // a room is not delivered, and the delivery path demands a delivery address
+  // — server-side, `order-create` answers "Delivery requires an address" — so
+  // booking a haircut used to stop at a form asking where to ship it.
   String _fulfillmentMode = 'DELIVERY';
+
+  /// True once the buyer has picked a fulfillment option themselves. The
+  /// booking default is applied only while this is false, so a buyer who chose
+  /// delivery for a booking keeps it when the cart re-reads.
+  bool _fulfillmentTouched = false;
+
+  /// True when every line in this cart is booked rather than bought — the same
+  /// two listing types the shared BUY/BOOK rule names (`listingActionLabel` in
+  /// core/widgets/product_card.dart; `CartItem.isBooking` is that rule on the
+  /// cart's own line). An empty cart is not a booking.
+  bool get _isBookingCart =>
+      _items.isNotEmpty && _items.every((i) => i.isBooking);
   File? _screenshot;
   File? _nationalId;
   final _picker = ImagePicker();
@@ -261,6 +278,16 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
           _accounts = accounts;
           _accountsLoading = false;
           _needsAvailabilityConfirmation = needsConfirmation;
+          // A basket of bookings does not need a delivery address, and asking
+          // for one is where a booking stopped looking like a booking. The
+          // buyer can still switch to delivery — that is the option a service
+          // performed at their address needs — and switching sets
+          // [_fulfillmentTouched] so this never overrides them.
+          if (!_fulfillmentTouched &&
+              items.isNotEmpty &&
+              items.every((i) => i.isBooking)) {
+            _fulfillmentMode = 'SELF_PICKUP';
+          }
           _loading = false;
         });
       }
@@ -654,9 +681,16 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                         ),
                       ),
                       const SizedBox(height: 20),
-                      // Phase 4: fulfillment selection (shared flow).
-                      const Text('How do you want to get it?',
-                          style: TextStyle(
+                      // Phase 4: fulfillment selection (shared flow). The two
+                      // options are the same two the server knows (DELIVERY /
+                      // SELF_PICKUP); only the words change for a booking, so a
+                      // service says where it happens rather than where it is
+                      // shipped.
+                      Text(
+                          _isBookingCart
+                              ? 'How will this booking work?'
+                              : 'How do you want to get it?',
+                          style: const TextStyle(
                               fontSize: 15, fontWeight: FontWeight.w600)),
                       const SizedBox(height: 8),
                       Row(
@@ -664,22 +698,34 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                           Expanded(
                             child: _FulfillmentCard(
                               icon: Icons.local_shipping_outlined,
-                              title: 'Delivery',
-                              subtitle: 'Brought to your address',
+                              title: _isBookingCart
+                                  ? 'They come to me'
+                                  : 'Delivery',
+                              subtitle: _isBookingCart
+                                  ? 'At the address you give'
+                                  : 'Brought to your address',
                               selected: _fulfillmentMode == 'DELIVERY',
-                              onTap: () =>
-                                  setState(() => _fulfillmentMode = 'DELIVERY'),
+                              onTap: () => setState(() {
+                                _fulfillmentTouched = true;
+                                _fulfillmentMode = 'DELIVERY';
+                              }),
                             ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: _FulfillmentCard(
                               icon: Icons.store_outlined,
-                              title: 'Self-pickup',
-                              subtitle: 'Pay product price only',
+                              title: _isBookingCart
+                                  ? 'I go to them'
+                                  : 'Self-pickup',
+                              subtitle: _isBookingCart
+                                  ? 'Pay the listing price only'
+                                  : 'Pay product price only',
                               selected: _fulfillmentMode == 'SELF_PICKUP',
-                              onTap: () => setState(
-                                  () => _fulfillmentMode = 'SELF_PICKUP'),
+                              onTap: () => setState(() {
+                                _fulfillmentTouched = true;
+                                _fulfillmentMode = 'SELF_PICKUP';
+                              }),
                             ),
                           ),
                         ],
@@ -709,11 +755,17 @@ class _UserCheckoutScreenState extends ConsumerState<UserCheckoutScreen> {
                                 color:
                                     AppTheme.primaryGreen.withOpacity(0.25)),
                           ),
-                          child: const Text(
-                            'Self-pickup: pay the product price only and collect '
-                            'it from the provider. Their contact details become '
-                            'available after payment approval.',
-                            style: TextStyle(fontSize: 12.5, height: 1.4),
+                          child: Text(
+                            _isBookingCart
+                                ? 'You pay the listing price only and go to the '
+                                    'provider at the time you agree. Their '
+                                    'contact details become available after '
+                                    'payment approval.'
+                                : 'Self-pickup: pay the product price only and '
+                                    'collect it from the provider. Their '
+                                    'contact details become available after '
+                                    'payment approval.',
+                            style: const TextStyle(fontSize: 12.5, height: 1.4),
                           ),
                         ),
                         const SizedBox(height: 16),

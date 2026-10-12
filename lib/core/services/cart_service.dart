@@ -16,6 +16,14 @@ class CartItem {
       quantity; // decimal allowed: unit-priced items are sold per kg/liter
   final String? unit; // 'KG' | 'LTR' | null (fixed-price listing)
   final String? imagePath; // primary listing image storage path
+
+  /// The listing's own `products.listing_type`, read with the rest of the
+  /// line. It is carried here rather than looked up per screen because the
+  /// cart is the one place that already knows every listing in the basket: the
+  /// checkout needs it to know a booking does not need a delivery address, and
+  /// the availability gate needs it to ask the provider the right question.
+  /// A screen that re-read it would be a second answer to the same question.
+  final String listingType;
   final DateTime addedAt;
 
   const CartItem({
@@ -29,8 +37,17 @@ class CartItem {
     required this.quantity,
     this.unit,
     this.imagePath,
+    this.listingType = 'PRODUCT',
     required this.addedAt,
   });
+
+  /// True when this line is BOOKED rather than bought — the same two types the
+  /// shared rule names (`listingActionLabel` in core/widgets/product_card.dart,
+  /// inlined here so the cart does not import a widget).
+  bool get isBooking {
+    final type = listingType.trim().toUpperCase();
+    return type == 'SERVICE' || type == 'ROOM';
+  }
 
   double get lineTotal => price * quantity;
 
@@ -85,7 +102,7 @@ class CartService {
     final data = await _client
         .from('cart_items')
         .select(
-            'id, quantity, added_at, products(id, provider_id, name, price, currency, unit, product_images(*), provider_profiles(business_name))')
+            'id, quantity, added_at, products(id, provider_id, name, price, currency, unit, listing_type, product_images(*), provider_profiles(business_name))')
         .eq('user_id', userId)
         .order('added_at');
 
@@ -156,6 +173,7 @@ class CartService {
         quantity: (row['quantity'] as num?)?.toDouble() ?? 1,
         unit: product['unit'] as String?,
         imagePath: _primaryImagePath(product),
+        listingType: (product['listing_type'] as String?) ?? 'PRODUCT',
         addedAt: addedAt,
       ));
     }

@@ -1387,6 +1387,29 @@ void main() {
               'above has gone and the gate was opened rather than scoped.');
     });
 
+    test('every listing carries its own type, so BUY vs BOOK reads true',
+        () async {
+      // The report, third time: the shared BUY/BOOK rule was right and read a
+      // column nothing ever wrote. `products.listing_type` defaults to
+      // 'PRODUCT' and `create_provider_product()` inserts without naming it, so
+      // every service the app created was stored as a PRODUCT and therefore
+      // read BUY on every card. Migration 20261012000001 adds the derivation
+      // from the category, the trigger that stamps it on every write, and the
+      // backfill — and this prints the LIVE rows it left behind, because the
+      // question was a data question and only the database can answer it.
+      final (detail, error) =
+          await rpcTextDiagnosed('assert_listing_types_are_true');
+      expect(detail, isNotNull,
+          reason: 'assert_listing_types_are_true() could not run at all, so '
+              'nothing verified that the stored listing_type matches the '
+              'listing\'s own category. Error: $error');
+      expect(detail, isNot(contains('FAIL')),
+          reason: 'A listing carries a type its own category contradicts, so '
+              'a service reads BUY: $detail');
+      // ignore: avoid_print
+      print('    listing types -> $detail');
+    });
+
     test('the error sink, its RLS and the hot-path indexes are wired', () async {
       // The client's ErrorLogger writes here on every crash. If the table,
       // its RLS or a hot-path index is missing, failures become invisible

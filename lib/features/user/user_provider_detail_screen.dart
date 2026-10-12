@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/models/provider_gallery.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/favorites_service.dart';
+import '../../core/services/product_like_service.dart';
 import '../../core/services/review_service.dart';
 import '../../core/utils/category_field_value.dart';
 import '../../core/utils/friendly_error.dart';
@@ -117,10 +118,23 @@ class _State extends State<UserProviderDetailScreen> {
       // Trust stats come from the provider_trust_stats view (real,
       // aggregated data; view read is non-fatal if unavailable).
       final trust = await ProviderTrustStats.fetch(widget.providerId);
+      // The hearts on this provider's listings: the caller's own reaction has
+      // to be known BEFORE the cards render, or every heart shows empty and the
+      // first tap clears a like the user already had. One batched call for the
+      // page, the same one the home rail makes for its own grid.
+      final listingRows = List<Map<String, dynamic>>.from(prods as List);
+      final likeCounts = <String, int>{
+        for (final p in listingRows)
+          p['id'] as String: (p['like_count'] as num?)?.toInt() ?? 0,
+      };
+      ProductLikeService.instance.ensureLoaded(
+        listingRows.map((p) => p['id'] as String),
+        likeCountOf: (id) => likeCounts[id] ?? 0,
+      );
       if (mounted) {
         setState(() {
           _provider = prov;
-          _products = List<Map<String, dynamic>>.from(prods as List);
+          _products = listingRows;
           _gallery = gallery;
           _declared = declared;
           _reviews = reviews;

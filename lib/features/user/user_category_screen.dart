@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/services/city_service.dart';
+import '../../core/services/product_like_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/cart_icon_button.dart';
 import '../../core/widgets/load_error_view.dart';
@@ -97,6 +98,19 @@ class _UserCategoryScreenState extends State<UserCategoryScreen> {
       for (final im in imgs) {
         (imagesByProduct[im['product_id'] as String] ??= []).add(im);
       }
+      // The hearts on this grid: the caller's own reaction has to be known
+      // BEFORE the cards render, or every heart shows empty and the first tap
+      // clears a like the user already had. One batched call for the page —
+      // the same one the home rail makes for its own grid.
+      final likeCounts = <String, int>{
+        for (final p in prodsRaw)
+          p['id'] as String: (p['like_count'] as num?)?.toInt() ?? 0,
+      };
+      ProductLikeService.instance.ensureLoaded(
+        prodsRaw.map((p) => p['id'] as String),
+        likeCountOf: (id) => likeCounts[id] ?? 0,
+      );
+
       if (mounted) {
         setState(() {
           _category = cat;

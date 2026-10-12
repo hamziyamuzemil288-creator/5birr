@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/services/location_service.dart';
 import '../../core/services/city_service.dart';
+import '../../core/services/product_like_service.dart';
 import '../../core/utils/friendly_error.dart';
 import '../../core/widgets/load_error_view.dart';
 import '../../core/widgets/product_card.dart';
@@ -130,9 +131,58 @@ class _UserSearchScreenState extends State<UserSearchScreen> {
           'p_sort_by': 'distance',
         },
       });
+      var rows = List<Map<String, dynamic>>.from(data as List);
+      // `search_products` did not project `listing_type` at all until migration
+      // 20261011000001, and the DEPLOYED function still does not — so against a
+      // live database every row here is missing the one column that decides BUY
+      // vs BOOK, and a search result for a service read BUY while the same
+      // service on its own page read BOOK. The migration fixes the projection;
+      // this fixes the screen on the database the app is actually talking to.
+      // One batched read of the rows that came back without the column, never
+      // one per card, and a row that still cannot answer falls back to the
+      // column default exactly as it did before.
+      if (rows.any((r) => (r['listing_type'] as String?) == null)) {
+        try {
+          final ids = rows
+              .where((r) => (r['listing_type'] as String?) == null)
+              .map((r) => r['id'] as String)
+              .toList();
+          final types = await Supabase.instance.client
+              .from('products')
+              .select('id, listing_type')
+              .inFilter('id', ids);
+          final byId = <String, String>{};
+          for (final raw in types as List) {
+            final t = Map<String, dynamic>.from(raw as Map);
+            byId['${t['id']}'] = (t['listing_type'] as String?) ?? '';
+          }
+          rows = rows
+              .map((r) => <String, dynamic>{
+                    ...r,
+                    'listing_type': (r['listing_type'] as String?) ??
+                        byId[r['id'] as String],
+                  })
+              .toList();
+        } catch (_) {
+          // Best-effort: a failed lookup leaves the rows as the RPC returned
+          // them, which is the behaviour this screen had before.
+        }
+      }
+
+      // The hearts on the grid: the caller's own reaction has to be known
+      // BEFORE the cards render, or every heart shows empty and the first tap
+      // clears a like the user already had. One batched call for the page.
+      final counts = <String, int>{
+        for (final r in rows)
+          r['id'] as String: (r['like_count'] as num?)?.toInt() ?? 0,
+      };
+      ProductLikeService.instance.ensureLoaded(
+        rows.map((r) => r['id'] as String),
+        likeCountOf: (id) => counts[id] ?? 0,
+      );
+
       if (mounted) {
         setState(() {
-          final rows = List<Map<String, dynamic>>.from(data as List);
           _results = rankLocationLessLast(rows);
           _loading = false;
           _error = null;

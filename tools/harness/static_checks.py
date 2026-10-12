@@ -9016,7 +9016,252 @@ def check_one_action_per_listing_and_no_provider_control_where_buyers_browse() -
     return problems
 
 
+def check_every_listing_takes_its_type_from_its_category() -> list[str]:
+    """BUY vs BOOK, third report: the value the button reads has to be TRUE.
+
+      * The write path never set `listing_type`. `products.listing_type` is
+        `NOT NULL DEFAULT 'PRODUCT'` (0022a) and `create_provider_product()`
+        inserts without naming it, so every service, room and food listing
+        created by this app is stored as a PRODUCT — and the (correct) shared
+        rule then reads PRODUCT and says BUY. A grep of the button cannot see
+        that, so this pins the DATA half: one derivation from the category, a
+        trigger that stamps it on every write, and a backfill of the rows that
+        are already wrong.
+      * A booking has to behave like a booking downstream too: the cart carries
+        the listing's own type, the checkout does not demand a delivery address
+        for a basket of bookings (the server answers "Delivery requires an
+        address"), and the gate asks the provider a question that is true of an
+        appointment.
+      * The search screen reads `search_products`, whose DEPLOYED body has no
+        `listing_type` in its RETURNS TABLE (the projection lands with
+        20261011000001), so the screen must resolve the missing column itself —
+        one batched read, not one per card — or every service found by search
+        reads BUY until a deploy happens.
+    """
+    problems: list[str] = []
+
+    mig = ROOT / "supabase" / "migrations" / \
+        "20261012000001_every_listing_carries_its_own_type_from_its_category.sql"
+    if not mig.is_file():
+        return ["20261012000001...sql is missing — nothing writes "
+                "products.listing_type, so every service stays a PRODUCT"]
+    sql = _read(mig)
+    for needle, why in (
+        ("CREATE OR REPLACE FUNCTION public.listing_type_for_category",
+         "no derivation: the category is never turned into a listing type"),
+        ("ACCOMMODATION", "a hotel room would classify as nothing"),
+        ("'SERVICES'", "a service category would classify as nothing"),
+        ("BOOKING_BASED",
+         "the fallback for a row whose marketplace_sector was never set is "
+         "gone"),
+        ("NEW.listing_type := v_type;",
+         "the trigger does not write the column it exists to write"),
+        ("CREATE TRIGGER trg_products_listing_type",
+         "no trigger: create_provider_product() goes back to storing every "
+         "service as a PRODUCT"),
+        ("BEFORE INSERT OR UPDATE OF category_id ON public.products",
+         "the trigger does not fire on the insert the create path makes"),
+        ("UPDATE public.products p",
+         "no backfill: the listings that are already wrong stay wrong"),
+        ("LISTING_TYPE_BACKFILL_INCOMPLETE",
+         "the backfill does not prove it covered the rows it should have"),
+        ("assert_listing_types_are_true",
+         "no live report, so the actual rows cannot be read back"),
+    ):
+        if needle not in sql:
+            problems.append("20261012000001: %s" % why)
+    if "TO anon, authenticated, service_role" not in sql:
+        problems.append(
+            "20261012000001: assert_listing_types_are_true() is not executable "
+            "by anon — the connectivity suite runs as anon and would report "
+            "PGRST202, which reads like a missing migration")
+
+    # The client: the cart carries the type, and a booking is not a delivery.
+    cart_path = LIB / "core" / "services" / "cart_service.dart"
+    cart = _dart_without_comments(_read(cart_path))
+    for needle, why in (
+        ("bool get isBooking",
+         "a cart line cannot say whether it is booked or bought"),
+        ("listing_type",
+         "the cart's product read no longer selects the listing's type, so "
+         "every line reads as a purchase"),
+    ):
+        if needle not in cart:
+            problems.append("cart_service.dart: %s" % why)
+
+    checkout = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_checkout_screen.dart"))
+    for needle, why in (
+        ("_isBookingCart",
+         "the checkout cannot say whether this basket is a booking"),
+        ("items.every((i) => i.isBooking)) {",
+         "a basket of bookings is not defaulted away from the delivery "
+         "path — order-create answers \"Delivery requires an address\", so "
+         "booking a service stops at a shipping form"),
+        ("_fulfillmentTouched",
+         "nothing stops the booking default from overriding a delivery "
+         "option the buyer chose themselves"),
+    ):
+        if needle not in checkout:
+            problems.append("user_checkout_screen.dart: %s" % why)
+
+    gate = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_availability_screen.dart"))
+    if "Can they take this booking?" not in gate:
+        problems.append(
+            "user_availability_screen.dart: the gate asks every basket "
+            "\"Is this product available?\" — including an appointment")
+
+    search = _dart_without_comments(
+        _read(LIB / "features" / "user" / "user_search_screen.dart"))
+    for needle, why in (
+        ("listing_type",
+         "search results no longer resolve the listing's type, and the "
+         "DEPLOYED search_products does not project it"),
+        ("inFilter('id', ids)",
+         "the missing type is not resolved in one batched read"),
+    ):
+        if needle not in search:
+            problems.append("user_search_screen.dart: %s" % why)
+
+    provider_dash = _dart_without_comments(
+        _read(LIB / "features" / "provider" / "service_provider_dashboard.dart"))
+    if "ACCEPT BOOKING" not in provider_dash:
+        problems.append(
+            "service_provider_dashboard.dart: the provider is asked whether a "
+            "booking is \"AVAILABLE\" and never that it is a booking")
+
+    return problems
+
+
+def check_like_and_dislike_are_offered_wherever_a_listing_is() -> list[str]:
+    """The reaction buttons, restored and actually reflecting the reader.
+
+    Reported as removed. They were not: the shared card has carried them since
+    the consolidation (268c108f), and `product_likes` with its `reaction`
+    CHECK, its RLS and `set_product_reaction` has been the storage since
+    20260927000068. What was TRUE is that the StatefulWidget reads a service the
+    screen has to hydrate first, and only the home rail and the product page
+    did — so on the category grid, the search results and a provider's page the
+    heart always rendered EMPTY for a listing the user had already liked, and
+    the first tap then cleared the like they already had. That is
+    indistinguishable, to the reader, from a like button that was removed.
+    """
+    problems: list[str] = []
+
+    card = _dart_without_comments(
+        _read(LIB / "core" / "widgets" / "product_card.dart"))
+    for needle, why in (
+        ("LikeButton(", "the shared card lost the heart"),
+        ("DislikeButton(", "the shared card lost the thumb-down"),
+    ):
+        if card.count(needle) != 1:
+            problems.append(
+                "product_card.dart: %s (%d occurrences — it is rendered once "
+                "per listing card)" % (why, card.count(needle)))
+
+    # The layout rule the report asks for: the reactions are NOT mixed into the
+    # action button's row. The action row is price + ProductBuyButton; the
+    # reactions share the bottom row with the rank badge.
+    buy_idx = card.rindex("ProductBuyButton(")
+    action_row = card[card.rindex("Row(", 0, buy_idx):buy_idx]
+    if "LikeButton" in action_row or "DislikeButton" in action_row:
+        problems.append(
+            "product_card.dart: a reaction is rendered inside the BUY/BOOK "
+            "row again — the action button and the reactions are separate rows")
+    like_idx = card.rindex("LikeButton(")
+    reaction_row = card[card.rindex("Row(", 0, like_idx):like_idx]
+    if "DislikeButton" not in reaction_row:
+        problems.append(
+            "product_card.dart: the heart and the thumb-down no longer share "
+            "one row")
+
+    engagement = _dart_without_comments(
+        _read(LIB / "core" / "widgets" / "product_engagement.dart"))
+    for needle, why in (
+        ("service.isLiked(",
+         "the heart no longer reads the caller's own reaction, so it cannot "
+         "show an already-liked listing as liked"),
+        ("Icons.favorite", "the filled heart state is gone"),
+        ("Icons.thumb_down", "the filled thumb-down state is gone"),
+        ("toggleLike(", "the heart no longer writes"),
+        ("toggleDislike(", "the thumb-down no longer writes"),
+    ):
+        if needle not in engagement:
+            problems.append("product_engagement.dart: %s" % why)
+
+    service = LIB / "core" / "services" / "product_like_service.dart"
+    if not service.is_file():
+        problems.append("product_like_service.dart is missing")
+    else:
+        svc = _dart_without_comments(_read(service))
+        for needle, why in (
+            ("Future<void> ensureLoaded(",
+             "the hydrate the card depends on is gone"),
+            ("'set_product_reaction'",
+             "the write is a toggle again — a client whose state is stale "
+             "would flip the row the wrong way"),
+            ("_serverLikeCounts", "the optimistic count has no server baseline"),
+        ):
+            if needle not in svc:
+                problems.append("product_like_service.dart: %s" % why)
+
+    # Hydration is what makes the buttons reflect the reader. Every screen that
+    # renders listing cards has to do it, not just the home rail.
+    user = LIB / "features" / "user"
+    for name in ("user_home_screen.dart", "user_search_screen.dart",
+                 "user_category_screen.dart",
+                 "user_provider_detail_screen.dart"):
+        code = _dart_without_comments(_read(user / name))
+        if "ProductLikeService.instance.ensureLoaded(" not in code:
+            problems.append(
+                "%s: renders listing cards without hydrating the caller's "
+                "reactions — every heart shows empty for a product the user "
+                "already liked, and the first tap clears that like" % name)
+
+    # The storage half: the reaction is persisted, one row per user+product, and
+    # readable/writable only by its owner. The creating migration is the one
+    # that has to carry RLS and the owner-scoped policies; a later file that
+    # merely touches the table cannot satisfy this.
+    creating = [p for p in migration_files()
+                if re.search(r"create\s+table\s+if\s+not\s+exists\s+"
+                             r"(?:public\.)?product_likes\b", _read(p),
+                             re.IGNORECASE)]
+    if not creating:
+        problems.append(
+            "no migration creates product_likes — the reaction buttons have "
+            "nowhere to persist")
+    else:
+        src = _read(creating[0])
+        for needle, why in (
+            ("enable row level security",
+             "product_likes is readable/writable without a policy"),
+            ("create policy product_likes",
+             "no policy on product_likes: nothing scopes a reaction to its "
+             "own author"),
+        ):
+            if needle.lower() not in src.lower():
+                problems.append("%s: %s" % (creating[0].name, why))
+
+    # And the reaction the buttons write is the column the schema has: a
+    # LIKE/DISLIKE/NONE CHECK, so one user cannot like the same listing twice
+    # and the two reactions stay exclusive.
+    reaction_src = "\n".join(_read(p) for p in migration_files()
+                             if "set_product_reaction" in _read(p))
+    if "DISLIKE" not in reaction_src or "NONE" not in reaction_src:
+        problems.append(
+            "set_product_reaction() no longer knows LIKE/DISLIKE/NONE — the "
+            "thumb-down or the clear-a-reaction state is gone")
+
+    return problems
+
+
 CHECKS = [
+    ("a listing carries its own type from its own category, and a booking "
+     "behaves like a booking end to end",
+     check_every_listing_takes_its_type_from_its_category),
+    ("like and dislike are on every listing card, and reflect the reader",
+     check_like_and_dislike_are_offered_wherever_a_listing_is),
     ("closing an account removes the uploaded files, from every delete path",
      check_account_deletion_removes_the_files),
     ("the public account-deletion page is reachable and matches the schema",

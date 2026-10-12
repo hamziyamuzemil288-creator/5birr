@@ -89,6 +89,17 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
 
   SupabaseClient get _client => Supabase.instance.client;
 
+  /// True when every line in the basket is BOOKED rather than bought.
+  ///
+  /// The gate is one flow for both (`create_availability_requests` and
+  /// `create_order_secure` key on the listing, not on its type), so this changes
+  /// what the buyer and the provider are asked — "is this available?" and "can
+  /// you take this booking?" are the same request, and only one of them is true
+  /// about an appointment. `CartItem.isBooking` is the shared BUY/BOOK rule on
+  /// the cart's own line.
+  bool get _isBookingBasket =>
+      _items.isNotEmpty && _items.every((i) => i.isBooking);
+
   List<String> get _productIds =>
       _items.map((i) => i.productId).toSet().toList();
 
@@ -477,7 +488,9 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Availability check')),
+      appBar: AppBar(
+          title: Text(
+              _isBookingBasket ? 'Booking request' : 'Availability check')),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
@@ -574,17 +587,22 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
         const SizedBox(height: 24),
         const Icon(Icons.help_outline, size: 44, color: AppTheme.teal),
         const SizedBox(height: 12),
-        const Text(
-          'Is this product available?',
+        Text(
+          _isBookingBasket
+              ? 'Can they take this booking?'
+              : 'Is this product available?',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Before you pay, the provider confirms the item is in stock. '
-          'They have 15 minutes to answer.',
+        Text(
+          _isBookingBasket
+              ? 'Before you pay, the provider confirms they can take this '
+                  'booking. They have 15 minutes to answer.'
+              : 'Before you pay, the provider confirms the item is in stock. '
+                  'They have 15 minutes to answer.',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13.5, color: AppTheme.textSecondary),
+          style: const TextStyle(fontSize: 13.5, color: AppTheme.textSecondary),
         ),
         const SizedBox(height: 24),
         PrimaryButton(
@@ -656,7 +674,9 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
         const SizedBox(height: 8),
         Text(
           reason == null
-              ? 'This provider does not have this item right now.'
+              ? (_isBookingBasket
+                  ? 'This provider cannot take this booking right now.'
+                  : 'This provider does not have this item right now.')
               : 'The provider replied: $reason',
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 14, color: AppTheme.textSecondary),
@@ -678,13 +698,16 @@ class _UserAvailabilityScreenState extends State<UserAvailabilityScreen> {
   Widget _acceptedPanel() {
     return Column(
       mainAxisSize: MainAxisSize.min,
-      children: const [
-        Icon(Icons.check_circle_outline, size: 52, color: AppTheme.success),
-        SizedBox(height: 12),
+      children: [
+        const Icon(Icons.check_circle_outline,
+            size: 52, color: AppTheme.success),
+        const SizedBox(height: 12),
         Text(
-          'Available — taking you to checkout…',
+          _isBookingBasket
+              ? 'Booking confirmed — taking you to payment…'
+              : 'Available — taking you to checkout…',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
         ),
       ],
     );

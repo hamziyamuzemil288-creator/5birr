@@ -195,7 +195,8 @@ class _ServiceProviderDashboardState
       final rows = await Supabase.instance.client
           .from('availability_requests')
           .select(
-              'id, product_id, quantity, created_at, expires_at, products(name)')
+              'id, product_id, quantity, created_at, expires_at, '
+              'products(name, listing_type)')
           .eq('provider_id', providerId)
           .eq('status', 'PENDING')
           .order('created_at', ascending: false)
@@ -235,9 +236,12 @@ class _ServiceProviderDashboardState
         if (fresh.isNotEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
+              // Neutral wording on purpose: a booking and a purchase ask the
+              // same question through the same row, and the tile below says
+              // which one it is — this line only says somebody is waiting.
               content: Text(fresh.length == 1
-                  ? 'A buyer is waiting: is this item available? They have '
-                      '15 minutes before the request expires.'
+                  ? 'A buyer is waiting for your answer. They have 15 '
+                      'minutes before the request expires.'
                   : '${fresh.length} buyers are waiting for an availability '
                       'answer.'),
             ),
@@ -263,11 +267,19 @@ class _ServiceProviderDashboardState
             if (reason != null && reason.isNotEmpty) 'p_reason': reason,
           });
       if (!mounted) return;
+      final product = request['products'] as Map<String, dynamic>?;
+      final type = ((product?['listing_type'] as String?) ?? '').toUpperCase();
+      final isBooking = type == 'SERVICE' || type == 'ROOM';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(accept
-              ? 'Told the buyer it is available — they can check out now.'
-              : 'Told the buyer it is not available.'),
+              ? (isBooking
+                  ? 'Told the buyer you can take this booking — they can pay '
+                      'now.'
+                  : 'Told the buyer it is available — they can check out now.')
+              : (isBooking
+                  ? 'Told the buyer you cannot take this booking.'
+                  : 'Told the buyer it is not available.')),
         ),
       );
       final id = _providerProfile?['id'] as String?;
@@ -286,17 +298,22 @@ class _ServiceProviderDashboardState
   /// available" with no words behind it sends the buyer to guess.
   Future<void> _declineAvailability(Map<String, dynamic> request) async {
     final ctrl = TextEditingController();
+    final product = request['products'] as Map<String, dynamic>?;
+    final type = ((product?['listing_type'] as String?) ?? '').toUpperCase();
+    final isBooking = type == 'SERVICE' || type == 'ROOM';
     final reason = await showDialog<String>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Text('Not available?'),
+        title: Text(isBooking ? 'Decline this booking?' : 'Not available?'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           maxLength: 120,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Reason (optional)',
-            hintText: 'e.g. Sold out until Friday',
+            hintText: isBooking
+                ? 'e.g. Fully booked until Friday'
+                : 'e.g. Sold out until Friday',
           ),
         ),
         actions: [
@@ -373,6 +390,13 @@ class _ServiceProviderDashboardState
   Widget _availabilityTile(Map<String, dynamic> request) {
     final product = request['products'] as Map<String, dynamic>?;
     final name = product?['name'] as String? ?? 'An item';
+    // A SERVICE or a ROOM is BOOKED, everything else is bought — the same two
+    // types the buyer's own button reads (`listingActionLabel` in
+    // core/widgets/product_card.dart). The request is identical either way; what
+    // differs is that a provider accepting an appointment is not confirming
+    // stock, and the button they read should say so.
+    final type = ((product?['listing_type'] as String?) ?? '').toUpperCase();
+    final isBooking = type == 'SERVICE' || type == 'ROOM';
     final qty = ((request['quantity'] as num?)?.toDouble() ?? 1);
     final qtyText = qty == qty.roundToDouble()
         ? qty.toInt().toString()
@@ -383,7 +407,7 @@ class _ServiceProviderDashboardState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '$name × $qtyText',
+            isBooking ? '$name · booking' : '$name × $qtyText',
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -398,7 +422,7 @@ class _ServiceProviderDashboardState
                     foregroundColor: AppTheme.primaryGreen,
                     side: const BorderSide(color: AppTheme.primaryGreen),
                   ),
-                  child: const Text('AVAILABLE'),
+                  child: Text(isBooking ? 'ACCEPT BOOKING' : 'AVAILABLE'),
                 ),
               ),
               const SizedBox(width: 8),
@@ -409,7 +433,7 @@ class _ServiceProviderDashboardState
                     foregroundColor: AppTheme.error,
                     side: const BorderSide(color: AppTheme.error),
                   ),
-                  child: const Text('NOT AVAILABLE'),
+                  child: Text(isBooking ? 'DECLINE' : 'NOT AVAILABLE'),
                 ),
               ),
             ],
